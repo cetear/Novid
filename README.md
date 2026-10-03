@@ -53,6 +53,8 @@ Compose 仅启动 MySQL 8.4.12 和 ES 8.15.0。端口只绑定本机；关闭 ES
 
 DB_URL 例如 `jdbc:mysql://localhost:3306/ailab?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true`；DB_USERNAME／DB_PASSWORD 对应该专用库。Flyway 自动创建结构，不删除已有表、不自动导入教学用户。**不要连接未经明确指定的现有业务库**。
 
+已执行的迁移文件必须保持原样，批量格式化时也应排除 `lab-data/src/main/resources/db/migration` 中的这些文件。修改缩进或空格也可能导致 `Migration checksum mismatch`，使启动校验失败。后续数据库结构调整新增 `V4__说明.sql` 等版本；遇到校验和不一致，先核对并恢复已执行版本的内容，不要直接关闭校验或运行 repair 掩盖差异。
+
 SEARCH_ENABLED=false 时资料 CRUD 可独立运行，问答会明确返回 SEARCH_UNAVAILABLE；原文上传保持 RECEIVED，不冒称索引成功。启用搜索后，先完成受控初始化：
 
 ```powershell
