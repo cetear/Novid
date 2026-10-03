@@ -107,6 +107,7 @@ Embedding 模型和维度变化必须使用新 ES_INDEX。相同维度并不代�
 - [实施状态与 37 组能力](docs/implementation-status.md)
 - [版本与兼容性](docs/version-validation.md)
 - [API 与配置](docs/api.md)
+- [前端开发与联调文档（接口、字段、流程与客户端示例）](docs/frontend-development-guide.md)
 - [评测、失败与跳过](docs/evaluation-report.md)
 - [恢复与故障演示](docs/recovery-and-failures.md)
 - [真实测试服务连接检查](docs/connection-validation.md)

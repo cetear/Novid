@@ -1,5 +1,7 @@
 # 后端 API 与配置
 
+前端开发请参阅 [前端开发与联调文档](frontend-development-guide.md)：按当前源码提供完整接口、返回类型、权限／状态处理、SSE、认证下载与页面联调清单。本文保留后端 API 和运行配置概览。
+
 统一 /api/v1、JSON camelCase、Authorization: Bearer。除登录和不含详情的存活 health 外均要求认证。未知 JSON 字段拒绝，包括伪造的 userId/role/ownerUserId。POST /admin/users 不接受角色。
 
 ## 当前实现的接口

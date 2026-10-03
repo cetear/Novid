@@ -1,13 +1,19 @@
 package com.example.ailab.data.search;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+
 import java.net.URI;
 
-/** 索引与向量空间是受控配置；凭证只用于服务端连接，不进入查询或响应。 */
+/**
+ * 索引与向量空间是受控配置；凭证只用于服务端连接，不进入查询或响应。
+ */
 @ConfigurationProperties("lab.search")
 public record SearchProperties(boolean enabled, String endpoint, String index, int dimensions,
-                               String embeddingModelVersion, String username, String password, String caCertificate, boolean trustAll) {
-    /** 校验地址和成对凭证，避免把密码塞进 URL 或产生不完整认证配置。 */
+                               String embeddingModelVersion, String username, String password, String caCertificate,
+                               boolean trustAll) {
+    /**
+     * 校验地址和成对凭证，避免把密码塞进 URL 或产生不完整认证配置。
+     */
     public SearchProperties {
         if (index == null || !index.matches("[a-z][a-z0-9_-]{1,100}") || dimensions < 1
                 || dimensions > 4096 || embeddingModelVersion == null || embeddingModelVersion.isBlank()) {
@@ -32,8 +38,11 @@ public record SearchProperties(boolean enabled, String endpoint, String index, i
         }
     }
 
-    /** record 默认字符串会包含密码；显式脱敏，防止配置对象误记入日志。 */
-    @Override public String toString() {
+    /**
+     * record 默认字符串会包含密码；显式脱敏，防止配置对象误记入日志。
+     */
+    @Override
+    public String toString() {
         return "SearchProperties[enabled=" + enabled + ", index=" + index + ", dimensions="
                 + dimensions + ", embeddingModelVersion=" + embeddingModelVersion
                 + ", authentication=" + !username.isEmpty() + ", trustAll=" + trustAll + "]";
