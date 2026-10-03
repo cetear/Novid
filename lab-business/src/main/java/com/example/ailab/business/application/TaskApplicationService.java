@@ -1,0 +1,28 @@
+package com.example.ailab.business.application;
+import com.example.ailab.business.domain.KnowledgeAccessPolicy;
+import com.example.ailab.contract.context.UserContext;
+import com.example.ailab.contract.dto.*;
+import com.example.ailab.contract.port.*;
+import com.example.ailab.contract.error.LabException;
+import org.springframework.stereotype.Service;
+import java.util.*;
+/** 可靠 FAQ/研究报告任务，上传与任务去重均隔离到本人。 */
+@Service
+public class TaskApplicationService {
+    private final KnowledgeAccessPolicy policy;private final KnowledgeCapabilityPort knowledge;private final TaskStorePort tasks;private final ArtifactStorePort artifacts;
+    /** 用例不依赖 AI Worker 或数据实现。 */
+    public TaskApplicationService(KnowledgeAccessPolicy p,KnowledgeCapabilityPort k,TaskStorePort t,ArtifactStorePort a){policy=p;knowledge=k;tasks=t;artifacts=a;}
+    /** 明确支持 FAQ/RESEARCH_REPORT；没有真实媒体能力时拒绝而非伪视频成功。 */
+    public TaskSnapshot create(UserContext actor,TaskRequest r){
+        if(r.taskType().equals("NOTES_VIDEO"))throw new LabException("MEDIA_CAPABILITY_UNAVAILABLE","TTS/模板视频能力尚未完成配置与验收");
+        if(!Set.of("FAQ","RESEARCH_REPORT").contains(r.taskType())||r.topic()==null||r.topic().isBlank()||r.topic().length()>1000||r.documentIds().isEmpty()||r.documentIds().size()>6||r.documentIds().stream().anyMatch(id->id==null||id<=0))throw LabException.invalid("仅支持 FAQ/RESEARCH_REPORT，指定 1～6 份资料和有限主题");
+        DocumentApplicationService.validateKey(r.idempotencyKey());policy.authorize(actor,r.scope());for(long id:r.documentIds())knowledge.document(actor,r.scope(),id);
+        return tasks.create(actor,r);
+    }
+    /** 任何角色都仅读本人任务。 */
+    public TaskSnapshot read(UserContext actor,long id){return tasks.read(policy.current(actor),id);}
+    /** 状态机由数据短事务执行，resume 不能作为用户确认。 */
+    public TaskSnapshot action(UserContext actor,long id,String action){return tasks.action(policy.current(actor),id,action);}
+    /** 本人产物同时复核来源。 */
+    public ArtifactSnapshot artifact(UserContext actor,long id){return artifacts.artifact(policy.current(actor),id);}
+}

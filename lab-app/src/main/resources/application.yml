@@ -1,0 +1,144 @@
+spring:
+  application:
+    name: ai-learning-lab
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/ailab?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true}
+    username: ${DB_USERNAME:ailab}
+    password: ${DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 5000
+  flyway:
+    locations: classpath:db/migration
+    enabled: true
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 11MB
+  main:
+    allow-circular-references: false
+server:
+  port: ${PORT:8080}
+  error:
+    include-message: never
+    include-stacktrace: never
+  tomcat:
+    threads:
+      max: 32
+      min-spare: 4
+    max-connections: 100
+    accept-count: 32
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+lab:
+  ingestion:
+    worker-enabled: ${INGESTION_WORKER_ENABLED:true}
+  task:
+    worker-enabled: ${TASK_WORKER_ENABLED:true}
+  bootstrap:
+    enabled: ${BOOTSTRAP_ENABLED:false}
+    username: ${BOOTSTRAP_USERNAME:admin}
+  search:
+    enabled: ${SEARCH_ENABLED:false}
+    endpoint: ${ES_URL:http://localhost:9200}
+    username: ${ES_USERNAME:}
+    password: ${ES_PASSWORD:}
+    ca-certificate: ${ES_CA_CERTIFICATE:}
+    trust-all: ${ES_TRUST_ALL:true}
+    index: ${ES_INDEX:knowledge_chunks_mock_v1}
+    dimensions: ${EMBEDDING_DIMENSIONS:32}
+    embedding-model-version: ${EMBEDDING_MODEL_NAME:mock-embedding-v1}
+  rag:
+    max-chunk-tokens: 500
+    overlap-tokens: 50
+    min-chunk-tokens: 100
+    heading-prefix-max-tokens: 64
+    parent-max-tokens: 2000
+    candidate-chunks: 6
+    final-evidence: 6
+    neighbor-window: 1
+    max-evidence-tokens: 4000
+  model:
+    mode: ${MODEL_MODE:mock}
+    external-data-allowed: ${MODEL_EXTERNAL_DATA_ALLOWED:false}
+    models:
+      primary:
+        provider-id: openai-compatible
+        endpoint: ${MODEL_BASE_URL:https://api.openai.com/v1}
+        model-name: ${MODEL_PRIMARY_NAME:mock-primary}
+        credential-ref: MODEL_API_KEY
+        enabled: true
+        capabilities: [CHAT]
+        quality-tags: [configured-baseline]
+        data-classifications: [PRIVATE]
+        context-window: 16000
+        output-limit: 2048
+        timeout-seconds: 30
+      backup:
+        provider-id: openai-compatible
+        endpoint: ${MODEL_BACKUP_BASE_URL:${MODEL_BASE_URL:https://api.openai.com/v1}}
+        model-name: ${MODEL_BACKUP_NAME:mock-backup}
+        credential-ref: MODEL_BACKUP_API_KEY
+        enabled: ${MODEL_BACKUP_ENABLED:true}
+        capabilities: [CHAT]
+        quality-tags: [configured-baseline]
+        data-classifications: [PRIVATE]
+        context-window: 16000
+        output-limit: 2048
+        timeout-seconds: 30
+      embedding:
+        provider-id: glm-compatible
+        endpoint: ${EMBEDDING_BASE_URL:${MODEL_BASE_URL:https://api.openai.com/v1}}
+        model-name: ${EMBEDDING_MODEL_NAME:mock-embedding-v1}
+        credential-ref: ${EMBEDDING_CREDENTIAL_REF:MODEL_API_KEY}
+        enabled: ${EMBEDDING_ENABLED:true}
+        capabilities: [EMBEDDING]
+        quality-tags: [configured-baseline]
+        data-classifications: [PRIVATE]
+        context-window: 16000
+        output-limit: 1
+        dimensions: ${EMBEDDING_DIMENSIONS:32}
+        timeout-seconds: 30
+    profiles:
+      knowledge:
+        candidate-model-ids: [primary, backup]
+        required-capabilities: [CHAT]
+        quality-tags: [configured-baseline]
+        allow-fallback: true
+      economy:
+        candidate-model-ids: [primary, backup]
+        required-capabilities: [CHAT]
+        quality-tags: [configured-baseline]
+        allow-fallback: true
+      analysis:
+        candidate-model-ids: [primary, backup]
+        required-capabilities: [CHAT]
+        quality-tags: [configured-baseline]
+        allow-fallback: true
+      report:
+        candidate-model-ids: [primary, backup]
+        required-capabilities: [CHAT]
+        quality-tags: [configured-baseline]
+        allow-fallback: true
+      embedding:
+        candidate-model-ids: [embedding]
+        required-capabilities: [EMBEDDING]
+        quality-tags: [configured-baseline]
+        allow-fallback: false
+    routing:
+      policy-version: routing-v1
+      task-profiles:
+        KNOWLEDGE_QA: knowledge
+        EMBEDDING: embedding
+        SIMPLE_SUMMARY: economy
+        DATA_ANALYSIS: analysis
+        REPORT: report
