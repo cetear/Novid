@@ -34,6 +34,12 @@ public interface TaskStorePort {
      */
     boolean renew(TaskLease lease);
 
+    /** 远程调用前持久记录当前步骤；必须满足当前租约和 fencing，不能覆盖已成功步骤。 */
+    void beginStep(TaskLease lease, String stepId);
+
+    /** 已授权资料准备完成后持久推进进度，不消费或伪造模型生成检查点。 */
+    void completePreparation(TaskLease lease);
+
     /**
      * 真实模型提交前持久消费尝试预算，重启不清零。
      */
@@ -53,6 +59,22 @@ public interface TaskStorePort {
      * 返回本执行可用的成功检查点。
      */
     List<TaskCheckpoint> checkpoints(TaskLease lease);
+
+    /** 正式分页检查点，旧执行者不能提交；已完成页次不可覆盖。 */
+    default void checkpointPage(TaskLease lease, TaskPageCheckpoint page) {
+        throw new UnsupportedOperationException("此存储没有分页检查点能力");
+    }
+
+    /** 恢复时读取连续成功页次并复核其来源和代次，不能重放已完成页。 */
+    default List<TaskPageCheckpoint> pages(TaskLease lease) { return List.of(); }
+
+    /** 初始化所有所选文档的剩余范围，随后逐页单调推进，包含完全未读文档。 */
+    default void initializeCoverage(TaskLease lease, List<DocumentCoverage> coverage) {
+        throw new UnsupportedOperationException("此存储没有覆盖能力");
+    }
+
+    /** 当前持久剩余轮数用于给分析／发布预留额度，进程恢复不能重复获得六轮。 */
+    default int remainingModelTurns(TaskLease lease) { return 6; }
 
     /**
      * 执行完毕原子创建私人产物并进入 SUCCEEDED/PARTIAL。

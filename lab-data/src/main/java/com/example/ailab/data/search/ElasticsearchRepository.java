@@ -12,6 +12,9 @@ import com.example.ailab.contract.context.UserContext;
 import com.example.ailab.contract.error.LabException;
 import com.example.ailab.data.repository.*;
 import org.springframework.stereotype.Repository;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.elasticsearch.client.RestClient;
 import jakarta.annotation.PreDestroy;
 
 import java.io.StringReader;
@@ -27,17 +30,33 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
     private final SqlSupport sql;
     private final ElasticsearchClient client;
     private final RestClientTransport transport;
+    private final boolean ownsClient;
     private final ObjectMapper json = new ObjectMapper();
 
     /**
      * 未启用搜索时不创建连接，资料 CRUD 可独立运行。
      */
     public ElasticsearchRepository(SearchProperties config, DocumentContextRepository context, SqlSupport sql) {
+        this(config, context, sql, config.enabled() ? ElasticsearchClientFactory.create(config) : null, true);
+    }
+
+    /** 正式装配复用健康检查同一个客户端，不自行创建第二条连接配置。 */
+    @Autowired
+    public ElasticsearchRepository(SearchProperties config, DocumentContextRepository context, SqlSupport sql,
+                                   ObjectProvider<RestClient> clients) {
+        this(config, context, sql, clients.getIfAvailable(), false);
+    }
+
+    /** 显式区分独立诊断客户端与 Spring 管理客户端的生命周期。 */
+    private ElasticsearchRepository(SearchProperties config, DocumentContextRepository context, SqlSupport sql,
+                                    RestClient restClient, boolean ownsClient) {
         this.config = config;
         this.context = context;
         this.sql = sql;
+        this.ownsClient = ownsClient;
         if (config.enabled()) {
-            transport = new RestClientTransport(ElasticsearchClientFactory.create(config), new JacksonJsonpMapper(json));
+            if (restClient == null) throw new IllegalStateException("已启用搜索但未装配共享 ES 客户端");
+            transport = new RestClientTransport(restClient, new JacksonJsonpMapper(json));
             client = new ElasticsearchClient(transport);
         } else {
             transport = null;
@@ -166,8 +185,9 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
         if (scope.mode() == ScopeRequest.Mode.SELECTED && scope.knowledgeBaseIds().isEmpty()) return List.of();
         try {
             var bool = Map.of("bool", Map.of("filter", filters, "must", List.of(Map.of("match", Map.of("embeddingText", query)))));
-            var lexical = hits(Map.of("size", 20, "query", bool));
-            var dense = hits(Map.of("size", 20, "knn", Map.of("field", "vector", "query_vector", vector, "k", 20, "num_candidates", 100, "filter", Map.of("bool", Map.of("filter", filters)))));
+            int perRoute = context.contextPolicy().retrievalPerRoute();
+            var lexical = hits(Map.of("size", perRoute, "query", bool));
+            var dense = hits(Map.of("size", perRoute, "knn", Map.of("field", "vector", "query_vector", vector, "k", perRoute, "num_candidates", perRoute * 5, "filter", Map.of("bool", Map.of("filter", filters)))));
             var scores = new HashMap<String, Double>();
             var candidates = new HashMap<String, ChunkCandidate>();
             merge(lexical, scores, candidates);
@@ -286,10 +306,10 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
     }
 
     /**
-     * 生命周期关闭网络资源。
+     * 独立诊断实例自行释放资源；正式共享客户端由 Spring 统一关闭。
      */
     @PreDestroy
     public void close() throws Exception {
-        if (transport != null) transport.close();
+        if (transport != null && ownsClient) transport.close();
     }
 }

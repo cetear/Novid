@@ -67,6 +67,11 @@ lab:
     final-evidence: 6
     neighbor-window: 1
     max-evidence-tokens: 4000
+    # S02：块保留与检索参数统一绑定，修改后新处理代次使用新 configHash。
+    retrieval-per-route: 20
+    preserve-code-blocks: true
+    preserve-table-rows: true
+    include-heading-path: true
   model:
     mode: ${MODEL_MODE:mock}
     external-data-allowed: ${MODEL_EXTERNAL_DATA_ALLOWED:false}

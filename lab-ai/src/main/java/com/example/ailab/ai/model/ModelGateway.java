@@ -49,6 +49,17 @@ public class ModelGateway {
      * 最多三个尝试、一次主备切换；写工具不在本方法中执行或重放。
      */
     public Turn chat(String task, String system, String prompt, ExecutionBudget budget) {
+        return chat(task, system, List.of(), prompt, budget);
+    }
+
+    /** 历史以 SDK 消息进入同一模型入口；摘要、主备与回答共享调用方的预算。 */
+    public Turn chat(String task, String system, List<ChatMessage> history, String prompt, ExecutionBudget budget) {
+        var messages = new ArrayList<ChatMessage>();
+        messages.add(SystemMessage.from(system));
+        messages.addAll(history);
+        messages.add(UserMessage.from(prompt));
+        int inputBytes = bytes(system) + bytes(prompt) + 32 * messages.size();
+        for (var message : history) inputBytes += bytes(message.toString());
         budget.turn();
         var ids = registry.candidates(task, Set.of("CHAT"));
         int attempts = 0;
@@ -59,7 +70,7 @@ public class ModelGateway {
             if (h != null && h.retryAfter() > System.currentTimeMillis()) continue;
             for (int retry = 0; retry < 2 && attempts < 3; retry++) {
                 attempts++;
-                if (bytes(system) + bytes(prompt) + d.outputLimit() > d.contextWindow())
+                if (inputBytes + d.outputLimit() > d.contextWindow())
                     throw new LabException("BUDGET_EXCEEDED", "实际模型上下文不足，需缩减证据");
                 if (!concurrency.tryAcquire()) throw new LabException("RATE_LIMITED", "模型并发已满");
                 try {
@@ -70,8 +81,8 @@ public class ModelGateway {
                         health.remove(id);
                         return new Turn("Mock 验证结果（非真实模型回答）：\n" + prompt, id, null, null, true);
                     }
-                    var model = OpenAiChatModel.builder().baseUrl(d.endpoint()).apiKey(System.getenv(d.credentialRef())).modelName(d.modelName()).timeout(timeout(d, budget)).maxRetries(0).maxCompletionTokens(d.outputLimit()).logRequests(false).logResponses(false).build();
-                    var response = model.chat(SystemMessage.from(system), UserMessage.from(prompt));
+                    var model = OpenAiChatModel.builder().baseUrl(d.endpoint()).apiKey(registry.credential(id)).modelName(d.modelName()).timeout(timeout(d, budget)).maxRetries(0).maxCompletionTokens(d.outputLimit()).logRequests(false).logResponses(false).build();
+                    var response = model.chat(messages);
                     String text = response.aiMessage().text();
                     // 当前出口交付完整文本；截断、过滤、未知结束及工具续轮都不能伪装成功。
                     if (response.finishReason() != FinishReason.STOP || response.aiMessage().hasToolExecutionRequests()) {
@@ -127,7 +138,7 @@ public class ModelGateway {
                 }
                 return new Vectors(List.copyOf(vectors), d.modelName(), true);
             }
-            var model = OpenAiEmbeddingModel.builder().baseUrl(d.endpoint()).apiKey(System.getenv(d.credentialRef())).modelName(d.modelName()).dimensions(d.dimensions()).timeout(timeout(d, budget)).maxRetries(0).maxSegmentsPerBatch(32).logRequests(false).logResponses(false).build();
+            var model = OpenAiEmbeddingModel.builder().baseUrl(d.endpoint()).apiKey(registry.credential(id)).modelName(d.modelName()).dimensions(d.dimensions()).timeout(timeout(d, budget)).maxRetries(0).maxSegmentsPerBatch(32).logRequests(false).logResponses(false).build();
             var result = model.embedAll(texts.stream().map(TextSegment::from).toList());
             var vectors = result.content().stream().map(e -> {
                 var values = new ArrayList<Float>();

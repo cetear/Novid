@@ -12,6 +12,7 @@ public final class ExecutionBudget {
     private final int maxAttempts;
     private final Runnable journal;
     private final Runnable turnJournal;
+    private final Runnable cancellationCheck;
     private int attempts, turns, tools;
 
     /**
@@ -34,10 +35,16 @@ public final class ExecutionBudget {
      * 持久尝试与持久逻辑轮数采用独立原子端口。
      */
     public ExecutionBudget(Duration duration, int maxAttempts, Runnable journal, Runnable turnJournal) {
+        this(duration, maxAttempts, journal, turnJournal, () -> {});
+    }
+
+    /** 在线断线信号与原有时间／尝试预算共用步骤检查，不改变后台任务预算语义。 */
+    public ExecutionBudget(Duration duration, int maxAttempts, Runnable journal, Runnable turnJournal, Runnable cancellationCheck) {
         deadline = Instant.now().plus(duration);
         this.maxAttempts = maxAttempts;
         this.journal = journal;
         this.turnJournal = turnJournal;
+        this.cancellationCheck = cancellationCheck;
     }
 
     /**
@@ -71,6 +78,7 @@ public final class ExecutionBudget {
      * 在线截止时间不能因重试而延长。
      */
     public void check() {
+        cancellationCheck.run();
         if (!Instant.now().isBefore(deadline)) throw new LabException("BUDGET_EXCEEDED", "执行已超时");
     }
 
@@ -88,4 +96,7 @@ public final class ExecutionBudget {
     public synchronized int attempts() {
         return attempts;
     }
+
+    /** 将同一在线截止时间传给短提交，等待数据库锁不能延长模型步骤预算。 */
+    public Instant deadline() { return deadline; }
 }

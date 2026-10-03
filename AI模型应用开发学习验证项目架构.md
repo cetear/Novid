@@ -4,6 +4,8 @@
 >
 > 修订日期：2026-10-02。当前状态：架构设计，尚未生成项目、完成依赖解析或运行集成测试。
 >
+> 实施补充（2026-10-04，S02）：章节详情／最新入库元数据、块与原文映射、实际参数策略及逐页报告覆盖已交付；报告受六轮硬预算约束，明确完整或未读范围，不能保证任意长文全读。词元为UTF-8字节保守估计，迁移最新V6；实施事实、限制及下阶段S03交接以[项目开发进展](docs/项目开发进展.md)和[验收报告](docs/测试验证与验收报告.md)为准，原架构P0～P4未全部完成。
+>
 > 最终方案：多用户个人知识库与 AI 助手；Java 17 + Spring Boot 3 + LangChain4j + MyBatis-Plus + MySQL 8.4 LTS + Elasticsearch；六个核心 Maven 模块 + 一个实验模块；业务架构与 AI 六层架构分别表达。
 
 > AI 执行方案：固定工作流为主；复杂任务采用受限 Plan-and-Execute，需要分工时使用 Supervisor／Worker 多 Agent，Worker 内可使用受限 ReAct 类工具循环；所有角色统一使用按任务路由、主备故障切换的模型层。
@@ -264,13 +266,16 @@ flowchart TD
 ai-learning-lab/
 ├─ pom.xml                         # 父 POM、七模块、版本／插件管理
 ├─ mvnw / mvnw.cmd / .mvn/
-├─ README.md                       # 环境、管理员初始化、账号／知识库、运行／验收
+├─ README.md                       # 中文文档导航
 ├─ compose.yaml                    # 仅 MySQL + ES，固定版本
 ├─ .env.example                    # 无真实密钥，数据库／容器样例
 ├─ docs/
-│  ├─ implementation-status.md     # 阶段与能力状态
-│  ├─ version-validation.md        # 解析版本、镜像 digest、兼容性验证
-│  └─ decisions/                   # 必要的架构变更记录
+│  ├─ 项目说明与使用介绍.md        # 定位、模块、业务流程与使用方式
+│  ├─ 项目开发进展.md              # 阶段、能力状态、验收与新会话交接
+│  ├─ 前端接口与联调说明.md        # 已实现协议、状态和客户端示例
+│  ├─ 部署配置与运行维护.md        # 环境、版本、启动和恢复
+│  ├─ 测试验证与验收报告.md        # 实际结果、历史证据与限制
+│  └─ 缺陷修复与变更记录.md        # 集中的发现、修复与关闭
 ├─ lab-contract/src/main/java/com/example/ailab/contract/
 │  ├─ context/                     # UserContext、RequestContext
 │  ├─ dto/                         # 库／文档快照、AuthorizedKnowledgeScope、AI 请求／结果
@@ -917,6 +922,8 @@ ingest／search／rag_answer 增加结构和上下文实验，不增加独立 Ma
 默认采用结构切片＋标题前缀＋受限父段／邻片兜底；更复杂语义切块、模型生成上下文摘要、auto-merging 为进阶可选，单独评测并守预算。MySQL／受控原文件和已验证配置是恢复依据，ES 可重建；备份至少覆盖数据库、关联源文件与版本化配置，定期验证从备份重建和恢复权限／来源关系，不能只备份 ES。
 
 ## 9. 会话与长期记忆
+
+2026-10-04 S01 实施对应：完整历史使用 `SessionStorePort` 与 MySQL sessions/messages；AI 模块按来源重新授权后，每请求创建独立 LangChain4j `MessageWindowChatMemory`，不让 SDK 淘汰完整历史。本人会话 API、可选 sessionId/sessionVersion、短事务执行权、来源绑定摘要与偏好删除失效均已接入；实际验收和限制以[开发进展 S01 交接](docs/项目开发进展.md)及[验收报告](docs/测试验证与验收报告.md)为准。本节其他扩展记忆向量和关系实验不计 S01 已完成。完整历史与模型窗口的区别也见 [LangChain4j 官方说明](https://docs.langchain4j.dev/tutorials/chat-memory/)。
 
 - 会话历史按 userId + sessionId 隔离，管理员也不能通过检索权限读取他人会话。保存当前知识库选择与 sourceDependencies，知识范围切换／权限变化后重建合法上下文；限制条数与 Token，保留必要工具配对。
 - LangChain4j ChatMemory／ChatMemoryStore 是上下文窗口，不等于完整审计消息表。完整消息另存；自定义持久化适配使用 contract 端口。

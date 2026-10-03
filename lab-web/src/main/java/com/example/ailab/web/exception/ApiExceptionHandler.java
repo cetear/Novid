@@ -6,6 +6,7 @@ import org.springframework.http.*;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 
 import java.util.*;
 
@@ -25,7 +26,7 @@ public class ApiExceptionHandler {
         int status = switch (e.code()) {
             case "AUTH_REQUIRED" -> 401;
             case "ACCESS_DENIED", "PASSWORD_CHANGE_REQUIRED" -> 403;
-            case "APPROVAL_CONFLICT", "OPERATION_CONFLICT", "STALE_EXECUTION", "INDEX_NOT_READY" -> 409;
+            case "APPROVAL_CONFLICT", "OPERATION_CONFLICT", "STALE_EXECUTION", "INDEX_NOT_READY", "SESSION_CONFLICT", "CONTEXT_VERSION_CONFLICT" -> 409;
             case "APPROVAL_EXPIRED" -> 410;
             case "RATE_LIMITED" -> 429;
             case "MODEL_TIMEOUT" -> 504;
@@ -50,6 +51,12 @@ public class ApiExceptionHandler {
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<Error> upload(Exception e) {
         return ResponseEntity.status(413).body(new Error("DOCUMENT_LIMIT_EXCEEDED", "文件超过 10 MB 限额", false));
+    }
+
+    /** 真实断线后响应已不可写；取消由 SSE 回调完成，此处不能再尝试输出 JSON 错误。 */
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    public void disconnected(AsyncRequestNotUsableException failure) {
+        // 只处理容器明确标记不可用的异步响应，普通业务与基础设施异常仍按原错误路径上报。
     }
 
     /**

@@ -41,6 +41,7 @@ public class PrivateResourceRepository implements MemoryStorePort, TraceRecordPo
         if (sql.jdbc.queryForObject("SELECT COUNT(*) FROM profile_memories WHERE user_id=? AND deleted=FALSE", Long.class, actor.userId()) >= 100)
             throw new LabException("DOCUMENT_LIMIT_EXCEEDED", "最多保存 100 条偏好");
         long id = sql.insert("INSERT INTO profile_memories(user_id,content) VALUES(?,?)", actor.userId(), content);
+        resetSessionContexts(actor);
         return new MemorySnapshot(id, actor.userId(), content, 1);
     }
 
@@ -52,6 +53,7 @@ public class PrivateResourceRepository implements MemoryStorePort, TraceRecordPo
         sql.actor(actor, true);
         if (sql.jdbc.update("UPDATE profile_memories SET content=?,version=version+1 WHERE id=? AND user_id=? AND version=? AND deleted=FALSE", content, id, actor.userId(), version) != 1)
             throw LabException.denied();
+        resetSessionContexts(actor);
         return new MemorySnapshot(id, actor.userId(), content, version + 1);
     }
 
@@ -63,6 +65,12 @@ public class PrivateResourceRepository implements MemoryStorePort, TraceRecordPo
         sql.actor(actor, true);
         if (sql.jdbc.update("UPDATE profile_memories SET deleted=TRUE,version=version+1 WHERE id=? AND user_id=? AND version=? AND deleted=FALSE", id, actor.userId(), version) != 1)
             throw LabException.denied();
+        resetSessionContexts(actor);
+    }
+
+    /** 偏好变化可能影响所有旧答案，同事务重置本人窗口、摘要与执行权，删除后不再复用派生内容。 */
+    private void resetSessionContexts(UserContext actor) {
+        sql.jdbc.update("UPDATE sessions SET context_floor_seq=next_seq-1,summary_content=NULL,summary_covered_through_seq=NULL,summary_source_json=NULL,version=version+1,execution_id=NULL,lease_until=NULL WHERE user_id=? AND deleted=FALSE", actor.userId());
     }
 
     /**

@@ -11,6 +11,7 @@ import jakarta.validation.constraints.*;
 
 import java.util.*;
 import java.nio.charset.StandardCharsets;
+import java.net.URI;
 
 /**
  * 持久任务与受认证私人下载；客户端不能覆盖 requester 或 provider 状态。
@@ -39,15 +40,18 @@ public class TaskController {
      */
     @PostMapping("/tasks")
     public ResponseEntity<TaskSnapshot> create(Authentication a, @Valid @RequestBody Create r, @RequestHeader("Idempotency-Key") String key) {
-        return ResponseEntity.accepted().body(service.create(CurrentUser.from(a), new TaskRequest(r.taskType(), r.topic(), r.scope() == null ? ScopeRequest.self() : r.scope(), r.documentIds(), key)));
+        var task = service.create(CurrentUser.from(a), new TaskRequest(r.taskType(), r.topic(), r.scope() == null ? ScopeRequest.self() : r.scope(), r.documentIds(), key));
+        // 立即返回任务和真实进度入口，客户端不要阻塞等待最终产物或重复创建任务。
+        return ResponseEntity.accepted().location(URI.create("/api/v1/tasks/" + task.taskId()))
+                .header("Retry-After", "2").header("Cache-Control", "no-store").body(task);
     }
 
     /**
      * 本人查询，ADMIN 不读取他人任务。
      */
     @GetMapping("/tasks/{id}")
-    public TaskSnapshot read(Authentication a, @PathVariable long id) {
-        return service.read(CurrentUser.from(a), id);
+    public ResponseEntity<TaskSnapshot> read(Authentication a, @PathVariable long id) {
+        return ResponseEntity.ok().header("Cache-Control", "no-store").body(service.read(CurrentUser.from(a), id));
     }
 
     /**

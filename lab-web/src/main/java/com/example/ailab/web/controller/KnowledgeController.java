@@ -27,16 +27,31 @@ public class KnowledgeController {
     private final KnowledgeCapabilityPort capability;
     private final DocumentContextPort context;
     private final DocumentIngestionStorePort ingestion;
+    private final DocumentContextApplicationService contextApplication;
 
     /**
      * 公共端口的真实实现由 app 装配，web 不依赖 data 模块。
      */
-    public KnowledgeController(KnowledgeBaseApplicationService b, DocumentApplicationService d, KnowledgeCapabilityPort k, DocumentContextPort c, DocumentIngestionStorePort i) {
+    public KnowledgeController(KnowledgeBaseApplicationService b, DocumentApplicationService d, KnowledgeCapabilityPort k, DocumentContextPort c, DocumentIngestionStorePort i, DocumentContextApplicationService contextApplication) {
         bases = b;
         docs = d;
         capability = k;
         context = c;
         ingestion = i;
+        this.contextApplication = contextApplication;
+    }
+    /** S02 章节详情使用绝对 UTF-16 游标，禁止默认把旧章节绑定到新版；私人正文不缓存。 */
+    @GetMapping("/documents/{id}/sections/{sectionId}")
+    public ResponseEntity<SectionPage> section(Authentication a, @PathVariable long id, @PathVariable String sectionId,
+                                               @RequestParam int documentVersion, @RequestParam long processingRevision,
+                                               @RequestParam(required = false) Integer afterOffset,
+                                               @RequestParam(defaultValue = "4000") int maxTokens) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(contextApplication.section(CurrentUser.from(a),id,sectionId,documentVersion,processingRevision,afterOffset,maxTokens));
+    }
+    /** S02 处理详情不输出 worker／lease／内部路径或原始异常，失败状态与旧激活代次分别展示。 */
+    @GetMapping("/documents/{id}/ingestion")
+    public ResponseEntity<IngestionMetadata> ingestionMetadata(Authentication a, @PathVariable long id) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(contextApplication.ingestion(CurrentUser.from(a),id));
     }
 
     /**

@@ -11,6 +11,11 @@ import org.springframework.boot.ApplicationRunner;
  */
 @Configuration
 public class RuntimeConfiguration {
+    /** 单一 RAG 参数源经框架无关契约交给数据端，正式装配不引入反向依赖。 */
+    @Bean
+    public com.example.ailab.contract.dto.ContextPolicy contextPolicy(com.example.ailab.ai.orchestration.rag.RagProperties config) {
+        return config.contextPolicy();
+    }
     /**
      * BCrypt 单向密码组件通过端口提供给 business。
      */
@@ -60,10 +65,12 @@ public class RuntimeConfiguration {
      * 空系统初始化明确失败时停止启动，不在正常启动插入教学用户。
      */
     @Bean
-    public ApplicationRunner bootstrap(BootstrapProperties config, AccountApplicationService accounts) {
+    public ApplicationRunner bootstrap(BootstrapProperties config, AccountApplicationService accounts,
+                                       org.springframework.core.env.Environment environment) {
         return args -> {
             if (config.enabled()) {
-                String password = System.getenv("BOOTSTRAP_PASSWORD");
+                // 与数据库、模型凭证使用同一个 Spring 配置来源，IDEA 直接启动也可读取 .env。
+                String password = environment.getProperty("BOOTSTRAP_PASSWORD");
                 if (password == null || password.isBlank())
                     throw new IllegalArgumentException("缺少 BOOTSTRAP_PASSWORD 环境变量");
                 accounts.bootstrap(config.username(), password);

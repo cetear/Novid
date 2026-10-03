@@ -69,8 +69,9 @@ public class IngestionRepository implements DocumentIngestionStorePort {
         for (var p : parsed.parents())
             sql.jdbc.update("INSERT INTO context_parents VALUES(?,?,?,?,?,?,?,?)", p.contextParentId(), l.documentId(), l.documentVersion(), l.processingRevision(), p.sectionId(), p.ordinal(), p.startOffset(), p.endOffset());
         for (var c : parsed.chunks())
-            sql.jdbc.update("INSERT INTO chunks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", c.chunkId(), l.documentId(), l.documentVersion(), l.processingRevision(), c.sectionId(), c.contextParentId(), c.chunkIndexInSection(), c.chunkIndexInParent(), c.startOffset(), c.endOffset(), c.rawText(), c.embeddingText(), c.chunkHash());
-        sql.jdbc.update("UPDATE document_ingestions SET expected_chunk_count=?,config_hash=? WHERE id=?", parsed.chunks().size(), parsed.configHash(), l.ingestionId());
+            sql.jdbc.update("INSERT INTO chunks(chunk_id,document_id,document_version,processing_revision,section_id,parent_id,index_in_section,index_in_parent,start_offset,end_offset,raw_text,embedding_text,chunk_hash,block_type,block_id,part_index,source_map,token_count,count_source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", c.chunkId(), l.documentId(), l.documentVersion(), l.processingRevision(), c.sectionId(), c.contextParentId(), c.chunkIndexInSection(), c.chunkIndexInParent(), c.startOffset(), c.endOffset(), c.rawText(), c.embeddingText(), c.chunkHash(), c.blockType(), c.blockId(), c.partIndex(), encode(c.sourceMap()), c.tokenCount(), c.countSource());
+        // 处理事实由已保存的新映射产生；旧批次不回填假解析版本。
+        sql.jdbc.update("UPDATE document_ingestions SET expected_chunk_count=?,config_hash=?,parser_version=?,split_policy_version=?,mapping_version=?,tokenizer_ref=?,count_source=? WHERE id=?", parsed.chunks().size(), parsed.configHash(), parsed.parserVersion(), parsed.splitPolicyVersion(), parsed.mappingVersion(), parsed.tokenizerRef(), parsed.countSource(), l.ingestionId());
     }
 
     /**
