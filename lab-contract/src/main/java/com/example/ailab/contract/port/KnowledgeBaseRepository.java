@@ -15,6 +15,9 @@ public interface KnowledgeBaseRepository {
      */
     Optional<KnowledgeBaseSnapshot> find(long id);
 
+    /** 正式实现事务内复核当前身份、元数据读取权限并记录可靠审计。 */
+    KnowledgeBaseSnapshot read(UserContext actor, long id);
+
     /**
      * 创建固定归属于当前用户的知识库。
      */

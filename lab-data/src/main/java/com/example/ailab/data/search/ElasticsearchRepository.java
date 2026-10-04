@@ -31,6 +31,7 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
     private final ElasticsearchClient client;
     private final RestClientTransport transport;
     private final boolean ownsClient;
+    private final QueryCandidateCache queryCache = new QueryCandidateCache();
     private final ObjectMapper json = new ObjectMapper();
 
     /**
@@ -210,6 +211,16 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
         compatible(vector, version);
         var filters = filters(scope);
         if (scope.mode() == ScopeRequest.Mode.SELECTED && scope.knowledgeBaseIds().isEmpty()) return List.of();
+        var parameters = new org.springframework.jdbc.core.namedparam.MapSqlParameterSource();
+        sql.scope(scope, parameters);
+        long epoch = sql.knowledgeEpoch();
+        var key = new QueryCandidateCache.Key(scope.actor().userId(), scope.actor().role().name(),
+                scope.actor().permissionVersion(), scope.mode()+":"+scope.knowledgeBaseIds()+":"+scope.ownerUserId()+":"+sql.cacheScopeState(scope),
+                epoch, SqlSupport.hash(query), SqlSupport.hash(vector.toString()),
+                "parser-split-active-epoch:"+context.contextPolicy(), "retrieval-no-prompt-v1",
+                config.index()+":"+version+":rrf60-v1");
+        var cached = queryCache.get(key);
+        if (cached != null) return checkedCandidates(scope, epoch, cached, "SEARCH_CACHE_HIT");
         try {
             var bool = Map.of("bool", Map.of("filter", filters, "must", List.of(Map.of("match", Map.of("embeddingText", query)))));
             int perRoute = context.contextPolicy().retrievalPerRoute();
@@ -220,16 +231,31 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
             merge(lexical, scores, candidates);
             merge(dense, scores, candidates);
             // 保留至多 40 个有界候选，MySQL 过滤后才选择六个合法种子。
-            return scores.entrySet().stream().sorted(Map.Entry.<String, Double>comparingByValue().reversed().thenComparing(Map.Entry::getKey)).map(e -> {
+            var result = scores.entrySet().stream().sorted(Map.Entry.<String, Double>comparingByValue().reversed().thenComparing(Map.Entry::getKey)).map(e -> {
                 var c = candidates.get(e.getKey());
                 return new ChunkCandidate(c.documentId(), c.documentVersion(), c.processingRevision(), c.chunkId(), e.getValue());
             }).toList();
+            checkedCandidates(scope, epoch, result, "SEARCH");
+            queryCache.put(key, result);
+            return result;
         } catch (LabException e) {
             throw e;
         } catch (Exception e) {
             throw unavailable();
         }
     }
+
+    /** 召回结束重核身份和纪元；变化则拒绝本次结果，命中也可靠审计。 */
+    private List<ChunkCandidate> checkedCandidates(AuthorizedKnowledgeScope scope, long epoch,
+                                                 List<ChunkCandidate> candidates, String action) {
+        sql.actor(scope.actor(), false);
+        if (sql.knowledgeEpoch() != epoch) throw new LabException("CONTEXT_VERSION_CONFLICT", "资料已变化，请重新检索");
+        sql.audit(scope, action, null, candidates.size(), candidates.stream().map(ChunkCandidate::documentId).distinct().toList());
+        return candidates;
+    }
+
+    /** 管理聚合只读取单实例缓存计数，键和候选不暴露。 */
+    public long[] cacheStatistics() { return queryCache.statistics(); }
 
     /**
      * 扩展只读取 SQL 复核过的当前资料与真实邻接关系。
@@ -260,6 +286,7 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
     private List<ChunkCandidate> hits(Map<String, Object> body) throws Exception {
         String encoded = encode(body);
         var result = client.search(s -> s.index(config.index()).withJson(new StringReader(encoded)), JsonData.class);
+        if (result.timedOut() || result.shards().failed().intValue() > 0) throw unavailable();
         return result.hits().hits().stream().map(h -> {
             var d = h.source().toJson().asJsonObject();
             return new ChunkCandidate(d.getJsonNumber("documentId").longValue(), d.getInt("documentVersion"), d.getJsonNumber("processingRevision").longValue(), h.id(), h.score() == null ? 0 : h.score());

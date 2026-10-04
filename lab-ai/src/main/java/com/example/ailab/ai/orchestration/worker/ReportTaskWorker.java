@@ -95,14 +95,16 @@ public class ReportTaskWorker {
             } catch (RuntimeException ignored) {
             }
         }, 20, 20, TimeUnit.SECONDS);
-        var observation=telemetry.open(UUID.randomUUID().toString(),lease.actor().userId(),null,lease.task().taskId(),null);
+        String runId=UUID.randomUUID().toString();
+        var observation=telemetry.open(runId,lease.actor().userId(),null,lease.task().taskId(),null);
         var root=observation.span("TASK","report_execution");
         var roleNodes=new ConcurrentHashMap<String,String>();
         var scheduled=new ArrayList<CompletableFuture<TaskCheckpoint>>();
         try {
             var budget = new ExecutionBudget(Duration.ofMinutes(20), 10, () -> tasks.reserveModelAttempt(lease), () -> tasks.reserveModelTurn(lease),
                     () -> { if (!tasks.renew(lease)) throw new LabException("STALE_EXECUTION", "任务已暂停、取消或租约失效"); },
-                    () -> tasks.reserveToolCall(lease), () -> tasks.reserveModelRepair(lease)).traced(root.context());
+                    () -> tasks.reserveToolCall(lease), () -> tasks.reserveModelRepair(lease)).traced(root.context())
+                    .fees(new FeeScope(lease.actor(),"TASK",Long.toString(lease.task().taskId()),runId));
             tasks.beginStep(lease, "prepare");
             var done = new HashMap<String, TaskCheckpoint>();
             tasks.checkpoints(lease).forEach(c -> done.put(c.stepId(), c));

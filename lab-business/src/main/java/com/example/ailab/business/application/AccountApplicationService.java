@@ -21,10 +21,8 @@ public class AccountApplicationService {
     private final PasswordHashPort passwords;
     private final SecureRandom random = new SecureRandom();
     private final String dummyHash;
-    private final LinkedHashMap<String, Attempt> attempts = new LinkedHashMap<>();
-
-    private record Attempt(int count, Instant expires) {
-    }
+    private final LoginRateLimiter attempts = new LoginRateLimiter();
+    private final java.util.concurrent.Semaphore passwordChecks = new java.util.concurrent.Semaphore(4);
 
     /**
      * 注入凭证组件，未知用户也执行相同密码哈希验证。
@@ -39,13 +37,15 @@ public class AccountApplicationService {
     /**
      * 有界账号窗口限流，达到容量拒绝新增名称。
      */
-    private synchronized void limit(String name) {
-        Instant now = Instant.now();
-        attempts.entrySet().removeIf(e -> e.getValue().expires().isBefore(now));
-        if (!attempts.containsKey(name) && attempts.size() >= 10000) throw new LabException("RATE_LIMITED", "登录繁忙");
-        var a = attempts.get(name);
-        if (a != null && a.count() >= 5) throw new LabException("RATE_LIMITED", "请在五分钟后重试");
-        attempts.put(name, new Attempt(a == null ? 1 : a.count() + 1, a == null ? now.plusSeconds(300) : a.expires()));
+    private void limit(String name) {
+        attempts.acquire(digest(name));
+    }
+
+    /** 四个并发密码验证许可；压力拒绝不堆积无界等待线程，finally归还许可。 */
+    private boolean checkPassword(String password, String hash) {
+        if (!passwordChecks.tryAcquire()) throw new LabException("RATE_LIMITED", "登录繁忙");
+        try { return passwords.matches(password, hash); }
+        finally { passwordChecks.release(); }
     }
 
     /**
@@ -57,7 +57,7 @@ public class AccountApplicationService {
             throw LabException.invalid("密码超出限制");
         limit(username.toLowerCase(Locale.ROOT));
         var c = users.credential(username);
-        boolean valid = passwords.matches(password, c.map(AccountCredential::passwordHash).orElse(dummyHash));
+        boolean valid = checkPassword(password, c.map(AccountCredential::passwordHash).orElse(dummyHash));
         if (!valid || c.isEmpty() || !c.get().user().enabled())
             throw new LabException("AUTH_REQUIRED", "用户名或密码不正确");
         String token = secret();

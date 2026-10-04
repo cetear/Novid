@@ -40,6 +40,21 @@ management:
     health:
       show-details: never
 lab:
+  # S08维护显式启用；测试保持关闭，历史至少七天，每类最多100行。
+  governance:
+    cleanup-enabled: false
+    retention-days: 30
+    batch-size: 100
+  # S07金额为已报价部分的估算上限；没有核验价格时保持UNKNOWN，仍守硬词元／次数。
+  fees:
+    currency: CNY
+    online-limit: 10
+    task-limit: 30
+    ingestion-limit: 30
+    online-tokens: 300000
+    task-tokens: 300000
+    ingestion-tokens: 2500000
+    prices: {}
   observability:
     max-nodes: 2000
     queue-capacity: 32

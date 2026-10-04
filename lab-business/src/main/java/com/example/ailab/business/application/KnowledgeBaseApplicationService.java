@@ -47,7 +47,8 @@ public class KnowledgeBaseApplicationService {
     public KnowledgeBaseSnapshot read(UserContext actor, long id) {
         policy.current(actor);
         var k = bases.find(id).orElseThrow(LabException::denied);
-        return k.ownerUserId() == actor.userId() && !k.deleted() ? k : policy.readable(actor, id);
+        if (k.ownerUserId() != actor.userId() || k.deleted()) policy.readable(actor, id);
+        return bases.read(actor, id);
     }
 
     /**

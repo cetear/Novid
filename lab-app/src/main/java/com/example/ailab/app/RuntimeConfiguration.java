@@ -36,16 +36,35 @@ public class RuntimeConfiguration {
     }
 
     /**
-     * 明确维护命令执行有限索引操作，结束后关闭上下文，不启动业务 Worker。
+     * 明确维护命令执行有限索引／费用／治理操作，结束后关闭上下文；治理命令强制核验Worker关闭。
      */
     @Bean
     public ApplicationRunner maintenance(org.springframework.core.env.Environment env,
                                          com.example.ailab.contract.port.KnowledgeIndexPort index,
                                          com.example.ailab.ai.orchestration.worker.IndexCleanupWorker cleanup,
+                                         com.example.ailab.contract.port.FeeStorePort fees,
+                                         com.example.ailab.contract.port.GovernanceStorePort governance,
                                          org.springframework.context.ConfigurableApplicationContext context) {
         return args -> {
             String command = env.getProperty("lab.command");
-            if ("init-index".equals(command)) {
+            if ("governance-cleanup".equals(command)) {
+                // 运维命令一次只清一批；必须关闭业务扫描，不能消费正式用户队列。
+                if (env.getProperty("lab.task.worker-enabled", Boolean.class, true)
+                        || env.getProperty("lab.ingestion.worker-enabled", Boolean.class, true))
+                    throw new IllegalArgumentException("维护命令必须显式关闭业务Worker");
+                var settings = new GovernanceMaintenance.Settings(false,
+                        env.getProperty("lab.governance.retention-days", Integer.class, 30),
+                        env.getProperty("lab.governance.batch-size", Integer.class, 100));
+                var now = java.time.Instant.now();
+                var result = governance.purge(now, now.minusSeconds(settings.retentionDays()*86400L), settings.batchSize());
+                System.out.println("本批维护删除计数：" + result + "；可靠执行／费用／原文保留");
+                org.springframework.boot.SpringApplication.exit(context);
+            } else if ("fees-reconcile".equals(command)) {
+                // 只封存最多100条旧意图；不查询提供方、不退款、不扫描正式任务队列。
+                int changed=fees.markUnknownBefore(java.time.Instant.now().minusSeconds(120),100);
+                System.out.println("已标记待对账费用："+changed+"；原预留保持，未提交任何模型请求");
+                org.springframework.boot.SpringApplication.exit(context);
+            } else if ("init-index".equals(command)) {
                 index.initialize();
                 System.out.println("索引初始化完成（已有索引保留）");
                 org.springframework.boot.SpringApplication.exit(context);

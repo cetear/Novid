@@ -30,15 +30,16 @@ public class DocumentIngestionPipeline {
 
     /** 恢复同代次计划；全文结构有界，任意时刻仅持有一个批次的向量。 */
     public void execute(IngestionLease lease) {
-        var observation=telemetry.open(UUID.randomUUID().toString(),lease.actor().userId(),null,null,lease.ingestionId());
+        String runId=UUID.randomUUID().toString();
+        var observation=telemetry.open(runId,lease.actor().userId(),null,null,lease.ingestionId());
         try(var root=observation.span("INGESTION","ingestion_execution")) {
-            try { executeObserved(lease,root.context()); }
+            try { executeObserved(lease,root.context(),runId); }
             catch(RuntimeException failed) { root.fail(failed); throw failed; }
         } finally { observation.finish(); }
     }
 
     /** 每代次领取独立运行，已有向量恢复只记复用，绝不补造模型尝试。 */
-    private void executeObserved(IngestionLease lease,com.example.ailab.contract.context.TraceContext trace) {
+    private void executeObserved(IngestionLease lease,com.example.ailab.contract.context.TraceContext trace,String runId) {
         var content=trace.call("AUTHORIZATION","verify",()->current(lease));
         store.phase(lease,"PARSING");
         var start=Instant.now();
@@ -62,7 +63,8 @@ public class DocumentIngestionPipeline {
                 store.phase(lease,"EMBEDDING");
                 var persistent=store.budget(lease);
                 var budget=new ExecutionBudget(Duration.between(Instant.now(),persistent.deadline()),160-persistent.attempts(),
-                        ()->store.beginEmbedding(lease,plan.ordinal())).traced(batchTrace);
+                        ()->store.beginEmbedding(lease,plan.ordinal())).traced(batchTrace)
+                        .fees(new FeeScope(lease.actor(),"INGESTION",Long.toString(lease.ingestionId()),runId));
                 var result=models.embed(chunks.stream().map(ChunkSnapshot::embeddingText).toList(),budget);
                 store.completeEmbedding(lease,plan.ordinal(),result.vectors(),result.modelVersion(),result.inputTokens());
                 saved=new IngestionBatch(plan,"EMBEDDED",result.vectors(),result.modelVersion());

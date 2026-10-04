@@ -66,18 +66,25 @@ public class DocumentSqlRepository implements DocumentStorePort {
     /**
      * 分页候选额外复核衍生来源，不泄露受限标题。
      */
+    @Transactional
     public List<DocumentSnapshot> list(AuthorizedKnowledgeScope scope, int offset, int limit) {
+        sql.actor(scope.actor(), true);
         var p = new MapSqlParameterSource().addValue("limit", limit).addValue("offset", offset);
         String filter = sql.scope(scope, p);
         var rows = sql.named.query("SELECT d.*,v.ingestion_status,v.active_processing_revision" + JOIN + "WHERE d.deleted=FALSE AND " + filter + " ORDER BY d.id LIMIT :limit OFFSET :offset", p, SqlSupport::document);
         // 受限结果被过滤，因此页内可能少于 limit；不能为了补足无界循环查询。
-        return rows.stream().filter(d -> allowedSources(scope, d.id(), d.documentVersion())).toList();
+        var result = rows.stream().filter(d -> allowedSources(scope, d.id(), d.documentVersion())).toList();
+        sql.audit(scope, "LIST_DOCUMENTS", null, result.size(), result.stream().map(DocumentSnapshot::id).toList());
+        return result;
     }
 
     /**
      * 查询源文与来源递归复核，失败不返回正文。
      */
+    // 读取无业务状态写入，权限拒绝可被上层候选过滤；不把合法候选的整批事务标成rollback-only。
+    @Transactional(noRollbackFor = LabException.class)
     public DocumentContent read(AuthorizedKnowledgeScope scope, long id) {
+        sql.actor(scope.actor(), true);
         var p = new MapSqlParameterSource().addValue("id", id);
         String filter = sql.scope(scope, p);
         var docs = sql.named.query("SELECT d.*,v.ingestion_status,v.active_processing_revision" + JOIN + "WHERE d.id=:id AND d.deleted=FALSE AND " + filter, p, SqlSupport::document);
@@ -86,8 +93,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
         var sources = dependencies(id, doc.documentVersion());
         verifySources(scope, sources);
         String text = sql.jdbc.queryForObject("SELECT raw_text FROM document_versions WHERE document_id=? AND document_version=?", String.class, id, doc.documentVersion());
-        if (scope.actor().role() == UserContext.Role.ADMIN)
-            sql.jdbc.update("INSERT INTO knowledge_access_audit(actor_user_id,action,resource_id) VALUES(?,'READ_DOCUMENT',?)", scope.actor().userId(), id);
+        sql.audit(scope, "READ_DOCUMENT", id, 1);
         return new DocumentContent(doc, text, sources);
     }
 
@@ -126,12 +132,16 @@ public class DocumentSqlRepository implements DocumentStorePort {
     /**
      * 统计使用与资料读取相同的范围，排除衍生来源当前不可读的文档。
      */
+    @Transactional
     public KnowledgeStatistics statistics(AuthorizedKnowledgeScope scope) {
+        sql.actor(scope.actor(), true);
         var p = new MapSqlParameterSource();
         String filter = sql.scope(scope, p);
         // 所有来源在保存时已扁平化，SQL 按当前用户角色／来源库状态复核。
         String safe = " NOT EXISTS (SELECT 1 FROM source_dependencies s JOIN documents sd ON sd.id=s.source_document_id JOIN knowledge_bases sk ON sk.id=s.source_base_id WHERE s.document_id=d.id AND s.document_version=d.current_version AND (sd.deleted=TRUE OR sk.deleted=TRUE OR sk.enabled=FALSE" + (scope.actor().role() == UserContext.Role.ADMIN ? "" : " OR sk.owner_user_id<>:actor") + "))";
-        return sql.named.queryForObject("SELECT COUNT(*) total,COALESCE(SUM(v.ingestion_status='RECEIVED'),0) received,COALESCE(SUM(v.ingestion_status='READY'),0) ready" + JOIN + "WHERE d.deleted=FALSE AND " + filter + " AND " + safe, p, (r, n) -> new KnowledgeStatistics(r.getLong("total"), r.getLong("received"), r.getLong("ready")));
+        var result = sql.named.queryForObject("SELECT COUNT(*) total,COALESCE(SUM(v.ingestion_status='RECEIVED'),0) received,COALESCE(SUM(v.ingestion_status='READY'),0) ready" + JOIN + "WHERE d.deleted=FALSE AND " + filter + " AND " + safe, p, (r, n) -> new KnowledgeStatistics(r.getLong("total"), r.getLong("received"), r.getLong("ready")));
+        sql.audit(scope, "STATISTICS", null, 1);
+        return result;
     }
 
     /**

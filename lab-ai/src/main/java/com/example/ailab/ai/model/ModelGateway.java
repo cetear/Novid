@@ -49,6 +49,10 @@ public class ModelGateway {
     private final ConcurrentHashMap<String, Semaphore> targetConcurrency = new ConcurrentHashMap<>();
     private final Semaphore concurrency = new Semaphore(4);
     private static final ObjectMapper JSON = new ObjectMapper();
+    private FeeAccounting fees;
+    /** 正式Spring装配强制可靠账本；旧显式协议构造未装配时仅用于分层测试。 */
+    @org.springframework.beans.factory.annotation.Autowired
+    public void accounting(FeeAccounting fees) { this.fees = fees; }
 
     /**
      * 只通过受控 Registry 获取实际目标。
@@ -149,6 +153,8 @@ public class ModelGateway {
                 String outcome = "MODEL_INVALID_OUTPUT";
                 var raw = new java.util.concurrent.atomic.AtomicReference<String>();
                 com.example.ailab.contract.context.TraceContext.Span modelSpan = null;
+                FeeReservation fee = null;
+                boolean feeSending = false;
                 try {
                     // 结构指令也计入目标窗口；重装时增加同等预留，不截系统规则和当前问题。
                     var target = schema == null ? d : withReservedSchema(d, schema, correction);
@@ -164,7 +170,10 @@ public class ModelGateway {
                     if (!global) throw new LabException("RATE_LIMITED", "模型并发已满");
                     local = semaphore.tryAcquire();
                     if (!local) throw new LabException("RATE_LIMITED", "目标模型并发已满");
+                    // 金额和词元预留先于持久执行权消费；执行权失败只释放尚未发送的意图。
+                    if (fees != null) fee = fees.reserve(budget,id,"CHAT",reserved,d.outputLimit(),d.priceRef(),registry.mock());
                     budget.attempt();
+                    if (fee != null) { fees.sending(fee); feeSending = true; }
                     attempts++; sent = true;
                     // 额度可靠消费成功之后才登记实际尝试，每次失败、修复和备用各一叶节点。
                     modelSpan=budget.trace().span("MODEL","chat");
@@ -236,6 +245,11 @@ public class ModelGateway {
                     }
                     DeadlineHttpClient.CURRENT.remove(); health.release(permit);
                     if (local) semaphore.release(); if (global) concurrency.release();
+                    // 先释放运行资源再可靠结算；结算故障不引发第二次远程请求。
+                    if (fee != null) {
+                        if (feeSending) fees.complete(fee,inputUsage,outputUsage,outcome);
+                        else fees.release(fee);
+                    }
                 }
             }
         }
@@ -298,8 +312,14 @@ public class ModelGateway {
         if (!concurrency.tryAcquire()) throw new LabException("RATE_LIMITED", "模型并发已满");
         com.example.ailab.contract.context.TraceContext.Span embeddingSpan=null;
         Integer used=null;
+        FeeReservation fee=null;
+        boolean feeSending=false;
+        String outcome="MODEL_INVALID_OUTPUT";
+        var raw=new java.util.concurrent.atomic.AtomicReference<String>();
         try {
+            if (fees != null) fee=fees.reserve(budget,id,"EMBEDDING",texts.stream().mapToLong(this::bytes).sum(),0,d.priceRef(),registry.mock());
             budget.attempt();
+            if (fee != null) { fees.sending(fee); feeSending=true; }
             embeddingSpan=budget.trace().span("EMBEDDING","embed");
             if (registry.mock()) {
                 var vectors = new ArrayList<List<Float>>();
@@ -313,14 +333,17 @@ public class ModelGateway {
                     for (float v : vector) result.add(norm == 0 ? 0 : (float) (v / norm));
                     vectors.add(List.copyOf(result));
                 }
+                outcome="SUCCESS";
                 return new Vectors(List.copyOf(vectors), d.modelName(), true);
             }
-            DeadlineHttpClient.CURRENT.set(new DeadlineHttpClient.Scope(budget, d.timeoutSeconds(), new java.util.concurrent.atomic.AtomicReference<>()));
+            DeadlineHttpClient.CURRENT.set(new DeadlineHttpClient.Scope(budget, d.timeoutSeconds(), raw));
             var model = embeddingClients.computeIfAbsent(id, key -> OpenAiEmbeddingModel.builder().baseUrl(d.endpoint())
                     .apiKey(registry.credential(key)).modelName(d.modelName()).dimensions(d.dimensions())
                     .httpClientBuilder(new DeadlineHttpClient.Builder(transport)).maxRetries(0).maxSegmentsPerBatch(32)
                     .logRequests(false).logResponses(false).build());
             var result = model.embedAll(texts.stream().map(TextSegment::from).toList());
+            // 即便向量结构错误，已获提供方用量仍须保存，不能被结果校验覆盖。
+            used=result.tokenUsage()==null?null:result.tokenUsage().inputTokenCount();
             var vectors = result.content().stream().map(e -> {
                 var values = new ArrayList<Float>();
                 for (float v : e.vector()) values.add(v);
@@ -328,21 +351,28 @@ public class ModelGateway {
             }).toList();
             if (vectors.size() != texts.size())
                 throw new LabException("MODEL_INVALID_OUTPUT", "Embedding 返回数量不符");
-            used=result.tokenUsage()==null?null:result.tokenUsage().inputTokenCount();
+            outcome="SUCCESS";
             return new Vectors(vectors, d.modelName(), false, used);
         } catch (LabException e) {
+            outcome=e.code();
             if(embeddingSpan!=null) embeddingSpan.fail(e);
             throw e;
         } catch (RuntimeException e) {
+            outcome=classify(e);
             if(embeddingSpan!=null) embeddingSpan.fail(new LabException(classify(e),"嵌入失败"));
             throw new LabException(classify(e), "Embedding 调用失败");
         } finally {
+            if(used==null && raw.get()!=null) used=rawUsage(raw.get(),"prompt_tokens");
             if(embeddingSpan!=null) {
                 embeddingSpan.model(id,"EMBEDDING","embedding",registry.configuration().routing().policyVersion(),"SINGLE_VECTOR_SPACE",budget.attempts(),used,null,registry.mock()?"SIMULATED":used==null?"UNKNOWN":"PROVIDER");
                 embeddingSpan.close();
             }
             DeadlineHttpClient.CURRENT.remove();
             concurrency.release();
+            if(fee!=null) {
+                if(feeSending) fees.complete(fee,used,0,outcome);
+                else fees.release(fee);
+            }
         }
     }
 

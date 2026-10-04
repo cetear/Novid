@@ -133,8 +133,47 @@ public class SqlSupport {
         jdbc.update("INSERT INTO outbox_events(event_type,resource_id,resource_version) VALUES(?,?,?)", type, id, version);
     }
 
+    /** 全局知识纪元覆盖库／内容更新与处理激活；缓存不自行相信TTL。 */
+    public long knowledgeEpoch() {
+        return jdbc.queryForObject("SELECT knowledge_epoch FROM system_control WHERE id=1", Long.class);
+    }
+
+    /** SELF／SELECTED至多一百库的版本摘要；ALL使用全局纪元，避免枚举无限范围。 */
+    public String cacheScopeState(AuthorizedKnowledgeScope scope) {
+        var parameters = new MapSqlParameterSource();
+        String filter = scope(scope, parameters);
+        if (scope.mode() == ScopeRequest.Mode.ALL) return "ALL_EPOCH";
+        var versions = named.query("SELECT k.id,k.version FROM knowledge_bases k WHERE " + filter + " ORDER BY k.id LIMIT 101",
+                parameters, (r, n) -> r.getLong(1) + ":" + r.getLong(2));
+        if (versions.size() > 100) throw LabException.invalid("缓存知识范围超限");
+        return hash(versions.toString());
+    }
+
+    /** 可靠审计同步写入，失败拒绝跨库结果；不复用可丢观测队列或保存查询文本。 */
+    public void audit(AuthorizedKnowledgeScope scope, String action, Long id, int count) {
+        audit(scope, action, id, count, id == null ? List.of() : List.of(id));
+    }
+
+    /** 对象ID和完整筛选是可审计元数据，限一百项；不保存查询文本、向量、标题或正文。 */
+    public void audit(AuthorizedKnowledgeScope scope, String action, Long id, int count, List<Long> resourceIds) {
+        if (scope.actor().role() != UserContext.Role.ADMIN) return;
+        actor(scope.actor(), false);
+        if (resourceIds.size() > 100 || resourceIds.stream().anyMatch(value -> value == null || value <= 0))
+            throw LabException.invalid("审计对象集合超限");
+        // 列表元素仅为服务器验证过的正整数，固定JSON字段不接受任意用户表达式。
+        String selection = "{\"knowledgeBaseIds\":" + scope.knowledgeBaseIds()
+                + ",\"ownerUserId\":" + scope.ownerUserId() + "}";
+        try {
+            jdbc.update("INSERT INTO knowledge_access_audit(actor_user_id,action,resource_id,scope_mode,permission_version,knowledge_epoch,result_count,outcome,scope_json,resource_ids_json) VALUES(?,?,?,?,?,?,?,'DELIVERABLE',?,?)",
+                    scope.actor().userId(), action, id, scope.mode().name(), scope.actor().permissionVersion(), knowledgeEpoch(), count,
+                    selection, resourceIds.stream().distinct().sorted().toList().toString());
+        } catch (org.springframework.dao.DataAccessException unavailable) {
+            throw new LabException("ACCESS_AUDIT_UNAVAILABLE", "访问审计暂不可用，结果未交付");
+        }
+    }
+
     /**
-     * 资料更新使 ALL 缓存 epoch 单调增加，当前尚未启用答案缓存。
+     * 资料更新使 ALL 缓存 epoch 单调增加，检索候选缓存按新纪元失效，正文仍实时复核。
      */
     public void changed() {
         jdbc.update("UPDATE system_control SET knowledge_epoch=knowledge_epoch+1 WHERE id=1");

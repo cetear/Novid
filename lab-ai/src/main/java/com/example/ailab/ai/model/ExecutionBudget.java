@@ -19,6 +19,14 @@ public final class ExecutionBudget {
     private com.example.ailab.contract.context.TraceContext rootTrace = com.example.ailab.contract.context.TraceContext.disabled("none");
     private final ThreadLocal<com.example.ailab.contract.context.TraceContext> activeTrace = new ThreadLocal<>();
     private final ThreadLocal<String> lastModelNode = new ThreadLocal<>();
+    private com.example.ailab.contract.dto.FeeScope feeScope;
+    /** 费用关联独立于可丢追踪；同一预算的并行角色共享持久scope，不可重新绑定清零。 */
+    public synchronized ExecutionBudget fees(com.example.ailab.contract.dto.FeeScope scope) {
+        if (feeScope != null && !feeScope.equals(scope)) throw new IllegalStateException("不能更改费用归属");
+        feeScope = java.util.Objects.requireNonNull(scope); return this;
+    }
+    /** 提供服务端绑定的身份和稳定资源；模型输出和HTTP字段不能覆盖。 */
+    public synchronized com.example.ailab.contract.dto.FeeScope feeScope() { return feeScope; }
     /** 工具申请关联本工作线程刚完成的实际模型节点，不混淆并行角色。 */
     public void lastModelNode(String id) { lastModelNode.set(id); }
     /** 没有模型节点时不补造调用；截断节点标识由图显示缺失。 */

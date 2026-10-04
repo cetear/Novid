@@ -28,6 +28,8 @@ public class ApiExceptionHandler {
             case "ACCESS_DENIED", "PASSWORD_CHANGE_REQUIRED" -> 403;
             case "APPROVAL_CONFLICT", "OPERATION_CONFLICT", "STALE_EXECUTION", "INDEX_NOT_READY", "SESSION_CONFLICT", "CONTEXT_VERSION_CONFLICT", "INGESTION_PLAN_CONFLICT", "INGESTION_RECOVERY_CONFLICT", "EMBEDDING_RESULT_UNKNOWN", "INGESTION_BUDGET_EXCEEDED" -> 409;
             case "APPROVAL_EXPIRED" -> 410;
+            case "FEE_CONFLICT", "FEE_SCOPE_REQUIRED", "FEE_PRICE_UNAVAILABLE", "BUDGET_EXCEEDED" -> 409;
+            case "FEE_LEDGER_UNAVAILABLE", "ACCESS_AUDIT_UNAVAILABLE" -> 503;
             case "RATE_LIMITED", "MODEL_RATE_LIMITED" -> 429;
             case "MODEL_CONFIGURATION_ERROR" -> 503;
             case "MODEL_TIMEOUT" -> 504;
@@ -36,7 +38,7 @@ public class ApiExceptionHandler {
             default -> 400;
         };
         // 配置错误需要运维修正；不能以503类别授权前端重复付费生成。
-        return ResponseEntity.status(status).body(new Error(e.code(), e.getMessage(), !e.code().equals("MODEL_CONFIGURATION_ERROR") && (status == 429 || status == 503 || status == 504)));
+        return ResponseEntity.status(status).body(new Error(e.code(), e.getMessage(), !java.util.Set.of("MODEL_CONFIGURATION_ERROR", "FEE_LEDGER_UNAVAILABLE", "ACCESS_AUDIT_UNAVAILABLE").contains(e.code()) && (status == 429 || status == 503 || status == 504)));
     }
 
     /**

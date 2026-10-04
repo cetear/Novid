@@ -1,6 +1,7 @@
 "use strict";
 // 登录凭证仅保留内存，禁止存入URL、localStorage或图数据。
 let token = null;
+let detailGeneration = 0;
 const byId = id => document.getElementById(id);
 // 所有服务器数据通过textContent展示，不让正文或标识成为HTML／图语法。
 function text(tag, value) { const node = document.createElement(tag); node.textContent = value; return node; }
@@ -22,11 +23,22 @@ async function refresh() {
 }
 // 显示实际节点时间线，模型用量只显示叶节点，未知值不填零。
 async function show(id) {
+  // 费用查询会异步等待；退出／换账号或选择另一运行后，旧响应不得重新写回私人详情。
+  const requestedToken = token, generation = ++detailGeneration;
+  const current = () => token === requestedToken && generation === detailGeneration;
   byId("detail").replaceChildren(); byId("nodes").replaceChildren(); byId("graph").replaceChildren();
   try {
     const g = await api("/api/v1/runs/" + encodeURIComponent(id) + "/graph");
+    if (!current()) return;
     byId("detail").append(text("h2", "运行 " + g.run.traceId), text("p", g.incomplete ? "链路不完整（写入中、丢失、截断或旧摘要）。" : "本次记录完整。"));
-    byId("detail").append(text("p", "任务：" + (g.run.taskId ?? "无") + "；会话：" + (g.run.sessionId ?? "无") + "；费用：" + g.costStatus + "；服务器首次放行：" + (g.run.firstDeliverableAt ?? "未知")));
+    byId("detail").append(text("p", "任务：" + (g.run.taskId ?? "无") + "；会话：" + (g.run.sessionId ?? "无") + "；服务器首次放行：" + (g.run.firstDeliverableAt ?? "未知")));
+    // 可靠费用单独查询，图不完整不推断免费；费用失败也不能阻断图显示。
+    try {
+      const fees = await api("/api/v1/runs/" + encodeURIComponent(id) + "/fees");
+      if (!current()) return;
+      byId("detail").append(text("p", "费用状态：" + fees.costStatus + "；已定价估算小计：" + fees.estimatedAmount + " " + (fees.currency ?? "币种未知") + "；保留预留小计：" + fees.reservedAmount + "；未知尝试：" + fees.unknownAttempts + "；待结算：" + fees.pendingAttempts + "。小计不包含未知金额，也不是供应商账单。"));
+    } catch (error) { if (!current()) return; byId("detail").append(text("p", "费用记录暂不可读：" + error.message)); }
+    if (!current()) return;
     if (g.run.previousTraceId) { const button = text("button", "查看上次执行"); button.onclick = () => show(g.run.previousTraceId); byId("detail").append(button); }
     const start = Date.parse(g.run.createdAt); const total = Math.max(1, Date.parse(g.run.endedAt ?? new Date().toISOString()) - start);
     for (const node of g.nodes) {
@@ -42,7 +54,7 @@ async function show(id) {
       article.append(details); byId("nodes").append(article);
     }
     draw(g);
-  } catch (error) { byId("message").textContent = error.message; }
+  } catch (error) { if (current()) byId("message").textContent = error.message; }
 }
 // 节点坐标来自服务器序号，边仅引用实际节点ID；CALL与DEPENDENCY用不同颜色。
 function draw(g) {

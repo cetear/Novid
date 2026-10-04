@@ -77,7 +77,8 @@ public class AiGateway implements AiGatewayPort {
             request = new AiRequest(request.question(), sessions.read(actor, request.sessionId()).scope(), request.sessionId(), request.sessionVersion(), request.modelProfile(), request.responseFormat(), request.toolMode());
         knowledge.authorize(actor, request.scope());
         String trace = UUID.randomUUID().toString();
-        var budget = new ExecutionBudget(Duration.ofSeconds(60), 10, () -> {}, () -> {}, cancellation::check);
+        var budget = new ExecutionBudget(Duration.ofSeconds(60), 10, () -> {}, () -> {}, cancellation::check)
+                .fees(new FeeScope(actor,"RUN",trace,trace));
         var observation=telemetry.open(trace,actor.userId(),request.sessionId(),null,null);
         var root=observation.span("REQUEST","chat");
         budget.traced(root.context());

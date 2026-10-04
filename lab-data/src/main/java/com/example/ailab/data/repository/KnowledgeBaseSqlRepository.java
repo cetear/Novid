@@ -47,11 +47,14 @@ public class KnowledgeBaseSqlRepository implements KnowledgeBaseRepository {
     /**
      * ALL 使用过滤条件，不枚举全量 ID。
      */
+    @Transactional
     public List<KnowledgeBaseSnapshot> list(AuthorizedKnowledgeScope scope, int offset, int limit) {
+        sql.actor(scope.actor(), true);
         var p = new MapSqlParameterSource().addValue("offset", offset).addValue("limit", limit);
         String filter = sql.scope(scope, p);
-        audit(scope.actor(), "LIST_BASES", null);
-        return sql.named.query("SELECT k.* FROM knowledge_bases k WHERE " + filter + " ORDER BY k.id LIMIT :limit OFFSET :offset", p, SqlSupport::base);
+        var result = sql.named.query("SELECT k.* FROM knowledge_bases k WHERE " + filter + " ORDER BY k.id LIMIT :limit OFFSET :offset", p, SqlSupport::base);
+        sql.audit(scope, "LIST_BASES", null, result.size(), result.stream().map(KnowledgeBaseSnapshot::id).toList());
+        return result;
     }
 
     /**
@@ -78,11 +81,14 @@ public class KnowledgeBaseSqlRepository implements KnowledgeBaseRepository {
         sql.changed();
     }
 
-    /**
-     * 管理员读取范围记录元数据，不记录原文。
-     */
-    private void audit(UserContext actor, String action, Long id) {
-        if (actor.role() == UserContext.Role.ADMIN)
-            sql.jdbc.update("INSERT INTO knowledge_access_audit(actor_user_id,action,resource_id) VALUES(?,?,?)", actor.userId(), action, id);
+    /** 已由业务判断的本人／管理员元数据读取，事务内再次核验并可靠审计。 */
+    @Transactional
+    public KnowledgeBaseSnapshot read(UserContext actor, long id) {
+        sql.actor(actor, true);
+        var base = find(id).orElseThrow(LabException::denied);
+        if (base.deleted() || base.ownerUserId() != actor.userId()
+                && (actor.role() != UserContext.Role.ADMIN || !base.enabled())) throw LabException.denied();
+        sql.audit(new AuthorizedKnowledgeScope(actor, ScopeRequest.Mode.SELECTED, List.of(id), null, java.time.Instant.now()), "READ_BASE", id, 1);
+        return base;
     }
 }
