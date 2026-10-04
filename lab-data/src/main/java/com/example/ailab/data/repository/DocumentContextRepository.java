@@ -31,7 +31,8 @@ public class DocumentContextRepository implements DocumentContextPort {
     /** 目录只返回当前激活代次，短锁与权限撤销／内容修订采用同一顺序。 */
     @Transactional
     public List<SectionSnapshot> sections(AuthorizedKnowledgeScope scope, long id, int offset, int limit) {
-        sql.actor(scope.actor(), true); var d = docs.read(scope, id).document(); ready(d);
+        sql.actor(scope.actor(), true); var d = docs.read(scope, id).document();
+        ready(d);
         return sql.jdbc.query("SELECT * FROM document_sections WHERE document_id=? AND document_version=? AND processing_revision=? ORDER BY ordinal LIMIT ? OFFSET ?", this::section, id, d.documentVersion(), d.activeProcessingRevision(), limit, offset);
     }
     /** 小片只返回当前版本，与原文位置一起交付；旧批次无映射仍保持 LEGACY。 */
@@ -61,8 +62,20 @@ public class DocumentContextRepository implements DocumentContextPort {
     @Transactional
     public IngestionMetadata ingestion(AuthorizedKnowledgeScope scope, long id) {
         sql.actor(scope.actor(), true); var d = docs.read(scope, id).document();
+        // 累计执行事实属于本人管理状态，管理员跨库正文读取权不扩大到这些记录。
+        if(d.ownerUserId()!=scope.actor().userId()) throw LabException.denied();
         return sql.jdbc.query("SELECT * FROM document_ingestions WHERE document_id=? AND document_version=? ORDER BY processing_revision DESC LIMIT 1", (r,n) ->
-                new IngestionMetadata(id,d.documentVersion(),d.activeProcessingRevision(),r.getLong("id"),r.getLong("processing_revision"),r.getString("status"),r.getString("error_code"),r.getInt("expected_chunk_count"),r.getString("config_hash"),r.getString("parser_version"),r.getString("split_policy_version"),r.getString("mapping_version"),r.getString("tokenizer_ref"),r.getString("count_source")),id,d.documentVersion()).stream().findFirst().orElseThrow(() -> new LabException("INDEX_NOT_READY", "没有入库意图"));
+                new IngestionMetadata(id,d.documentVersion(),d.activeProcessingRevision(),r.getLong("id"),r.getLong("processing_revision"),r.getString("status"),r.getString("error_code"),r.getInt("expected_chunk_count"),r.getString("config_hash"),r.getString("parser_version"),r.getString("split_policy_version"),r.getString("mapping_version"),r.getString("tokenizer_ref"),r.getString("count_source"),progress(r)),id,d.documentVersion()).stream().findFirst().orElseThrow(() -> new LabException("INDEX_NOT_READY", "没有入库意图"));
+    }
+    /** 有界聚合只返回计数，旧批次没有事实时保留零计数与空期限。 */
+    private IngestionProgress progress(java.sql.ResultSet r) throws java.sql.SQLException {
+        long id=r.getLong("id");
+        var counts=sql.jdbc.queryForMap("SELECT COUNT(*) planned,COALESCE(SUM(state IN ('EMBEDDED','INDEXED')),0) embedded,COALESCE(SUM(state='INDEXED'),0) indexed,COALESCE(SUM(state IN ('SENDING','UNKNOWN')),0) unknown_count FROM ingestion_batches WHERE ingestion_id=?",id);
+        var deadline=r.getTimestamp("execution_deadline");var next=r.getTimestamp("next_attempt_at");
+        boolean retry="FAILED".equals(r.getString("status")) && r.getBoolean("retryable") && r.getInt("attempt")<3
+                && deadline!=null && deadline.toInstant().isAfter(java.time.Instant.now()) && ((Number)counts.get("unknown_count")).intValue()==0;
+        return new IngestionProgress(deadline==null && "READY".equals(r.getString("status"))?"LEGACY":r.getString("phase"),r.getString("failure_stage"),r.getInt("attempt"),r.getInt("model_attempts"),r.getLong("reserved_input_tokens"),r.getLong("actual_input_tokens"),r.getInt("unknown_usage_attempts"),deadline==null?null:deadline.toInstant(),next==null?null:next.toInstant(),retry,
+                ((Number)counts.get("planned")).intValue(),((Number)counts.get("embedded")).intValue(),((Number)counts.get("indexed")).intValue(),((Number)counts.get("unknown_count")).intValue(),r.getInt("peak_vector_items"));
     }
     /** 覆盖读取每次在下一个目录标题处截页；绝对游标单调推进，根与子章节不会重复读。 */
     @Transactional

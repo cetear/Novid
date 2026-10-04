@@ -82,7 +82,8 @@ lab:
         model-name: ${MODEL_PRIMARY_NAME:mock-primary}
         credential-ref: MODEL_API_KEY
         enabled: true
-        capabilities: [CHAT]
+        # STRUCTURED_OUTPUT采用JSON对象协议与本地Schema校验；不冒称原生JSON_SCHEMA已验证。
+        capabilities: [CHAT, STRUCTURED_OUTPUT]
         quality-tags: [configured-baseline]
         data-classifications: [PRIVATE]
         context-window: 16000
@@ -94,7 +95,7 @@ lab:
         model-name: ${MODEL_BACKUP_NAME:mock-backup}
         credential-ref: MODEL_BACKUP_API_KEY
         enabled: ${MODEL_BACKUP_ENABLED:true}
-        capabilities: [CHAT]
+        capabilities: [CHAT, STRUCTURED_OUTPUT]
         quality-tags: [configured-baseline]
         data-classifications: [PRIVATE]
         context-window: 16000
@@ -140,10 +141,18 @@ lab:
         quality-tags: [configured-baseline]
         allow-fallback: false
     routing:
-      policy-version: routing-v1
+      policy-version: routing-s04-v2
+      quality-version: configured-baseline-unverified-v1
+      selectable-profiles: [knowledge, economy, analysis, report]
+      # EXACT只开放服务端可信入口，普通HTTP不接受modelId。
+      exact-model-ids: [primary, backup]
       task-profiles:
         KNOWLEDGE_QA: knowledge
         EMBEDDING: embedding
         SIMPLE_SUMMARY: economy
         DATA_ANALYSIS: analysis
         REPORT: report
+    failover:
+      max-attempts-per-logical-call: 3
+      failure-threshold: 3
+      cooldown-seconds: 30

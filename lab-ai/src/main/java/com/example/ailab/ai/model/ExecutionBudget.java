@@ -13,7 +13,8 @@ public final class ExecutionBudget {
     private final Runnable journal;
     private final Runnable turnJournal;
     private final Runnable cancellationCheck;
-    private int attempts, turns, tools;
+    private int attempts, turns, tools, repairs;
+    private final java.util.List<com.example.ailab.contract.dto.ModelRoute.Attempt> observed = new java.util.ArrayList<>();
 
     /**
      * 为在线请求或有限后台入库创建独立预算。
@@ -95,6 +96,24 @@ public final class ExecutionBudget {
      */
     public synchronized int attempts() {
         return attempts;
+    }
+
+    /** 全请求最多一次结构修复；修复还需另消耗逻辑轮与真实尝试，不重建期限。 */
+    public synchronized void repair() {
+        check();
+        if (repairs >= 1) throw new LabException("MODEL_REPAIR_EXHAUSTED", "结构化修复额度耗尽");
+        repairs++;
+    }
+    /** 运行期间保留所有聊天失败／修复用量，后续持久追踪可读取；不依赖可丢trace。 */
+    public synchronized void observe(com.example.ailab.contract.dto.ModelRoute.Attempt attempt) { observed.add(attempt); }
+    /** 失败请求也可读取用量来源，未知不得当免费；当前尚未持久保存这些快照。 */
+    public synchronized java.util.List<com.example.ailab.contract.dto.ModelRoute.Attempt> observedAttempts() { return java.util.List.copyOf(observed); }
+    /** 字段校验晚于提供方响应，保留已知用量但更正最后一次结果。 */
+    public synchronized void invalidStructure() {
+        if (observed.isEmpty()) return;
+        var a = observed.remove(observed.size()-1);
+        observed.add(new com.example.ailab.contract.dto.ModelRoute.Attempt(a.modelId(), "MODEL_STRUCTURED_INVALID", a.reservedInputTokens(),
+                a.countSource(), a.inputTokens(), a.outputTokens(), a.usageSource(), a.priceRef()));
     }
 
     /** 将同一在线截止时间传给短提交，等待数据库锁不能延长模型步骤预算。 */

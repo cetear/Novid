@@ -24,6 +24,12 @@ public interface KnowledgeIndexPort {
      */
     void verify(List<IndexedChunk> chunks);
 
+    /** 返回搜索路径中与预期身份、版本、摘要和向量空间相符的 ID，单次最多32项。 */
+    Set<String> present(List<IndexedChunk> chunks);
+
+    /** 最终核对固定文档版本／代次的全集数量，拒绝额外项和分片失败。 */
+    void verifyGeneration(long documentId, int version, long revision, int expected);
+
     /**
      * 删除至多 256 项；确认目标范围内零剩余时才返回 true。
      */

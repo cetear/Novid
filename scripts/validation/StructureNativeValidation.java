@@ -87,7 +87,7 @@ public final class StructureNativeValidation {
             });
             check("http_user_isolation_and_admin_cross_library_read",()->{
                 expect(403,request("GET",detail(longId,0),userToken,null,null));expect(403,request("GET","/documents/"+longId+"/ingestion",userToken,null,null));
-                expect(200,request("GET",detail(longId,0),adminToken,null,null));expect(200,request("GET","/documents/"+longId+"/ingestion",adminToken,null,null));
+                expect(200,request("GET",detail(longId,0),adminToken,null,null));expect(403,request("GET","/documents/"+longId+"/ingestion",adminToken,null,null));
             });
             check("http_stale_revision_and_bad_unicode_cursor_refused",()->{
                 String path=detail(longId,0).replace("processingRevision=1","processingRevision=99");require(code(request("GET",path,ownerToken,null,null)).equals("CONTEXT_VERSION_CONFLICT"),"old revision not rejected");
@@ -430,6 +430,8 @@ public final class StructureNativeValidation {
                     named.update("DELETE FROM ai_tasks WHERE requester_user_id IN (:users)",users);
                     for (long id : DOCUMENTS) {
                         Map<String,Object> docs=Map.of("id",id);
+                        // S03新增向量和attempt外键，先精确清本次文档的批次事实，不能删除原有用户资料。
+                        for(String table:List.of("ingestion_model_attempts","ingestion_batches")) named.update("DELETE FROM "+table+" WHERE ingestion_id IN (SELECT id FROM document_ingestions WHERE document_id=:id)",docs);
                         for (String table : List.of("source_dependencies","chunks","context_parents","document_sections","document_ingestions","document_versions")) named.update("DELETE FROM " + table + " WHERE document_id=:id",docs);
                         named.update("DELETE FROM outbox_events WHERE event_type IN ('INGEST_DOCUMENT','DELETE_DOCUMENT','PRUNE_DOCUMENT') AND resource_id=:id",docs);
                     }

@@ -150,15 +150,21 @@ public class KnowledgeController {
     }
 
     /**
-     * 仅支持受控 reprocess；不接受客户端切片配置。
+     * 支持新代次 retry/reprocess 或指定失败代次 recover；客户端不能重置预算。
      */
     @PostMapping("/documents/{id}/index-actions")
-    public void reprocess(Authentication a, @PathVariable long id, @RequestParam String action) {
-        if (!action.equals("reprocess") && !action.equals("retry"))
-            throw LabException.invalid("仅支持 retry/reprocess");
+    public void reprocess(Authentication a, @PathVariable long id, @RequestParam String action, @RequestParam(required=false) Long processingRevision) {
+        if (!action.equals("reprocess") && !action.equals("retry") && !action.equals("recover"))
+            throw LabException.invalid("仅支持 retry/reprocess/recover");
         var u = CurrentUser.from(a);
         capability.authorize(u, ScopeRequest.self());
-        ingestion.reprocess(u, id);
+        if(action.equals("recover")) {
+            if(processingRevision==null || processingRevision<=0) throw LabException.invalid("recover必须指定正数processingRevision");
+            ingestion.recover(u,id,processingRevision);
+        } else {
+            if(processingRevision!=null) throw LabException.invalid("新处理代次不接收processingRevision");
+            ingestion.reprocess(u, id);
+        }
     }
 
     /**

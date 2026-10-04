@@ -282,6 +282,8 @@ public class BackendValidation {
             for(String table:List.of("auth_tokens","profile_memories"))named.update("DELETE FROM "+table+" WHERE user_id IN (:users)",parameters);
             if(!ids.isEmpty()){
                 var docs=Map.<String,Object>of("ids",ids);
+                // S03批次事实须先按本次文档集合清理，防止外键失败留下合成资料。
+                for(String table:List.of("ingestion_model_attempts","ingestion_batches"))named.update("DELETE FROM "+table+" WHERE ingestion_id IN (SELECT id FROM document_ingestions WHERE document_id IN (:ids))",docs);
                 for(String table:List.of("source_dependencies","chunks","context_parents","document_sections","document_ingestions","document_versions"))named.update("DELETE FROM "+table+" WHERE document_id IN (:ids)",docs);
                 named.update("DELETE FROM outbox_events WHERE event_type IN ('INGEST_DOCUMENT','DELETE_DOCUMENT','PRUNE_DOCUMENT') AND resource_id IN (:ids)",docs);
             }

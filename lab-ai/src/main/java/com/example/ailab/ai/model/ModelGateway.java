@@ -12,6 +12,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
 import dev.langchain4j.model.output.FinishReason;
+import com.example.ailab.contract.dto.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.langchain4j.model.chat.request.*;
+import java.time.Clock;
 
 /**
  * 所有 chat 与 embedding 唯一入口；SDK 自动重试明确关闭。
@@ -19,7 +23,11 @@ import dev.langchain4j.model.output.FinishReason;
 @Component
 public class ModelGateway {
     public record Turn(String text, String modelId, Integer inputTokens, Integer outputTokens, boolean mock,
-                       String finishReason) {
+                       String finishReason, AiMessage rawMessage, ModelRoute route, List<EvidenceBundle> evidence) {
+        /** 旧六参数构造仍可用于测试，不伪造路由和用量事实。 */
+        public Turn(String text, String modelId, Integer inputTokens, Integer outputTokens, boolean mock, String finishReason) {
+            this(text, modelId, inputTokens, outputTokens, mock, finishReason, null, null, List.of());
+        }
         /**
          * Mock 调用兼容构造，真实结果使用 SDK 提供的结束原因。
          */
@@ -28,21 +36,31 @@ public class ModelGateway {
         }
     }
 
-    public record Vectors(List<List<Float>> vectors, String modelVersion, boolean mock) {
-    }
-
-    private record Health(int failures, long retryAfter) {
+    public record Vectors(List<List<Float>> vectors, String modelVersion, boolean mock, Integer inputTokens) {
+        /** 旧模拟构造兼容，未知用量必须为空。 */
+        public Vectors(List<List<Float>> vectors, String modelVersion, boolean mock) { this(vectors,modelVersion,mock,null); }
     }
 
     private final ModelRegistry registry;
-    private final ConcurrentHashMap<String, Health> health = new ConcurrentHashMap<>();
+    private final ModelHealthTracker health;
+    private final DeadlineHttpClient transport = new DeadlineHttpClient();
+    private final ConcurrentHashMap<String, OpenAiChatModel> chatClients = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, OpenAiEmbeddingModel> embeddingClients = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Semaphore> targetConcurrency = new ConcurrentHashMap<>();
     private final Semaphore concurrency = new Semaphore(4);
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     /**
      * 只通过受控 Registry 获取实际目标。
      */
+    @org.springframework.beans.factory.annotation.Autowired
     public ModelGateway(ModelRegistry registry) {
+        this(registry, Clock.systemUTC());
+    }
+    /** 固定时钟只供确定性健康测试，不启动后台探测。 */
+    public ModelGateway(ModelRegistry registry, Clock clock) {
         this.registry = registry;
+        this.health = new ModelHealthTracker(registry.configuration().failover(), clock);
     }
 
     /**
@@ -54,62 +72,190 @@ public class ModelGateway {
 
     /** 历史以 SDK 消息进入同一模型入口；摘要、主备与回答共享调用方的预算。 */
     public Turn chat(String task, String system, List<ChatMessage> history, String prompt, ExecutionBudget budget) {
-        var messages = new ArrayList<ChatMessage>();
-        messages.add(SystemMessage.from(system));
-        messages.addAll(history);
-        messages.add(UserMessage.from(prompt));
-        int inputBytes = bytes(system) + bytes(prompt) + 32 * messages.size();
-        for (var message : history) inputBytes += bytes(message.toString());
+        return chat(task, ModelRegistry.Selection.auto(), ModelInput.fixed(system, history, prompt), budget);
+    }
+
+    /** 显式受控选择与目标输入回调，写工具仍不在本层执行。 */
+    public Turn chat(String task, ModelRegistry.Selection selection, ModelInput input, ExecutionBudget budget) {
+        return generate(task, selection, input, budget, null, "", new ArrayList<>(), null);
+    }
+    /** 摘要／报告每次重试和备用前重核来源；固定整页语义不允许静默裁剪。 */
+    public Turn chatVerified(String task, String system, String prompt, ExecutionBudget budget, Runnable verify) {
+        var fixed = ModelInput.fixed(system, List.of(), prompt);
+        return chat(task, ModelRegistry.Selection.auto(), target -> { verify.run(); return fixed.prepare(target); }, budget);
+    }
+
+    /** 一次结构修复共享原预算；重新请求原始合法输入，不回送未校验草稿或来源。 */
+    public <T> StructuredTurn<T> structured(String task, ModelRegistry.Selection selection, ModelInput input,
+                                           ExecutionBudget budget, StructuredSchema<T> schema) {
+        var attempts = new ArrayList<ModelRoute.Attempt>();
+        Turn turn = generate(task, selection, input, budget, schema, "", attempts, null);
+        try { return new StructuredTurn<>(schema.validate(turn.text(), referenceIds(turn.evidence())), turn); }
+        catch (LabException invalid) {
+            if (!invalid.code().equals("MODEL_STRUCTURED_INVALID")) throw invalid;
+            markInvalid(attempts); budget.invalidStructure(); budget.repair();
+            // 修复固定当前成功目标，避免把结构错误当服务故障，或跨模型追求更有利的安全结果。
+            turn = generate(task, selection, input, budget, schema, "上次输出未满足字段或引用约束，请按同一结构重新生成。", attempts, turn.modelId());
+            try { return new StructuredTurn<>(schema.validate(turn.text(), referenceIds(turn.evidence())), turn); }
+            catch (LabException failed) { markInvalid(attempts); budget.invalidStructure(); throw failed; }
+        }
+    }
+    public record StructuredTurn<T>(T value, Turn turn) { }
+
+    /** 标记实际付费成功但结构不合法的尝试，保留提供方用量。 */
+    private void markInvalid(List<ModelRoute.Attempt> attempts) {
+        var a = attempts.remove(attempts.size() - 1);
+        attempts.add(new ModelRoute.Attempt(a.modelId(), "MODEL_STRUCTURED_INVALID", a.reservedInputTokens(), a.countSource(),
+                a.inputTokens(), a.outputTokens(), a.usageSource(), a.priceRef()));
+    }
+    /** 引用白名单仅来源于目标实际收到的证据包。 */
+    private Set<String> referenceIds(List<EvidenceBundle> evidence) {
+        var result = new HashSet<String>(); evidence.forEach(e -> result.add(e.evidenceId())); return Set.copyOf(result);
+    }
+    /** 每次发送前重装／复核，最多两候选三尝试，SDK重试零；缓存不保存请求期限。 */
+    private Turn generate(String task, ModelRegistry.Selection selection, ModelInput input, ExecutionBudget budget,
+                          StructuredSchema<?> schema, String correction, List<ModelRoute.Attempt> log, String repairId) {
+        if (selection == null) selection = ModelRegistry.Selection.auto();
         budget.turn();
-        var ids = registry.candidates(task, Set.of("CHAT"));
+        var required = schema == null ? Set.of("CHAT") : Set.of("CHAT", "STRUCTURED_OUTPUT");
+        var repair = repairId != null;
+        var baseDecision = registry.route(task, selection, required);
+        var decision = repair ? new ModelRegistry.Decision(baseDecision.profile(), baseDecision.mode(), List.of(repairId)) : baseDecision;
+        var ids = decision.ids();
         int attempts = 0;
         String failure = "MODEL_UNAVAILABLE";
-        for (String id : ids.stream().limit(2).toList()) {
+        var blockedQuotas = new HashSet<String>();
+        for (String id : ids) {
             var d = registry.definition(id);
-            var h = health.get(id);
-            if (h != null && h.retryAfter() > System.currentTimeMillis()) continue;
-            for (int retry = 0; retry < 2 && attempts < 3; retry++) {
-                attempts++;
-                if (inputBytes + d.outputLimit() > d.contextWindow())
-                    throw new LabException("BUDGET_EXCEEDED", "实际模型上下文不足，需缩减证据");
-                if (!concurrency.tryAcquire()) throw new LabException("RATE_LIMITED", "模型并发已满");
+            if (blockedQuotas.contains(d.quotaGroup())) continue;
+            for (int retry = 0; retry < 2 && attempts < registry.configuration().failover().maxAttemptsPerLogicalCall(); retry++) {
+                budget.check();
+                var permit = health.acquire(id, d.quotaGroup());
+                if (permit == null) break;
+                boolean global = false, local = false, sent = false;
+                var semaphore = targetConcurrency.computeIfAbsent(id, key -> new Semaphore(d.maxConcurrency()));
+                Integer inputUsage = null, outputUsage = null;
+                int reserved = 0;
+                String outcome = "MODEL_INVALID_OUTPUT";
+                var raw = new java.util.concurrent.atomic.AtomicReference<String>();
                 try {
+                    // 结构指令也计入目标窗口；重装时增加同等预留，不截系统规则和当前问题。
+                    var target = schema == null ? d : withReservedSchema(d, schema, correction);
+                    var prepared = input.prepare(target);
+                    var messages = new ArrayList<>(prepared.messages());
+                    if (!id.equals(ids.get(0)) && messages.stream().anyMatch(m -> m instanceof ToolExecutionResultMessage
+                            || m instanceof AiMessage a && a.hasToolExecutionRequests()))
+                        throw new LabException("MODEL_CONTEXT_NOT_PORTABLE", "工具协议状态无法安全切换目标");
+                    if (schema != null) messages.add(SystemMessage.from(schema.instruction(referenceIds(prepared.evidence())) + correction));
+                    reserved = ModelInput.count(messages);
+                    if (reserved + d.outputLimit() > d.contextWindow()) throw new LabException("MODEL_CONTEXT_INSUFFICIENT", "目标窗口不足以容纳结构约束");
+                    global = concurrency.tryAcquire();
+                    if (!global) throw new LabException("RATE_LIMITED", "模型并发已满");
+                    local = semaphore.tryAcquire();
+                    if (!local) throw new LabException("RATE_LIMITED", "目标模型并发已满");
                     budget.attempt();
+                    attempts++; sent = true;
                     if (registry.mock()) {
                         if (d.modelName().contains("timeout"))
                             throw new LabException("MODEL_TIMEOUT", "模拟主模型超时");
-                        health.remove(id);
-                        return new Turn("Mock 验证结果（非真实模型回答）：\n" + prompt, id, null, null, true);
+                        outcome = "SUCCESS"; health.success(permit);
+                        String text = "Mock 验证结果（非真实模型回答）：\n" + messages.get(messages.size()-1);
+                        if (schema instanceof KnowledgeAnswerSchema) text = "{\"status\":\"NEEDS_INPUT\",\"answer\":\"Mock结构验证（非真实模型）\",\"references\":[]}";
+                        log.add(usage(id, outcome, reserved, null, null, d));
+                        budget.observe(log.get(log.size()-1));
+                        return turn(text, id, null, null, true, AiMessage.from(text), decision, log, prepared.evidence());
                     }
-                    var model = OpenAiChatModel.builder().baseUrl(d.endpoint()).apiKey(registry.credential(id)).modelName(d.modelName()).timeout(timeout(d, budget)).maxRetries(0).maxCompletionTokens(d.outputLimit()).logRequests(false).logResponses(false).build();
-                    var response = model.chat(messages);
+                    DeadlineHttpClient.CURRENT.set(new DeadlineHttpClient.Scope(budget, d.timeoutSeconds(), raw));
+                    var request = ChatRequest.builder().messages(messages);
+                    if (schema != null) request.responseFormat(ResponseFormat.builder().type(ResponseFormatType.JSON)
+                            .jsonSchema(d.capabilities().contains("JSON_SCHEMA") ? schema.schema() : null).build());
+                    var response = chatClient(id).chat(request.build());
+                    var usage = response.tokenUsage();
+                    inputUsage = usage == null ? null : usage.inputTokenCount(); outputUsage = usage == null ? null : usage.outputTokenCount();
                     String text = response.aiMessage().text();
-                    // 当前出口交付完整文本；截断、过滤、未知结束及工具续轮都不能伪装成功。
-                    if (response.finishReason() != FinishReason.STOP || response.aiMessage().hasToolExecutionRequests()) {
-                        throw new LabException("MODEL_INVALID_OUTPUT", "模型响应未正常完成，不能作为完整结果交付");
-                    }
+                    // SDK可能只返回文字，原始协议refusal必须独立检查，不能修复安全拒绝。
+                    if (refused(raw.get()) || response.finishReason() == FinishReason.CONTENT_FILTER) throw new LabException("MODEL_REFUSED", "模型拒绝本次请求");
+                    if (response.finishReason() == FinishReason.LENGTH) throw new LabException("MODEL_TRUNCATED", "模型输出已截断");
+                    if (response.aiMessage().hasToolExecutionRequests() || response.finishReason() == FinishReason.TOOL_EXECUTION)
+                        throw new LabException("MODEL_TOOL_CALL_PENDING", "工具请求等待受控续轮，当前入口不执行");
+                    if (response.finishReason() != FinishReason.STOP) throw new LabException("MODEL_INVALID_OUTPUT", "模型结束状态不合法");
                     if (text == null || text.isBlank())
                         throw new LabException("MODEL_INVALID_OUTPUT", "模型未返回可交付文本");
-                    health.remove(id);
-                    var usage = response.tokenUsage();
-                    return new Turn(text, id, usage == null ? null : usage.inputTokenCount(), usage == null ? null : usage.outputTokenCount(), false, response.finishReason().name());
+                    budget.check(); health.success(permit); outcome = "SUCCESS";
+                    log.add(usage(id, outcome, reserved, inputUsage, outputUsage, d));
+                    budget.observe(log.get(log.size()-1));
+                    return turn(text, id, inputUsage, outputUsage, false, response.aiMessage(), decision, log, prepared.evidence());
                 } catch (RuntimeException error) {
-                    failure = classify(error);
-                    if (!Set.of("MODEL_TIMEOUT", "MODEL_UNAVAILABLE").contains(failure))
+                    failure = refused(raw.get()) ? "MODEL_REFUSED" : classify(error);
+                    outcome = failure;
+                    if (!sent || !Set.of("MODEL_TIMEOUT", "MODEL_UNAVAILABLE", "MODEL_RATE_LIMITED", "MODEL_CONFIGURATION_ERROR").contains(failure))
                         throw new LabException(failure, "模型调用失败");
-                    final long now = System.currentTimeMillis();
-                    health.compute(id, (key, previous) -> {
-                        int count = previous == null ? 1 : previous.failures() + 1;
-                        return new Health(count, count >= 3 ? now + 30000 : 0);
-                    });
-                    // 超时直接切到兼容备用，避免把整个期限消耗在同一失效目标。
-                    if (failure.equals("MODEL_TIMEOUT")) break;
+                    var http = transportFailure(error);
+                    boolean limited = failure.equals("MODEL_RATE_LIMITED");
+                    if (failure.equals("MODEL_CONFIGURATION_ERROR")) health.configurationError(permit);
+                    else health.failure(permit, d.quotaGroup(), limited, http == null ? null : http.retryAfter);
+                    if (limited) blockedQuotas.add(d.quotaGroup());
+                    if (!failure.equals("MODEL_UNAVAILABLE") || permit.probe()) break;
                 } finally {
-                    concurrency.release();
+                    // 拒绝／SDK解析失败也可能已有usage；只接受协议中的非负整数，不从估计补成真实值。
+                    if (sent && raw.get() != null && (inputUsage == null || outputUsage == null)) {
+                        if (inputUsage == null) inputUsage = rawUsage(raw.get(), "prompt_tokens");
+                        if (outputUsage == null) outputUsage = rawUsage(raw.get(), "completion_tokens");
+                    }
+                    if (sent && !outcome.equals("SUCCESS")) {
+                        log.add(usage(id, outcome, reserved, inputUsage, outputUsage, d));
+                        budget.observe(log.get(log.size()-1));
+                    }
+                    DeadlineHttpClient.CURRENT.remove(); health.release(permit);
+                    if (local) semaphore.release(); if (global) concurrency.release();
                 }
             }
         }
-        throw new LabException(ids.size() < 2 ? "NO_COMPATIBLE_FALLBACK" : failure, "模型暂不可用，未获得合法备用结果");
+        throw new LabException(decision.mode().equals("EXACT") || repair ? failure : ids.size() < 2 ? "NO_COMPATIBLE_FALLBACK" : failure,
+                "模型暂不可用，未获得合法结果");
+    }
+
+    /** 结构提示预留使用最大六个短引用ID的保守长度，重装不能漏计约束。 */
+    private ModelProperties.Definition withReservedSchema(ModelProperties.Definition d, StructuredSchema<?> schema, String correction) {
+        int reserve = TextWindow.count(schema.instruction(Set.of("E1", "E2", "E3", "E4", "E5", "E6")) + correction) + 256;
+        return new ModelProperties.Definition(d.providerId(), d.endpoint(), d.modelName(), d.credentialRef(), d.enabled(), d.capabilities(),
+                d.qualityTags(), d.dataClassifications(), d.contextWindow(), d.outputLimit() + reserve, d.dimensions(), d.timeoutSeconds(), d.quotaGroup(), d.priceRef(), d.maxConcurrency());
+    }
+    /** 客户端缓存仅注册ID，生命周期随应用；密钥不进入cache key或trace。 */
+    private OpenAiChatModel chatClient(String id) {
+        return chatClients.computeIfAbsent(id, key -> {
+            var d = registry.definition(key);
+            return OpenAiChatModel.builder().baseUrl(d.endpoint()).apiKey(registry.credential(key)).modelName(d.modelName())
+                    .httpClientBuilder(new DeadlineHttpClient.Builder(transport)).maxRetries(0).maxCompletionTokens(d.outputLimit())
+                    .strictJsonSchema(true).logRequests(false).logResponses(false).build();
+        });
+    }
+    /** 公开验证缓存数量而非客户端对象，禁止暴露认证头。 */
+    public int cachedChatClients() { return chatClients.size(); }
+    /** 入口先验证显式逻辑选项，不消耗embedding或取得会话执行权。 */
+    public void validateSelection(String profile) { registry.validateProfile(profile); }
+    /** 每次成功路由包含本逻辑调用全部失败／备用／修复尝试。 */
+    private Turn turn(String text, String id, Integer in, Integer out, boolean mock, AiMessage raw,
+                      ModelRegistry.Decision decision, List<ModelRoute.Attempt> log, List<EvidenceBundle> evidence) {
+        var c = registry.configuration().routing();
+        var route = new ModelRoute(c.policyVersion(), c.qualityVersion(), decision.profile(), decision.mode(), id,
+                log.stream().anyMatch(a -> a.outcome().equals("MODEL_STRUCTURED_INVALID")) ? "BOUNDED_REPAIR" : !id.equals(decision.ids().get(0)) ? "COMPATIBLE_FALLBACK" : "ORDERED_COMPATIBLE_HEALTHY",
+                decision.ids().stream().skip(decision.ids().indexOf(id) + 1L).toList(), log);
+        return new Turn(text, id, in, out, mock, "STOP", raw, route, evidence);
+    }
+    /** 失败无usage明确UNKNOWN；保守计数与价格引用均不当真实金额。 */
+    private ModelRoute.Attempt usage(String id, String outcome, int reserved, Integer in, Integer out, ModelProperties.Definition d) {
+        return new ModelRoute.Attempt(id, outcome, reserved, TextWindow.COUNT_SOURCE, in, out, in == null || out == null ? "UNKNOWN" : "PROVIDER", d.priceRef());
+    }
+    /** 提供方合法refusal字段独立分类；协议损坏仍由SDK失败出口处理。 */
+    private boolean refused(String body) {
+        try { var refusal = JSON.readTree(body).path("choices").path(0).path("message").path("refusal"); return !refusal.isMissingNode() && !refusal.isNull() && !refusal.asText().isBlank(); }
+        catch (Exception invalid) { return false; }
+    }
+    /** 非正常结果的合法用量字段仍保留，其他情况明确未知。 */
+    private Integer rawUsage(String body, String field) {
+        try { var value = JSON.readTree(body).path("usage").path(field); return value.isIntegralNumber() && value.canConvertToInt() && value.intValue() >= 0 ? value.intValue() : null; }
+        catch (Exception invalid) { return null; }
     }
 
     /**
@@ -138,7 +284,11 @@ public class ModelGateway {
                 }
                 return new Vectors(List.copyOf(vectors), d.modelName(), true);
             }
-            var model = OpenAiEmbeddingModel.builder().baseUrl(d.endpoint()).apiKey(registry.credential(id)).modelName(d.modelName()).dimensions(d.dimensions()).timeout(timeout(d, budget)).maxRetries(0).maxSegmentsPerBatch(32).logRequests(false).logResponses(false).build();
+            DeadlineHttpClient.CURRENT.set(new DeadlineHttpClient.Scope(budget, d.timeoutSeconds(), new java.util.concurrent.atomic.AtomicReference<>()));
+            var model = embeddingClients.computeIfAbsent(id, key -> OpenAiEmbeddingModel.builder().baseUrl(d.endpoint())
+                    .apiKey(registry.credential(key)).modelName(d.modelName()).dimensions(d.dimensions())
+                    .httpClientBuilder(new DeadlineHttpClient.Builder(transport)).maxRetries(0).maxSegmentsPerBatch(32)
+                    .logRequests(false).logResponses(false).build());
             var result = model.embedAll(texts.stream().map(TextSegment::from).toList());
             var vectors = result.content().stream().map(e -> {
                 var values = new ArrayList<Float>();
@@ -147,12 +297,13 @@ public class ModelGateway {
             }).toList();
             if (vectors.size() != texts.size())
                 throw new LabException("MODEL_INVALID_OUTPUT", "Embedding 返回数量不符");
-            return new Vectors(vectors, d.modelName(), false);
+            return new Vectors(vectors, d.modelName(), false, result.tokenUsage()==null?null:result.tokenUsage().inputTokenCount());
         } catch (LabException e) {
             throw e;
         } catch (RuntimeException e) {
             throw new LabException(classify(e), "Embedding 调用失败");
         } finally {
+            DeadlineHttpClient.CURRENT.remove();
             concurrency.release();
         }
     }
@@ -177,14 +328,26 @@ public class ModelGateway {
      * 仅明确瞬时故障允许切换，认证、限流和参数失败不重试。
      */
     private String classify(RuntimeException e) {
-        if (e instanceof LabException lab) return lab.code();
         for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            if (cause instanceof LabException lab) return lab.code();
+            if (cause instanceof DeadlineHttpClient.Failure http) {
+                if (http.status == 429) return "MODEL_RATE_LIMITED";
+                if (Set.of(401, 403, 400, 404, 422).contains(http.status)) return "MODEL_CONFIGURATION_ERROR";
+                if (Set.of(500, 502, 503, 504).contains(http.status)) return "MODEL_UNAVAILABLE";
+                return "MODEL_INVALID_OUTPUT";
+            }
             String name = cause.getClass().getSimpleName();
             if (name.contains("Timeout")) return "MODEL_TIMEOUT";
             if (name.contains("Authentication") || name.contains("Unauthorized")) return "ACCESS_DENIED";
-            if (name.contains("RateLimit")) return "RATE_LIMITED";
+            if (name.contains("RateLimit")) return "MODEL_RATE_LIMITED";
             if (name.contains("InternalServer") || cause instanceof java.io.IOException) return "MODEL_UNAVAILABLE";
         }
         return "MODEL_INVALID_OUTPUT";
+    }
+
+    /** SDK包装异常仍保留我们自己的脱敏状态及Retry-After。 */
+    private DeadlineHttpClient.Failure transportFailure(Throwable error) {
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) if (cause instanceof DeadlineHttpClient.Failure f) return f;
+        return null;
     }
 }

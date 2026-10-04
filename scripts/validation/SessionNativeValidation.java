@@ -589,6 +589,8 @@ public final class SessionNativeValidation {
                     for (String table : List.of("ai_runs", "knowledge_access_audit", "request_deduplications")) named.update("DELETE FROM " + table + " WHERE actor_user_id IN (:users)", users);
                     for (String table : List.of("auth_tokens", "profile_memories")) named.update("DELETE FROM " + table + " WHERE user_id IN (:users)", users);
                     Map<String, Object> docs = Map.of("id", documentId);
+                    // S03的外键清理只按本次明确document ID，保留其他资料和所有旧迁移。
+                    for(String table:List.of("ingestion_model_attempts","ingestion_batches")) named.update("DELETE FROM "+table+" WHERE ingestion_id IN (SELECT id FROM document_ingestions WHERE document_id=:id)",docs);
                     for (String table : List.of("source_dependencies", "chunks", "context_parents", "document_sections", "document_ingestions", "document_versions")) named.update("DELETE FROM " + table + " WHERE document_id=:id", docs);
                     named.update("DELETE FROM outbox_events WHERE event_type IN ('INGEST_DOCUMENT','DELETE_DOCUMENT','PRUNE_DOCUMENT') AND resource_id=:id", docs);
                     named.update("DELETE FROM documents WHERE owner_user_id IN (:users)", users);

@@ -110,31 +110,58 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
         }
     }
 
-    /**
-     * 按全集 ID 在搜索路径核对 hash/模型/维度，不以 bulk 成功数量代替完整性。
-     */
+    /** 验证单批全部在搜索路径可见，部分结果不能冒称成功。 */
     public void verify(List<IndexedChunk> chunks) {
+        for(int offset=0;offset<chunks.size();offset+=32) {
+            var batch=chunks.subList(offset,Math.min(offset+32,chunks.size()));
+            if(present(batch).size()!=batch.size()) throw new LabException("INDEX_NOT_READY","索引搜索可见性或完整性不匹配");
+        }
+    }
+
+    /** 有界搜索核验，身份／版本／代次／内容／模型及有限向量值均匹配才复用。 */
+    public Set<String> present(List<IndexedChunk> chunks) {
+        enabled();
+        if(chunks.isEmpty()) return Set.of();
+        if(chunks.size()>32) throw LabException.invalid("索引核验最多32项");
+        try {
+            String body=encode(Map.of("size",32,"query",Map.of("ids",Map.of("values",chunks.stream().map(c->c.chunk().chunkId()).toList()))));
+            var response=client.search(s->s.index(config.index()).withJson(new StringReader(body)),JsonData.class);
+            if(response.timedOut() || response.shards().failed().intValue()>0) throw unavailable();
+            var expected=new HashMap<String,IndexedChunk>();chunks.forEach(c->expected.put(c.chunk().chunkId(),c));
+            var found=new HashSet<String>();
+            for(var hit:response.hits().hits()) {
+                var c=expected.get(hit.id());if(c==null || hit.source()==null) continue;
+                compatible(c.vector(),c.embeddingModelVersion());
+                var d=hit.source().toJson().asJsonObject();
+                if(d.getJsonNumber("documentId").longValue()!=c.documentId() || d.getInt("documentVersion")!=c.documentVersion()
+                        || d.getJsonNumber("processingRevision").longValue()!=c.processingRevision()
+                        || d.getJsonNumber("knowledgeBaseId").longValue()!=c.knowledgeBaseId() || d.getJsonNumber("ownerUserId").longValue()!=c.ownerUserId()
+                        || !d.getString("chunkId").equals(c.chunk().chunkId()) || !d.getString("chunkHash").equals(c.chunk().chunkHash())
+                        || !d.getString("embeddingText").equals(c.chunk().embeddingText()) || !d.getString("sectionId").equals(c.chunk().sectionId())
+                        || !d.getString("parentId").equals(c.chunk().contextParentId()) || !d.getString("embeddingModelVersion").equals(c.embeddingModelVersion())
+                        || !d.getBoolean("enabled") || d.getBoolean("deleted")) continue;
+                var vector=d.getJsonArray("vector");if(vector.size()!=config.dimensions()) continue;
+                boolean valid=true;
+                // ES序列化保持float数值；核对完整向量，防止同维度损坏项被计入成功。
+                for(int i=0;i<vector.size();i++) if(!Float.isFinite(vector.getJsonNumber(i).numberValue().floatValue())
+                        || Float.compare(vector.getJsonNumber(i).numberValue().floatValue(),c.vector().get(i))!=0) { valid=false;break; }
+                if(valid) found.add(hit.id());
+            }
+            return Set.copyOf(found);
+        } catch(LabException e){throw e;}
+        catch(Exception e){throw unavailable();}
+    }
+
+    /** 固定代次全集必须恰好匹配，count分片失败亦不能激活。 */
+    public void verifyGeneration(long id,int version,long revision,int expected) {
         enabled();
         try {
-            for (int offset = 0; offset < chunks.size(); offset += 32) {
-                var expected = chunks.subList(offset, Math.min(offset + 32, chunks.size()));
-                String body = encode(Map.of("size", 32, "query", Map.of("ids", Map.of("values", expected.stream().map(c -> c.chunk().chunkId()).toList()))));
-                var found = client.search(s -> s.index(config.index()).withJson(new StringReader(body)), JsonData.class).hits().hits();
-                if (found.size() != expected.size()) throw new LabException("INDEX_NOT_READY", "索引搜索可见性不完整");
-                var byId = new HashMap<String, IndexedChunk>();
-                expected.forEach(c -> byId.put(c.chunk().chunkId(), c));
-                for (var hit : found) {
-                    var c = byId.get(hit.id());
-                    var data = hit.source().toJson();
-                    if (c == null || !data.asJsonObject().getString("chunkHash").equals(c.chunk().chunkHash()) || !data.asJsonObject().getString("embeddingModelVersion").equals(c.embeddingModelVersion()) || data.asJsonObject().getJsonArray("vector").size() != config.dimensions())
-                        throw new LabException("INDEX_NOT_READY", "索引项完整性不匹配");
-                }
-            }
-        } catch (LabException e) {
-            throw e;
-        } catch (Exception e) {
-            throw unavailable();
-        }
+            String body=encode(Map.of("query",Map.of("bool",Map.of("filter",List.of(
+                    Map.of("term",Map.of("documentId",id)),Map.of("term",Map.of("documentVersion",version)),Map.of("term",Map.of("processingRevision",revision)))))));
+            var response=client.count(c->c.index(config.index()).withJson(new StringReader(body)));
+            if(response.shards().failed().intValue()>0 || response.count()!=expected) throw new LabException("INDEX_NOT_READY","固定代次全集数量不匹配");
+        } catch(LabException e){throw e;}
+        catch(Exception e){throw unavailable();}
     }
 
     /**
