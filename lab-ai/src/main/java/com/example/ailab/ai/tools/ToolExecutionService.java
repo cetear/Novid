@@ -73,13 +73,32 @@ public class ToolExecutionService implements AutoCloseable {
     public Outcome execute(UserContext actor, ScopeRequest scope, String task, String callId, String name,
             String arguments, String evidenceId, ExecutionBudget budget,
             java.util.function.Function<String, ModelVector> vector) {
+        try(var span=budget.trace().span("TOOL", Set.of("search_knowledge","get_document","get_knowledge_statistics","save_generated_note").contains(name)?name:"unregistered_tool")) {
+            span.tool(callId);
+            try(var active=budget.activate(span.context())) {
+                try {
+                    var result=executeObserved(actor,scope,task,callId,name,arguments,evidenceId,budget,vector);
+                    span.status(result.status()); return result;
+                } catch(RuntimeException error) { span.fail(error); throw error; }
+            }
+        }
+    }
+
+    /** 真实工具调用由外层节点关联，队列拒绝与等待超时同样记录。 */
+    private Outcome executeObserved(UserContext actor, ScopeRequest scope, String task, String callId, String name,
+            String arguments, String evidenceId, ExecutionBudget budget,
+            java.util.function.Function<String, ModelVector> vector) {
         var d = registry.require(name);
         if (!d.enabled() || !enabled) throw new LabException("TOOL_DISABLED", "工具未启用");
         if (definitions(actor, task).stream().noneMatch(t -> t.name().equals(name))) throw LabException.denied();
         var args = arguments(arguments, d);
         knowledge.authorize(actor, scope); budget.check();
         java.util.concurrent.Future<Outcome> pending;
-        try { pending = executor.submit(() -> perform(actor, scope, callId, name, evidenceId, budget, vector, d, args)); }
+        var parent=budget.trace();
+        // 工具池显式传递父节点，embedding叶节点不会错误挂到另一个角色。
+        try { pending = executor.submit(() -> {
+            try(var active=budget.activate(parent)) { return perform(actor, scope, callId, name, evidenceId, budget, vector, d, args); }
+        }); }
         catch (java.util.concurrent.RejectedExecutionException full) { throw new LabException("RATE_LIMITED", "工具执行池已满"); }
         try {
             return pending.get(Math.min(d.timeoutSeconds() * 1000L, budget.timeout().toMillis()), java.util.concurrent.TimeUnit.MILLISECONDS);
@@ -178,7 +197,7 @@ public class ToolExecutionService implements AutoCloseable {
      */
     public KnowledgeStatistics statistics(UserContext actor, ScopeRequest scope, ExecutionBudget budget) {
         check("get_knowledge_statistics", budget);
-        return knowledge.statistics(actor, scope);
+        return budget.trace().call("DATA","knowledge_statistics",()->knowledge.statistics(actor, scope));
     }
 
     /**
@@ -187,8 +206,10 @@ public class ToolExecutionService implements AutoCloseable {
     public List<EvidenceBundle> search(UserContext actor, ScopeRequest scope, String question, List<Float> vector, String version, int bytes, ExecutionBudget budget) {
         check("search_knowledge", budget);
         var authorized = knowledge.authorize(actor, scope);
-        var hits = search.search(authorized, question, vector, version);
-        return search.expand(authorized, hits, bytes);
+        return budget.trace().call("RETRIEVAL","search_expand",()->{
+            var hits = search.search(authorized, question, vector, version);
+            return search.expand(authorized, hits, bytes);
+        });
     }
 
     /**

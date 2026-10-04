@@ -16,6 +16,27 @@ public final class ExecutionBudget {
     private int attempts, turns, tools, repairs;
     private Runnable toolJournal = () -> {}, repairJournal = () -> {};
     private final java.util.List<com.example.ailab.contract.dto.ModelRoute.Attempt> observed = new java.util.ArrayList<>();
+    private com.example.ailab.contract.context.TraceContext rootTrace = com.example.ailab.contract.context.TraceContext.disabled("none");
+    private final ThreadLocal<com.example.ailab.contract.context.TraceContext> activeTrace = new ThreadLocal<>();
+    private final ThreadLocal<String> lastModelNode = new ThreadLocal<>();
+    /** 工具申请关联本工作线程刚完成的实际模型节点，不混淆并行角色。 */
+    public void lastModelNode(String id) { lastModelNode.set(id); }
+    /** 没有模型节点时不补造调用；截断节点标识由图显示缺失。 */
+    public String lastModelNode() { return lastModelNode.get(); }
+
+    /** 同预算绑定根追踪；观测上下文不会创建、复制或重置可靠额度。 */
+    public ExecutionBudget traced(com.example.ailab.contract.context.TraceContext trace) { rootTrace=trace; return this; }
+    /** 显式角色上下文优先于根，避免并行角色互相覆盖父节点。 */
+    public com.example.ailab.contract.context.TraceContext trace() { var t=activeTrace.get(); return t==null?rootTrace:t; }
+    /** 每个异步入口显式激活不可变父上下文，退出时恢复线程原状态。 */
+    public TraceActivation activate(com.example.ailab.contract.context.TraceContext trace) { var old=activeTrace.get(); activeTrace.set(trace); return new TraceActivation(old); }
+    public final class TraceActivation implements AutoCloseable {
+        private final com.example.ailab.contract.context.TraceContext previous;
+        /** 保存工作线程自己的旧上下文，不能继承另一个角色。 */
+        private TraceActivation(com.example.ailab.contract.context.TraceContext previous) { this.previous=previous; }
+        /** 清理线程池上下文，不影响共享预算或其他工作线程。 */
+        public void close() { if(previous==null) activeTrace.remove(); else activeTrace.set(previous); }
+    }
 
     /**
      * 为在线请求或有限后台入库创建独立预算。

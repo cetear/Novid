@@ -13,6 +13,10 @@ import java.security.*;
 /** 逐批持久入库；模型和ES远程步骤始终位于数据库事务之外。 */
 @Component
 public class DocumentIngestionPipeline {
+    private TraceTelemetryPort telemetry=TraceTelemetryPort.NONE;
+    /** 追踪由正式入口装配，不进入持久批次预算和未知向量恢复判定。 */
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void tracing(TraceTelemetryPort telemetry) { this.telemetry=telemetry; }
     private final DocumentIngestionStorePort store;
     private final KnowledgeCapabilityPort knowledge;
     private final StructureParser parser;
@@ -26,18 +30,31 @@ public class DocumentIngestionPipeline {
 
     /** 恢复同代次计划；全文结构有界，任意时刻仅持有一个批次的向量。 */
     public void execute(IngestionLease lease) {
-        var content=current(lease);
+        var observation=telemetry.open(UUID.randomUUID().toString(),lease.actor().userId(),null,null,lease.ingestionId());
+        try(var root=observation.span("INGESTION","ingestion_execution")) {
+            try { executeObserved(lease,root.context()); }
+            catch(RuntimeException failed) { root.fail(failed); throw failed; }
+        } finally { observation.finish(); }
+    }
+
+    /** 每代次领取独立运行，已有向量恢复只记复用，绝不补造模型尝试。 */
+    private void executeObserved(IngestionLease lease,com.example.ailab.contract.context.TraceContext trace) {
+        var content=trace.call("AUTHORIZATION","verify",()->current(lease));
         store.phase(lease,"PARSING");
         var start=Instant.now();
-        var parsed=parser.parse(lease);
+        var parsed=trace.call("PARSER","parse",()->parser.parse(lease));
         if(Duration.between(start,Instant.now()).toSeconds()>30) throw new LabException("DOCUMENT_PARSE_FAILED","解析超过30秒");
         store.phase(lease,"CHUNKING");
         store.saveStructure(lease,parsed);
         var plans=plans(lease,parsed);
         store.plan(lease,plans);
         for(var plan:plans) {
+            try(var batchSpan=trace.span("BATCH","batch","batch_"+plan.ordinal(),null,List.of())) {
+            var batchTrace=batchSpan.context();
+            try {
             current(lease);
             var saved=store.batch(lease,plan.ordinal());
+            boolean reusedVectors=!saved.state().equals("PLANNED");
             if(Set.of("SENDING","UNKNOWN").contains(saved.state()))
                 throw new LabException("EMBEDDING_RESULT_UNKNOWN","提供方无查询协议，不能自动重购未知向量");
             var chunks=parsed.chunks().subList(plan.start(),plan.start()+plan.count());
@@ -45,19 +62,24 @@ public class DocumentIngestionPipeline {
                 store.phase(lease,"EMBEDDING");
                 var persistent=store.budget(lease);
                 var budget=new ExecutionBudget(Duration.between(Instant.now(),persistent.deadline()),160-persistent.attempts(),
-                        ()->store.beginEmbedding(lease,plan.ordinal()));
+                        ()->store.beginEmbedding(lease,plan.ordinal())).traced(batchTrace);
                 var result=models.embed(chunks.stream().map(ChunkSnapshot::embeddingText).toList(),budget);
                 store.completeEmbedding(lease,plan.ordinal(),result.vectors(),result.modelVersion(),result.inputTokens());
                 saved=new IngestionBatch(plan,"EMBEDDED",result.vectors(),result.modelVersion());
             }
+            if(reusedVectors) {
+                try(var reused=batchTrace.span("CHECKPOINT","persisted_vectors")) { reused.status("REUSED"); }
+            }
             var indexed=items(content.document(),lease,chunks,saved);
             store.phase(lease,"INDEXING");
             // ES响应丢失或部分成功时，以搜索事实确定缺失项；同ID补写不会重新生成向量。
-            var present=index.present(indexed);
+            var present=batchTrace.call("DATA","es_present",()->index.present(indexed));
             var missing=indexed.stream().filter(c->!present.contains(c.chunk().chunkId())).toList();
-            if(!missing.isEmpty()) { current(lease);index.index(missing); }
+            if(!missing.isEmpty()) { current(lease);batchTrace.call("DATA","es_index",()->{index.index(missing);return null;}); }
             index.verify(indexed);
             store.indexed(lease,plan.ordinal());
+            } catch(RuntimeException failed) { batchSpan.fail(failed); throw failed; }
+            }
         }
         store.phase(lease,"VERIFYING");
         // 最终逐批重查可见性，另核全集数量以发现额外索引项；不能仅按成功批次数激活。
@@ -67,7 +89,7 @@ public class DocumentIngestionPipeline {
         }
         index.verifyGeneration(lease.documentId(),lease.documentVersion(),lease.processingRevision(),parsed.chunks().size());
         current(lease);
-        store.activate(lease,parsed.chunks().size());
+        trace.call("PUBLISH","activate",()->{store.activate(lease,parsed.chunks().size());return null;});
     }
 
     /** 每批前复核当前身份、内容与租约，旧版本不可再发送到模型或开始ES写入。 */

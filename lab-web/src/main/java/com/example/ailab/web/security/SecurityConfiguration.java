@@ -25,7 +25,7 @@ public class SecurityConfiguration {
                 .authorizeHttpRequests(a -> a
                         // 容器内部的完成／错误派发不重新触发鉴权；首次 REQUEST 仍必须通过 Bearer。
                         .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
-                        .requestMatchers("/api/v1/auth/login", "/actuator/health").permitAll().anyRequest().authenticated())
+                        .requestMatchers("/api/v1/auth/login", "/actuator/health", "/run-inspector.html", "/run-inspector.js", "/run-inspector.css").permitAll().anyRequest().authenticated())
                 .addFilterBefore(new BearerTokenFilter(accounts, json), UsernamePasswordAuthenticationFilter.class).build();
     }
 }

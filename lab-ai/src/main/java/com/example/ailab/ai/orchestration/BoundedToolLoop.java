@@ -37,7 +37,13 @@ public final class BoundedToolLoop {
             // 保留原始message的提供方属性和可选思考内容，只有缺失ID才补稳定本轮标识。
             messages.add(turn.rawMessage().toBuilder().toolExecutionRequests(requests).build());
             var results = new ArrayList<ToolExecutionResultMessage>();
+            var resultNodes=new ArrayList<String>();
             for (var request : requests) {
+                // 申请来自实际模型节点，参数和正文不进入排错记录。
+                var requested=budget.trace().span("TOOL_REQUEST","request",null,null,
+                        budget.lastModelNode()==null?List.of():List.of(budget.lastModelNode()));
+                requested.tool(request.id()); resultNodes.add(requested.id());
+                try(var active=budget.activate(requested.context())) {
                 verify.run(); tools.verify(actor, scope, evidence);
                 if (evidence.size() >= 6 && !request.name().equals("get_knowledge_statistics"))
                     throw new LabException("BUDGET_EXCEEDED", "工具证据包数已满");
@@ -52,13 +58,19 @@ public final class BoundedToolLoop {
                 String result = serialized(outcome);
                 results.add(ToolExecutionResultMessage.from(request, result));
                 exchanges.add(new ToolExchange(request.id(), request.name(), outcome.version(), request.arguments(), result));
+                } catch(RuntimeException rejected) { requested.fail(rejected); throw rejected; }
+                finally { requested.close(); }
             }
             paired(requests, results); messages.addAll(results);
             String pinned = turn.modelId(); var actualEvidence = List.copyOf(evidence);
-            turn = models.toolTurn("KNOWLEDGE_QA", selection, target -> {
+            try(var continuation=budget.trace().span("CONTINUATION","tool_results",null,null,resultNodes);
+                var active=budget.activate(continuation.context())) {
+            try { turn = models.toolTurn("KNOWLEDGE_QA", selection, target -> {
                 verify.run(); tools.verify(actor, scope, actualEvidence);
                 return new ModelInput.Prepared(messages, actualEvidence, ModelInput.count(messages));
-            }, budget, specs, pinned);
+            }, budget, specs, pinned); }
+            catch(RuntimeException failed) { continuation.fail(failed); throw failed; }
+            }
             attempts.addAll(turn.route().attempts());
         }
         var route = turn.route();

@@ -40,6 +40,13 @@ management:
     health:
       show-details: never
 lab:
+  observability:
+    max-nodes: 2000
+    queue-capacity: 32
+    retention-days: 7
+    export-enabled: ${OBS_EXPORT_ENABLED:false}
+    otlp-endpoint: ${OBS_OTLP_ENDPOINT:}
+    otlp-authorization: ${OBS_OTLP_AUTHORIZATION:}
   tools:
     # S05：只读模型工具暴露开关；写工具仍只能通过本人确认API。
     enabled: true

@@ -96,15 +96,19 @@ public class ModelGateway {
                                            ExecutionBudget budget, StructuredSchema<T> schema) {
         var attempts = new ArrayList<ModelRoute.Attempt>();
         Turn turn = generate(task, selection, input, budget, schema, "", attempts, null, List.of());
-        try { return new StructuredTurn<>(schema.validate(turn.text(), referenceIds(turn.evidence())), turn); }
+        try { return new StructuredTurn<>(validateStructured(schema, turn, budget), turn); }
         catch (LabException invalid) {
             if (!invalid.code().equals("MODEL_STRUCTURED_INVALID")) throw invalid;
             markInvalid(attempts); budget.invalidStructure(); budget.repair();
             // 修复固定当前成功目标，避免把结构错误当服务故障，或跨模型追求更有利的安全结果。
             turn = generate(task, selection, input, budget, schema, "上次输出未满足字段或引用约束，请按同一结构重新生成。", attempts, turn.modelId(), List.of());
-            try { return new StructuredTurn<>(schema.validate(turn.text(), referenceIds(turn.evidence())), turn); }
+            try { return new StructuredTurn<>(validateStructured(schema, turn, budget), turn); }
             catch (LabException failed) { markInvalid(attempts); budget.invalidStructure(); throw failed; }
         }
+    }
+    /** 提供方响应成功与结构验收分别记录，非法结构不会被成功模型节点掩盖。 */
+    private <T> T validateStructured(StructuredSchema<T> schema,Turn turn,ExecutionBudget budget) {
+        return budget.trace().call("VALIDATION","structured_output",()->schema.validate(turn.text(),referenceIds(turn.evidence())));
     }
     public record StructuredTurn<T>(T value, Turn turn) { }
 
@@ -144,6 +148,7 @@ public class ModelGateway {
                 int reserved = 0;
                 String outcome = "MODEL_INVALID_OUTPUT";
                 var raw = new java.util.concurrent.atomic.AtomicReference<String>();
+                com.example.ailab.contract.context.TraceContext.Span modelSpan = null;
                 try {
                     // 结构指令也计入目标窗口；重装时增加同等预留，不截系统规则和当前问题。
                     var target = schema == null ? d : withReservedSchema(d, schema, correction);
@@ -161,6 +166,9 @@ public class ModelGateway {
                     if (!local) throw new LabException("RATE_LIMITED", "目标模型并发已满");
                     budget.attempt();
                     attempts++; sent = true;
+                    // 额度可靠消费成功之后才登记实际尝试，每次失败、修复和备用各一叶节点。
+                    modelSpan=budget.trace().span("MODEL","chat");
+                    budget.lastModelNode(modelSpan.id());
                     if (registry.mock()) {
                         if (d.modelName().contains("timeout"))
                             throw new LabException("MODEL_TIMEOUT", "模拟主模型超时");
@@ -218,6 +226,13 @@ public class ModelGateway {
                     if (sent && !outcome.equals("SUCCESS")) {
                         log.add(usage(id, outcome, reserved, inputUsage, outputUsage, d));
                         budget.observe(log.get(log.size()-1));
+                    }
+                    if(modelSpan!=null) {
+                        modelSpan.model(id,task,decision.profile(),registry.configuration().routing().policyVersion(),
+                                repair ? "PINNED_CONTINUATION_OR_REPAIR" : !id.equals(ids.get(0)) ? "COMPATIBLE_FALLBACK" : "ORDERED_COMPATIBLE_HEALTHY",
+                                attempts,inputUsage,outputUsage,registry.mock()?"SIMULATED":inputUsage==null || outputUsage==null?"UNKNOWN":"PROVIDER");
+                        if(!outcome.equals("SUCCESS")) modelSpan.fail(new LabException(outcome,"模型失败"));
+                        modelSpan.close();
                     }
                     DeadlineHttpClient.CURRENT.remove(); health.release(permit);
                     if (local) semaphore.release(); if (global) concurrency.release();
@@ -281,8 +296,11 @@ public class ModelGateway {
         if (texts.isEmpty() || texts.size() > 32 || texts.stream().mapToInt(this::bytes).sum() > 16000)
             throw new LabException("INGESTION_BUDGET_EXCEEDED", "Embedding 批次输入超过限额");
         if (!concurrency.tryAcquire()) throw new LabException("RATE_LIMITED", "模型并发已满");
+        com.example.ailab.contract.context.TraceContext.Span embeddingSpan=null;
+        Integer used=null;
         try {
             budget.attempt();
+            embeddingSpan=budget.trace().span("EMBEDDING","embed");
             if (registry.mock()) {
                 var vectors = new ArrayList<List<Float>>();
                 for (String text : texts) {
@@ -310,12 +328,19 @@ public class ModelGateway {
             }).toList();
             if (vectors.size() != texts.size())
                 throw new LabException("MODEL_INVALID_OUTPUT", "Embedding 返回数量不符");
-            return new Vectors(vectors, d.modelName(), false, result.tokenUsage()==null?null:result.tokenUsage().inputTokenCount());
+            used=result.tokenUsage()==null?null:result.tokenUsage().inputTokenCount();
+            return new Vectors(vectors, d.modelName(), false, used);
         } catch (LabException e) {
+            if(embeddingSpan!=null) embeddingSpan.fail(e);
             throw e;
         } catch (RuntimeException e) {
+            if(embeddingSpan!=null) embeddingSpan.fail(new LabException(classify(e),"嵌入失败"));
             throw new LabException(classify(e), "Embedding 调用失败");
         } finally {
+            if(embeddingSpan!=null) {
+                embeddingSpan.model(id,"EMBEDDING","embedding",registry.configuration().routing().policyVersion(),"SINGLE_VECTOR_SPACE",budget.attempts(),used,null,registry.mock()?"SIMULATED":used==null?"UNKNOWN":"PROVIDER");
+                embeddingSpan.close();
+            }
             DeadlineHttpClient.CURRENT.remove();
             concurrency.release();
         }

@@ -29,12 +29,12 @@ public class BearerTokenFilter extends OncePerRequestFilter {
     }
 
     /**
-     * 登录和仅存活健康检查无须已有 token。
+     * 登录、存活健康检查和无私人内容的检查页壳无须已有token；运行API仍强制认证。
      */
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getServletPath();
-        return path.equals("/api/v1/auth/login") || path.equals("/actuator/health");
+        return Set.of("/api/v1/auth/login","/actuator/health","/run-inspector.html","/run-inspector.js","/run-inspector.css").contains(path);
     }
 
     /**

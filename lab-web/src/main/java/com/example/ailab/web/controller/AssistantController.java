@@ -48,6 +48,7 @@ public class AssistantController {
         var result = assistant.answer(actor, r);
         // 模型完成和 HTTP 发布存在间隔，发送前再核验身份、范围和来源。
         assistant.verifyDelivery(actor, r, result);
+        personal.delivered(actor,result.traceId());
         return result;
     }
 
@@ -84,9 +85,11 @@ public class AssistantController {
                         cancellation.check();
                         assistant.verifyDelivery(actor, r, result);
                         delivery.send("progress", Map.of("stage", "validated"));
-                        for (int i = 0; i < result.answer().length(); i += 512)
+                        for (int i = 0; i < result.answer().length(); i += 512) {
                             delivery.send("delta", Map.of("text", result.answer().substring(i,
                                     Math.min(i + 512, result.answer().length()))));
+                            if(i==0) personal.delivered(actor,result.traceId());
+                        }
                         for (var citation : result.citations()) delivery.send("citation", citation);
                         delivery.done(result);
                     }
@@ -249,5 +252,12 @@ public class AssistantController {
     @GetMapping("/runs/{id}")
     public TraceSnapshot run(Authentication a, @PathVariable String id) {
         return personal.run(CurrentUser.from(a), id);
+    }
+
+    /** 图的节点与调用／依赖边只来自本人持久执行事实，禁止浏览器缓存私人链路。 */
+    @GetMapping("/runs/{id}/graph")
+    public org.springframework.http.ResponseEntity<TraceGraph> graph(Authentication a,@PathVariable String id) {
+        return org.springframework.http.ResponseEntity.ok().header("Cache-Control","no-store")
+                .body(personal.graph(CurrentUser.from(a),id));
     }
 }

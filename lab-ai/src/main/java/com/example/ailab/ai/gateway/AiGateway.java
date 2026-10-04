@@ -30,6 +30,10 @@ public class AiGateway implements AiGatewayPort {
     private final RagProperties rag;
     private final SessionStorePort sessions;
     private final SessionHistoryService history;
+    private TraceTelemetryPort telemetry=TraceTelemetryPort.NONE;
+    /** 正式入口装配收集器，旧显式构造保留不完整摘要路径。 */
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void tracing(TraceTelemetryPort telemetry) { this.telemetry=telemetry; }
 
     /**
      * 六层各负其责，网关只组织受控路径。
@@ -74,6 +78,9 @@ public class AiGateway implements AiGatewayPort {
         knowledge.authorize(actor, request.scope());
         String trace = UUID.randomUUID().toString();
         var budget = new ExecutionBudget(Duration.ofSeconds(60), 10, () -> {}, () -> {}, cancellation::check);
+        var observation=telemetry.open(trace,actor.userId(),request.sessionId(),null,null);
+        var root=observation.span("REQUEST","chat");
+        budget.traced(root.context());
         String status = "FAILED", selected = "none";
         boolean mock = false;
         SessionLease lease = null;
@@ -83,9 +90,10 @@ public class AiGateway implements AiGatewayPort {
                 lease = sessions.begin(actor, request.sessionId(), request.sessionVersion(), request.scope());
             // 程序统计不需要历史或摘要，保持旧入口零聊天模型调用的语义。
             boolean readOnlyTools = "READ_ONLY".equals(request.toolMode());
+            final var historyLease=lease;
             var context = lease == null || request.question().strip().startsWith("统计") && !readOnlyTools
                     ? new SessionHistoryService.Context(List.of(), List.of(), null, List.of(), List.of())
-                    : history.load(actor, lease, budget);
+                    : budget.trace().call("MEMORY","session_history",()->history.load(actor, historyLease, budget));
             if (request.question().strip().startsWith("统计") && !readOnlyTools) {
                 var stats = tools.statistics(actor, request.scope(), budget);
                 knowledge.authorize(actor, request.scope());
@@ -112,7 +120,7 @@ public class AiGateway implements AiGatewayPort {
                 return result;
             }
             tools.verify(actor, request.scope(), evidence);
-            String preferences = memory.preferences(actor);
+            String preferences = budget.trace().call("MEMORY","preferences",()->memory.preferences(actor));
             if (lease != null) history.verify(actor, lease, context.dependencies());
             String system = "知识结论仅根据本轮提供的证据回答，关键结论必须带本轮 [E编号] 引用。"
                     + "合法历史可用于多轮指代和用户先前明确给出的对话约定；没有知识证据时不能编造知识事实。"
@@ -141,14 +149,19 @@ public class AiGateway implements AiGatewayPort {
             evidence = turn.evidence();
             selected = turn.modelId();
             mock = turn.mock();
-            String answer = "NEEDS_INPUT".equals(structuredStatus) ? aggregator.validate(structuredAnswer, List.of(), turn.mock())
+            var aggregation=budget.trace().span("AGGREGATOR","validate");
+            String answer;
+            try { answer = "NEEDS_INPUT".equals(structuredStatus) ? aggregator.validate(structuredAnswer, List.of(), turn.mock())
                     : aggregator.validate(structuredAnswer == null ? turn.text() : structuredAnswer, evidence, turn.mock());
+            } catch(RuntimeException invalid) { aggregation.fail(invalid); throw invalid; } finally { aggregation.close(); }
             tools.verify(actor, request.scope(), evidence);
             budget.check();
             status = "NEEDS_INPUT".equals(structuredStatus) ? "NEEDS_INPUT" : "SUCCESS";
             var result = complete(actor, lease, request.question(), new AiResult(status, answer, evidence, trace, selected, budget.attempts(), mock, null, null, null, turn.route()), context, budget, cancellation, exchanges);
             committed = true;
             return result;
+        } catch(RuntimeException failed) {
+            status="FAILED"; root.fail(failed); throw failed;
         } finally {
             // 失败没有成功消息；释放失败也不得覆盖原错误，数据库租约仍会有界到期。
             if (lease != null && !committed) {
@@ -156,12 +169,15 @@ public class AiGateway implements AiGatewayPort {
                 try { sessions.abort(actor, lease); } catch (RuntimeException ignored) {}
             }
             // 观测失败不能让成功业务请求失败；可靠用量预算不依赖这条可丢遥测。
+            root.status(status); root.close(); observation.finish();
             try {
+                if(telemetry==TraceTelemetryPort.NONE)
                 traces.record(new TraceSnapshot(trace, actor.userId(), status, selected, budget.attempts(), mock, Instant.now()));
             } catch (RuntimeException ignored) {
             }
         }
     }
+
 
     /** 继承所有实际输入来源；SQL 提交再次复核当前身份、范围、版本与执行权。 */
     private AiResult complete(UserContext actor, SessionLease lease, String question, AiResult result,

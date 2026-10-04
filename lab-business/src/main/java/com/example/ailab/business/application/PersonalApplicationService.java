@@ -101,6 +101,17 @@ public class PersonalApplicationService {
         return traces.read(policy.current(actor), id);
     }
 
+    /** 私人运行图走同一当前身份校验，管理员没有图查询旁路。 */
+    public TraceGraph graph(UserContext actor,String id) {
+        if(id==null || !id.matches("[0-9a-fA-F-]{36}")) throw LabException.invalid("运行标识无效");
+        return traces.graph(policy.current(actor),id);
+    }
+
+    /** 观测失败不阻断已经过权限复核的交付，数据库仍按本人过滤。 */
+    public void delivered(UserContext actor,String id) {
+        try { traces.delivered(policy.current(actor),id,java.time.Instant.now()); } catch(RuntimeException ignored) { }
+    }
+
     /**
      * 控制个人偏好输入。
      */
