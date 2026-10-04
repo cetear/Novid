@@ -161,13 +161,33 @@ public class SessionRepository implements SessionStorePort {
     public SessionSnapshot complete(UserContext actor, SessionLease lease, String question, AiResult result,
                                     List<SourceDependency> sources, List<SessionSource> refs, SessionSummary summary,
                                     Instant requestDeadline) {
+        return complete(actor, lease, question, result, sources, refs, summary, requestDeadline, List.of());
+    }
+
+    /** 工具事件严格配对且与答案共用执行权、来源与截止CAS，失败整轮回滚。 */
+    @Override
+    @Transactional
+    public SessionSnapshot complete(UserContext actor, SessionLease lease, String question, AiResult result,
+            List<SourceDependency> sources, List<SessionSource> refs, SessionSummary summary,
+            Instant requestDeadline, List<ToolExchange> exchanges) {
+        if (exchanges == null || exchanges.size() > 8) throw LabException.invalid("工具事件超限");
+        var ids = new HashSet<String>();
+        int toolBytes = 0;
+        for (var event : exchanges) {
+            if (event == null || event.toolCallId() == null || !event.toolCallId().matches("[A-Za-z0-9_.:-]{1,128}")
+                    || !ids.add(event.toolCallId()) || event.toolName() == null || !event.toolName().matches("[a-z_]{1,64}")
+                    || event.arguments() == null || event.result() == null || event.version() == null)
+                throw LabException.invalid("工具事件配对不合法");
+            toolBytes += bytes(event.arguments()) + bytes(event.result());
+        }
+        if (toolBytes > 65536) throw new LabException("BUDGET_EXCEEDED", "工具历史超过64KB");
         var row = active(actor, lease, true);
         if (requestDeadline == null || !row.serverNow().isBefore(requestDeadline)) throw deadlineExceeded();
         if (question == null || question.isBlank() || question.length() > 2000) throw LabException.invalid("问题须为 1～2000 字符");
         if (result == null || !Set.of("SUCCESS", "NEEDS_INPUT").contains(result.status()) || result.answer() == null || result.answer().isBlank())
             throw LabException.invalid("会话只能保存正常业务结果");
         if (bytes(result.answer()) > 65536) throw new LabException("BUDGET_EXCEEDED", "会话答案超过 64 KB");
-        if (row.nextSeq() + 1 > 10000) throw new LabException("BUDGET_EXCEEDED", "每会话最多 10000 条消息");
+        if (row.nextSeq() + 1 + exchanges.size() * 2 > 10000) throw new LabException("BUDGET_EXCEEDED", "每会话最多 10000 条消息");
         var referenceSet = new LinkedHashSet<SessionSource>();
         if (refs != null) referenceSet.addAll(refs);
         for (var citation : result.citations()) referenceSet.add(new SessionSource(
@@ -195,7 +215,15 @@ public class SessionRepository implements SessionStorePort {
         String sourceJson = encode(flattened), referenceJson = encode(references), scopeJson = encode(lease.scope());
         // 问题也携带完整上下文来源，防止用户复述受限资料后绕过后续历史读取过滤。
         insertMessage(actor, lease, row.nextSeq(), "USER", result.status(), question, sourceJson, referenceJson, scopeJson);
-        insertMessage(actor, lease, row.nextSeq() + 1, "ASSISTANT", result.status(), result.answer(), sourceJson, referenceJson, scopeJson);
+        long seq = row.nextSeq() + 1;
+        for (var event : exchanges) {
+            for (String role : List.of("TOOL_REQUEST", "TOOL_RESULT")) {
+                sql.jdbc.update("INSERT INTO messages(session_id,user_id,seq,role,status,content,source_json,source_reference_json,scope_json,tool_call_id,tool_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        lease.sessionId(), actor.userId(), seq++, role, result.status(), role.equals("TOOL_REQUEST") ? event.arguments() : event.result(),
+                        sourceJson, referenceJson, scopeJson, event.toolCallId(), event.toolName());
+            }
+        }
+        insertMessage(actor, lease, seq, "ASSISTANT", result.status(), result.answer(), sourceJson, referenceJson, scopeJson);
         if (summary != null) {
             var summarySources = verifySources(actor, lease.scope(), summary.sourceDependencies());
             sql.jdbc.update("UPDATE sessions SET summary_content=?,summary_covered_through_seq=?,summary_source_json=? WHERE id=?",
@@ -204,8 +232,8 @@ public class SessionRepository implements SessionStorePort {
             // AI 已过滤失效旧摘要或暂无摘要，彻底清除旧派生内容，下一轮不能反复复用。
             sql.jdbc.update("UPDATE sessions SET summary_content=NULL,summary_covered_through_seq=NULL,summary_source_json=NULL WHERE id=?", lease.sessionId());
         }
-        int changed = sql.jdbc.update("UPDATE sessions SET next_seq=next_seq+2,version=version+1,execution_id=NULL,lease_until=NULL WHERE id=? AND user_id=? AND version=? AND execution_id=? AND lease_until>CURRENT_TIMESTAMP(6) AND CURRENT_TIMESTAMP(6)<? AND deleted=FALSE",
-                lease.sessionId(), actor.userId(), lease.version(), lease.executionId(), Timestamp.from(requestDeadline));
+        int changed = sql.jdbc.update("UPDATE sessions SET next_seq=next_seq+?,version=version+1,execution_id=NULL,lease_until=NULL WHERE id=? AND user_id=? AND version=? AND execution_id=? AND lease_until>CURRENT_TIMESTAMP(6) AND CURRENT_TIMESTAMP(6)<? AND deleted=FALSE",
+                2 + exchanges.size() * 2, lease.sessionId(), actor.userId(), lease.version(), lease.executionId(), Timestamp.from(requestDeadline));
         if (changed != 1) {
             // 后续来源查询／消息写入也可能耗时；最终 CAS 失败会回滚已插入的整对事件。
             Instant serverNow = sql.jdbc.queryForObject("SELECT CURRENT_TIMESTAMP(6)", Timestamp.class).toInstant();

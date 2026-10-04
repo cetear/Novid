@@ -37,6 +37,13 @@ public interface SessionStorePort {
                                      Instant requestDeadline) {
         return complete(actor, lease, question, result, sources, refs, summary);
     }
+    /** S05把已配对工具事件与问答同事务保存；旧存储有工具事件时明确不支持，不能默默丢失。 */
+    default SessionSnapshot complete(UserContext actor, SessionLease lease, String question, AiResult result,
+            List<SourceDependency> sources, List<SessionSource> refs, SessionSummary summary, Instant deadline,
+            List<ToolExchange> exchanges) {
+        if (!exchanges.isEmpty()) throw new UnsupportedOperationException("存储没有工具事件提交能力");
+        return complete(actor, lease, question, result, sources, refs, summary, deadline);
+    }
     /** 提交后交付前短事务复核全部历史派生来源及版本，锁不跨 HTTP 发送。 */
     void verifyDelivery(UserContext actor, long id, long version);
     /** 历史分页交付前在短事务统一复核可见事件，期间撤销来源则拒绝整页。 */

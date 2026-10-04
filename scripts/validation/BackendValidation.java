@@ -277,6 +277,8 @@ public class BackendValidation {
             var baseIds=named.queryForList("SELECT id FROM knowledge_bases WHERE owner_user_id IN (:users)",parameters,Long.class);
             named.update("DELETE FROM artifacts WHERE requester_user_id IN (:users)",parameters);
             named.update("DELETE FROM task_steps WHERE task_id IN (SELECT id FROM ai_tasks WHERE requester_user_id IN (:users))",parameters);
+            // S05新增计划外键，仅清本次合成用户任务的附属行。
+            named.update("DELETE FROM task_plans WHERE task_id IN (SELECT id FROM ai_tasks WHERE requester_user_id IN (:users))",parameters);
             named.update("DELETE FROM ai_tasks WHERE requester_user_id IN (:users)",parameters);
             for(String table:List.of("ai_runs","knowledge_access_audit","approvals","operations","request_deduplications"))named.update("DELETE FROM "+table+" WHERE actor_user_id IN (:users)",parameters);
             for(String table:List.of("auth_tokens","profile_memories"))named.update("DELETE FROM "+table+" WHERE user_id IN (:users)",parameters);

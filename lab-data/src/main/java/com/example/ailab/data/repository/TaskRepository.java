@@ -45,7 +45,10 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public TaskSnapshot create(UserContext actor, TaskRequest request) {
         sql.actor(actor, true);
-        String serialized = encode(new TaskRequest(request.taskType(), request.topic(), request.scope(), request.documentIds().stream().distinct().sorted().toList(), request.idempotencyKey())), hash = SqlSupport.hash(serialized);
+        // FIXED保留S04之前的规范JSON，旧幂等键不能因增加可选字段而参数冲突。
+        var canonical = json.valueToTree(new TaskRequest(request.taskType(), request.topic(), request.scope(), request.documentIds().stream().distinct().sorted().toList(), request.idempotencyKey(), request.strategy()));
+        if (request.strategy().equals("FIXED")) ((com.fasterxml.jackson.databind.node.ObjectNode) canonical).remove("strategy");
+        String serialized = encode(canonical), hash = SqlSupport.hash(serialized);
         var old = sql.jdbc.query("SELECT request_hash,resource_id FROM request_deduplications WHERE actor_user_id=? AND namespace='TASK_CREATE' AND request_key=?", (r, n) -> Map.entry(r.getString(1), r.getLong(2)), actor.userId(), request.idempotencyKey());
         if (!old.isEmpty()) {
             if (!old.get(0).getKey().equals(hash)) throw new LabException("OPERATION_CONFLICT", "相同任务键参数不同");
@@ -53,7 +56,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
         }
         if (sql.jdbc.queryForObject("SELECT COUNT(*) FROM ai_tasks WHERE requester_user_id=? AND status NOT IN ('SUCCEEDED','PARTIAL','FAILED','CANCELLED')", Long.class, actor.userId()) >= 20)
             throw new LabException("RATE_LIMITED", "未完成任务数量超过限额");
-        long id = sql.insert("INSERT INTO ai_tasks(requester_user_id,task_type,request_json,request_hash) VALUES(?,?,?,?)", actor.userId(), request.taskType(), serialized, hash);
+        long id = sql.insert("INSERT INTO ai_tasks(requester_user_id,task_type,request_json,request_hash,tool_calls,model_repairs) VALUES(?,?,?,?,0,0)", actor.userId(), request.taskType(), serialized, hash);
         // 与任务创建同事务初始化步骤，202 返回时就有完整的待执行列表。
         for (String step : TaskProgress.stepIds())
             sql.jdbc.update("INSERT INTO task_step_progress(task_id,step_id) VALUES(?,?)", id, step);
@@ -280,6 +283,59 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     public int remainingModelTurns(TaskLease lease) {
         valid(lease);
         return 6-sql.jdbc.queryForObject("SELECT model_turns FROM ai_tasks WHERE id=?",Integer.class,lease.task().taskId());
+    }
+
+    /** 当前租约下恢复唯一计划；已成功节点仍由原检查点复用。 */
+    @Transactional
+    public Optional<TaskPlan> plan(TaskLease lease) {
+        valid(lease);
+        return readPlan(lease.actor(), lease.task().taskId()).map(TaskPlanSnapshot::plan);
+    }
+
+    /** 本人查询计划，JSON摘要与hash不一致时拒绝恢复，不猜测原计划。 */
+    @Transactional(readOnly = true)
+    public Optional<TaskPlanSnapshot> readPlan(UserContext actor, long taskId) {
+        read(actor, taskId);
+        return sql.jdbc.query("SELECT * FROM task_plans WHERE task_id=?", (r, n) -> {
+            var plan = decode(r.getString("plan_json"), TaskPlan.class);
+            if (!SqlSupport.hash(encode(plan)).equals(r.getString("plan_hash")))
+                throw new LabException("CONTEXT_MAPPING_INVALID", "计划摘要不匹配");
+            return new TaskPlanSnapshot(plan, r.getString("plan_hash"), r.getString("agent_version"), r.getString("model_id"), r.getString("policy_version"));
+        }, taskId).stream().findFirst();
+    }
+
+    /** 已校验计划不可覆盖；fencing／用户锁与任务写事务共用，远程生成在本方法外。 */
+    @Transactional
+    public void savePlan(TaskLease lease, TaskPlan plan, String modelId, String policyVersion) {
+        valid(lease);
+        if (!lease.request().strategy().equals("PLANNED") || !"plan-s05-v1".equals(plan.version())
+                || plan.steps().size() != 3 || modelId == null || modelId.length() > 64 || policyVersion == null || policyVersion.length() > 128)
+            throw LabException.invalid("计划登记参数不合法");
+        var previous = readPlan(lease.actor(), lease.task().taskId());
+        if (previous.isPresent()) {
+            if (!previous.get().plan().equals(plan)) throw new LabException("OPERATION_CONFLICT", "已登记计划不可覆盖");
+            return;
+        }
+        String encoded = encode(plan);
+        sql.jdbc.update("INSERT INTO task_plans(task_id,plan_version,plan_hash,plan_json,agent_version,model_id,policy_version) VALUES(?,?,?,?,?,?,?)",
+                lease.task().taskId(), plan.version(), SqlSupport.hash(encoded), encoded, "s05-v1", modelId, policyVersion);
+        progressChanged(lease);
+    }
+
+    /** 工具调用逐次持久消费，任何角色或恢复都不能重获额度。 */
+    @Transactional
+    public void reserveToolCall(TaskLease lease) {
+        valid(lease);
+        if (sql.jdbc.update("UPDATE ai_tasks SET tool_calls=tool_calls+1 WHERE id=? AND tool_calls<8", lease.task().taskId()) != 1)
+            throw new LabException("BUDGET_EXCEEDED", "持久工具预算耗尽");
+    }
+
+    /** 全任务只有一次结构修复，崩溃后也不能再次取得。 */
+    @Transactional
+    public void reserveModelRepair(TaskLease lease) {
+        valid(lease);
+        if (sql.jdbc.update("UPDATE ai_tasks SET model_repairs=model_repairs+1 WHERE id=? AND model_repairs<1", lease.task().taskId()) != 1)
+            throw new LabException("MODEL_REPAIR_EXHAUSTED", "持久结构修复预算耗尽");
     }
 
     /** 每页都指当前合法原文与真实章节，未送模范围不能伪装成已读成功。 */

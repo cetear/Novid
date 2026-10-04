@@ -14,6 +14,7 @@ public final class ExecutionBudget {
     private final Runnable turnJournal;
     private final Runnable cancellationCheck;
     private int attempts, turns, tools, repairs;
+    private Runnable toolJournal = () -> {}, repairJournal = () -> {};
     private final java.util.List<com.example.ailab.contract.dto.ModelRoute.Attempt> observed = new java.util.ArrayList<>();
 
     /**
@@ -48,6 +49,12 @@ public final class ExecutionBudget {
         this.cancellationCheck = cancellationCheck;
     }
 
+    /** 后台所有角色共享持久工具／修复预算，恢复不会重新获得八次或一次额度。 */
+    public ExecutionBudget(Duration duration, int maxAttempts, Runnable journal, Runnable turnJournal,
+            Runnable cancellationCheck, Runnable toolJournal, Runnable repairJournal) {
+        this(duration, maxAttempts, journal, turnJournal, cancellationCheck);
+        this.toolJournal = toolJournal; this.repairJournal = repairJournal;
+    }
     /**
      * 真实尝试开始前消费额度，失败也不能视为免费。
      */
@@ -72,13 +79,15 @@ public final class ExecutionBudget {
      */
     public synchronized void tool() {
         check();
-        if (++tools > 8) throw new LabException("BUDGET_EXCEEDED", "工具次数超过限制");
+        if (tools >= 8) throw new LabException("BUDGET_EXCEEDED", "工具次数超过限制");
+        toolJournal.run(); tools++;
     }
 
     /**
      * 在线截止时间不能因重试而延长。
      */
     public void check() {
+        if (Thread.currentThread().isInterrupted()) throw new LabException("REQUEST_CANCELLED", "执行线程已取消");
         cancellationCheck.run();
         if (!Instant.now().isBefore(deadline)) throw new LabException("BUDGET_EXCEEDED", "执行已超时");
     }
@@ -102,7 +111,7 @@ public final class ExecutionBudget {
     public synchronized void repair() {
         check();
         if (repairs >= 1) throw new LabException("MODEL_REPAIR_EXHAUSTED", "结构化修复额度耗尽");
-        repairs++;
+        repairJournal.run(); repairs++;
     }
     /** 运行期间保留所有聊天失败／修复用量，后续持久追踪可读取；不依赖可丢trace。 */
     public synchronized void observe(com.example.ailab.contract.dto.ModelRoute.Attempt attempt) { observed.add(attempt); }

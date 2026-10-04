@@ -35,6 +35,12 @@ public class AssistantApplicationService {
         return result;
     }
 
+    /** 定义查询也复核当前身份，不接受客户端指定执行者。 */
+    public java.util.List<ToolDefinition> tools(UserContext actor, String taskType) {
+        knowledge.authorize(actor, ScopeRequest.self());
+        return ai.tools(actor, taskType);
+    }
+
     /** 异步推送沿用同一业务入口及发布复核，取消不是用户或模型授权。 */
     public AiResult answer(UserContext actor, AiRequest request, RequestCancellation cancellation) {
         var result = ai.answer(actor, request, cancellation);

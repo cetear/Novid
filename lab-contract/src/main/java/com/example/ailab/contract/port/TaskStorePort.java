@@ -76,6 +76,18 @@ public interface TaskStorePort {
     /** 当前持久剩余轮数用于给分析／发布预留额度，进程恢复不能重复获得六轮。 */
     default int remainingModelTurns(TaskLease lease) { return 6; }
 
+    /** 读取已校验计划，恢复只复用原版，不重新规划成功节点。 */
+    default Optional<TaskPlan> plan(TaskLease lease) { return Optional.empty(); }
+    /** 本人读取计划；尚未规划或固定工作流返回空，不造一张静态图。 */
+    default Optional<TaskPlanSnapshot> readPlan(UserContext actor, long taskId) { return Optional.empty(); }
+    /** 当前租约下保存唯一计划、角色版本与策略事实，旧实现不能假装持久成功。 */
+    default void savePlan(TaskLease lease, TaskPlan plan, String modelId, String policyVersion) {
+        throw new UnsupportedOperationException("此存储没有动态计划能力");
+    }
+    /** 工具预算与修复额度独立于可丢追踪，正式存储持久单调消费。 */
+    default void reserveToolCall(TaskLease lease) { }
+    /** 结构修复与所有模型调用共享原任务预算。 */
+    default void reserveModelRepair(TaskLease lease) { }
     /**
      * 执行完毕原子创建私人产物并进入 SUCCEEDED/PARTIAL。
      */

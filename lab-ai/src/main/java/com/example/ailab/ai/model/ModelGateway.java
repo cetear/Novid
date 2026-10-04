@@ -77,7 +77,13 @@ public class ModelGateway {
 
     /** 显式受控选择与目标输入回调，写工具仍不在本层执行。 */
     public Turn chat(String task, ModelRegistry.Selection selection, ModelInput input, ExecutionBudget budget) {
-        return generate(task, selection, input, budget, null, "", new ArrayList<>(), null);
+        return generate(task, selection, input, budget, null, "", new ArrayList<>(), null, List.of());
+    }
+    /** 手写工具循环入口；续轮固定已产生申请的目标，禁止跨提供方搬运协议或重放工具。 */
+    public Turn toolTurn(String task, ModelRegistry.Selection selection, ModelInput input, ExecutionBudget budget,
+                         List<dev.langchain4j.agent.tool.ToolSpecification> tools, String pinnedModel) {
+        if (tools.isEmpty()) throw new LabException("TOOL_DISABLED", "没有可暴露工具");
+        return generate(task, selection, input, budget, null, "", new ArrayList<>(), pinnedModel, tools);
     }
     /** 摘要／报告每次重试和备用前重核来源；固定整页语义不允许静默裁剪。 */
     public Turn chatVerified(String task, String system, String prompt, ExecutionBudget budget, Runnable verify) {
@@ -89,13 +95,13 @@ public class ModelGateway {
     public <T> StructuredTurn<T> structured(String task, ModelRegistry.Selection selection, ModelInput input,
                                            ExecutionBudget budget, StructuredSchema<T> schema) {
         var attempts = new ArrayList<ModelRoute.Attempt>();
-        Turn turn = generate(task, selection, input, budget, schema, "", attempts, null);
+        Turn turn = generate(task, selection, input, budget, schema, "", attempts, null, List.of());
         try { return new StructuredTurn<>(schema.validate(turn.text(), referenceIds(turn.evidence())), turn); }
         catch (LabException invalid) {
             if (!invalid.code().equals("MODEL_STRUCTURED_INVALID")) throw invalid;
             markInvalid(attempts); budget.invalidStructure(); budget.repair();
             // 修复固定当前成功目标，避免把结构错误当服务故障，或跨模型追求更有利的安全结果。
-            turn = generate(task, selection, input, budget, schema, "上次输出未满足字段或引用约束，请按同一结构重新生成。", attempts, turn.modelId());
+            turn = generate(task, selection, input, budget, schema, "上次输出未满足字段或引用约束，请按同一结构重新生成。", attempts, turn.modelId(), List.of());
             try { return new StructuredTurn<>(schema.validate(turn.text(), referenceIds(turn.evidence())), turn); }
             catch (LabException failed) { markInvalid(attempts); budget.invalidStructure(); throw failed; }
         }
@@ -114,10 +120,10 @@ public class ModelGateway {
     }
     /** 每次发送前重装／复核，最多两候选三尝试，SDK重试零；缓存不保存请求期限。 */
     private Turn generate(String task, ModelRegistry.Selection selection, ModelInput input, ExecutionBudget budget,
-                          StructuredSchema<?> schema, String correction, List<ModelRoute.Attempt> log, String repairId) {
+                          StructuredSchema<?> schema, String correction, List<ModelRoute.Attempt> log, String repairId, List<dev.langchain4j.agent.tool.ToolSpecification> tools) {
         if (selection == null) selection = ModelRegistry.Selection.auto();
         budget.turn();
-        var required = schema == null ? Set.of("CHAT") : Set.of("CHAT", "STRUCTURED_OUTPUT");
+        var required = !tools.isEmpty() ? Set.of("CHAT", "TOOLS") : schema == null ? Set.of("CHAT") : Set.of("CHAT", "STRUCTURED_OUTPUT");
         var repair = repairId != null;
         var baseDecision = registry.route(task, selection, required);
         var decision = repair ? new ModelRegistry.Decision(baseDecision.profile(), baseDecision.mode(), List.of(repairId)) : baseDecision;
@@ -147,7 +153,7 @@ public class ModelGateway {
                             || m instanceof AiMessage a && a.hasToolExecutionRequests()))
                         throw new LabException("MODEL_CONTEXT_NOT_PORTABLE", "工具协议状态无法安全切换目标");
                     if (schema != null) messages.add(SystemMessage.from(schema.instruction(referenceIds(prepared.evidence())) + correction));
-                    reserved = ModelInput.count(messages);
+                    reserved = ModelInput.count(messages) + (tools.isEmpty() ? 0 : TextWindow.count(tools.toString()) + 256);
                     if (reserved + d.outputLimit() > d.contextWindow()) throw new LabException("MODEL_CONTEXT_INSUFFICIENT", "目标窗口不足以容纳结构约束");
                     global = concurrency.tryAcquire();
                     if (!global) throw new LabException("RATE_LIMITED", "模型并发已满");
@@ -167,6 +173,7 @@ public class ModelGateway {
                     }
                     DeadlineHttpClient.CURRENT.set(new DeadlineHttpClient.Scope(budget, d.timeoutSeconds(), raw));
                     var request = ChatRequest.builder().messages(messages);
+                    if (!tools.isEmpty()) request.toolSpecifications(tools);
                     if (schema != null) request.responseFormat(ResponseFormat.builder().type(ResponseFormatType.JSON)
                             .jsonSchema(d.capabilities().contains("JSON_SCHEMA") ? schema.schema() : null).build());
                     var response = chatClient(id).chat(request.build());
@@ -176,8 +183,14 @@ public class ModelGateway {
                     // SDK可能只返回文字，原始协议refusal必须独立检查，不能修复安全拒绝。
                     if (refused(raw.get()) || response.finishReason() == FinishReason.CONTENT_FILTER) throw new LabException("MODEL_REFUSED", "模型拒绝本次请求");
                     if (response.finishReason() == FinishReason.LENGTH) throw new LabException("MODEL_TRUNCATED", "模型输出已截断");
-                    if (response.aiMessage().hasToolExecutionRequests() || response.finishReason() == FinishReason.TOOL_EXECUTION)
-                        throw new LabException("MODEL_TOOL_CALL_PENDING", "工具请求等待受控续轮，当前入口不执行");
+                    if (response.aiMessage().hasToolExecutionRequests() || response.finishReason() == FinishReason.TOOL_EXECUTION) {
+                        if (tools.isEmpty() || !response.aiMessage().hasToolExecutionRequests())
+                            throw new LabException("MODEL_TOOL_CALL_PENDING", "当前入口不接受工具申请");
+                        budget.check(); health.success(permit); outcome = "SUCCESS";
+                        log.add(usage(id, "TOOL_REQUEST", reserved, inputUsage, outputUsage, d)); budget.observe(log.get(log.size()-1));
+                        var pending = turn(text, id, inputUsage, outputUsage, false, response.aiMessage(), decision, log, prepared.evidence());
+                        return new Turn(text, id, inputUsage, outputUsage, false, "TOOL_EXECUTION", response.aiMessage(), pending.route(), prepared.evidence());
+                    }
                     if (response.finishReason() != FinishReason.STOP) throw new LabException("MODEL_INVALID_OUTPUT", "模型结束状态不合法");
                     if (text == null || text.isBlank())
                         throw new LabException("MODEL_INVALID_OUTPUT", "模型未返回可交付文本");

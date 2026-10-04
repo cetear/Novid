@@ -51,6 +51,14 @@ public class AssistantController {
         return result;
     }
 
+    /** 只读工具定义不授予调用权，模型执行时仍独立复核资源。 */
+    @GetMapping("/tools")
+    public org.springframework.http.ResponseEntity<List<ToolDefinition>> tools(Authentication a,
+            @RequestParam(defaultValue = "KNOWLEDGE_QA") String taskType) {
+        return org.springframework.http.ResponseEntity.ok().header("Cache-Control", "no-store")
+                .body(assistant.tools(CurrentUser.from(a), taskType));
+    }
+
     /**
      * 先同步检查准入，再异步生成全文；处理心跳不带正文，只有校验结果才能分块发送。
      */

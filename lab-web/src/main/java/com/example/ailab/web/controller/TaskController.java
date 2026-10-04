@@ -20,7 +20,9 @@ import java.net.URI;
 @RequestMapping("/api/v1")
 public class TaskController {
     public record Create(@NotBlank String taskType, @NotBlank @Size(max = 1000) String topic, ScopeRequest scope,
-                         @NotEmpty @Size(max = 6) List<@NotNull @Positive Long> documentIds) {
+                         @NotEmpty @Size(max = 6) List<@NotNull @Positive Long> documentIds, String strategy) {
+        /** 旧四参数构造保持默认固定工作流。 */
+        public Create(String taskType, String topic, ScopeRequest scope, List<Long> documentIds) { this(taskType, topic, scope, documentIds, null); }
     }
 
     public record Action(@NotBlank String action) {
@@ -40,7 +42,7 @@ public class TaskController {
      */
     @PostMapping("/tasks")
     public ResponseEntity<TaskSnapshot> create(Authentication a, @Valid @RequestBody Create r, @RequestHeader("Idempotency-Key") String key) {
-        var task = service.create(CurrentUser.from(a), new TaskRequest(r.taskType(), r.topic(), r.scope() == null ? ScopeRequest.self() : r.scope(), r.documentIds(), key));
+        var task = service.create(CurrentUser.from(a), new TaskRequest(r.taskType(), r.topic(), r.scope() == null ? ScopeRequest.self() : r.scope(), r.documentIds(), key, r.strategy()));
         // 立即返回任务和真实进度入口，客户端不要阻塞等待最终产物或重复创建任务。
         return ResponseEntity.accepted().location(URI.create("/api/v1/tasks/" + task.taskId()))
                 .header("Retry-After", "2").header("Cache-Control", "no-store").body(task);
@@ -52,6 +54,14 @@ public class TaskController {
     @GetMapping("/tasks/{id}")
     public ResponseEntity<TaskSnapshot> read(Authentication a, @PathVariable long id) {
         return ResponseEntity.ok().header("Cache-Control", "no-store").body(service.read(CurrentUser.from(a), id));
+    }
+
+    /** 只输出已持久计划，无计划返回204，不能将排队当作规划完成。 */
+    @GetMapping("/tasks/{id}/plan")
+    public ResponseEntity<TaskPlanSnapshot> plan(Authentication a, @PathVariable long id) {
+        return service.plan(CurrentUser.from(a), id)
+                .map(p -> ResponseEntity.ok().header("Cache-Control", "no-store").body(p))
+                .orElseGet(() -> ResponseEntity.noContent().header("Cache-Control", "no-store").build());
     }
 
     /**

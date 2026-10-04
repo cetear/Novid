@@ -37,6 +37,9 @@ public class TaskApplicationService {
             throw new LabException("MEDIA_CAPABILITY_UNAVAILABLE", "TTS/模板视频能力尚未完成配置与验收");
         if (!Set.of("FAQ", "RESEARCH_REPORT").contains(r.taskType()) || r.topic() == null || r.topic().isBlank() || r.topic().length() > 1000 || r.documentIds().isEmpty() || r.documentIds().size() > 6 || r.documentIds().stream().anyMatch(id -> id == null || id <= 0))
             throw LabException.invalid("仅支持 FAQ/RESEARCH_REPORT，指定 1～6 份资料和有限主题");
+        // 动态计划仅研究报告显式启用，FAQ与旧请求继续固定五步。
+        if (!Set.of("FIXED", "PLANNED").contains(r.strategy()) || r.strategy().equals("PLANNED") && !r.taskType().equals("RESEARCH_REPORT"))
+            throw LabException.invalid("strategy须为FIXED，或研究报告的PLANNED");
         DocumentApplicationService.validateKey(r.idempotencyKey());
         policy.authorize(actor, r.scope());
         for (long id : r.documentIds()) knowledge.document(actor, r.scope(), id);
@@ -48,6 +51,12 @@ public class TaskApplicationService {
      */
     public TaskSnapshot read(UserContext actor, long id) {
         return tasks.read(policy.current(actor), id);
+    }
+
+    /** 查询本人已校验计划，未产生时为空；ADMIN没有私人旁路。 */
+    public java.util.Optional<TaskPlanSnapshot> plan(UserContext actor, long id) {
+        actor = policy.current(actor); tasks.read(actor, id);
+        return tasks.readPlan(actor, id);
     }
 
     /**

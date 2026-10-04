@@ -40,6 +40,9 @@ management:
     health:
       show-details: never
 lab:
+  tools:
+    # S05：只读模型工具暴露开关；写工具仍只能通过本人确认API。
+    enabled: true
   ingestion:
     worker-enabled: ${INGESTION_WORKER_ENABLED:true}
   task:
@@ -83,7 +86,7 @@ lab:
         credential-ref: MODEL_API_KEY
         enabled: true
         # STRUCTURED_OUTPUT采用JSON对象协议与本地Schema校验；不冒称原生JSON_SCHEMA已验证。
-        capabilities: [CHAT, STRUCTURED_OUTPUT]
+        capabilities: [CHAT, STRUCTURED_OUTPUT, TOOLS]
         quality-tags: [configured-baseline]
         data-classifications: [PRIVATE]
         context-window: 16000
@@ -95,7 +98,7 @@ lab:
         model-name: ${MODEL_BACKUP_NAME:mock-backup}
         credential-ref: MODEL_BACKUP_API_KEY
         enabled: ${MODEL_BACKUP_ENABLED:true}
-        capabilities: [CHAT, STRUCTURED_OUTPUT]
+        capabilities: [CHAT, STRUCTURED_OUTPUT, TOOLS]
         quality-tags: [configured-baseline]
         data-classifications: [PRIVATE]
         context-window: 16000
@@ -135,13 +138,18 @@ lab:
         required-capabilities: [CHAT]
         quality-tags: [configured-baseline]
         allow-fallback: true
+      planning:
+        candidate-model-ids: [primary, backup]
+        required-capabilities: [CHAT, STRUCTURED_OUTPUT]
+        quality-tags: [configured-baseline]
+        allow-fallback: true
       embedding:
         candidate-model-ids: [embedding]
         required-capabilities: [EMBEDDING]
         quality-tags: [configured-baseline]
         allow-fallback: false
     routing:
-      policy-version: routing-s04-v2
+      policy-version: routing-s05-v1
       quality-version: configured-baseline-unverified-v1
       selectable-profiles: [knowledge, economy, analysis, report]
       # EXACT只开放服务端可信入口，普通HTTP不接受modelId。
@@ -152,6 +160,7 @@ lab:
         SIMPLE_SUMMARY: economy
         DATA_ANALYSIS: analysis
         REPORT: report
+        PLANNING: planning
     failover:
       max-attempts-per-logical-call: 3
       failure-threshold: 3

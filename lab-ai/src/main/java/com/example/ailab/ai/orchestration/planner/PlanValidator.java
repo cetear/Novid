@@ -15,6 +15,26 @@ public class PlanValidator {
 
     private static final Map<String, String> ROLES = Map.of("research", "ResearchWorker", "analysis", "AnalysisWorker", "report", "ReportWriter");
 
+    /** S05执行器只实现三个唯一动作；固定ID映射已有持久五步，拓扑与关注点由模型提出。 */
+    public List<Step> validate(com.example.ailab.contract.dto.TaskPlan plan) {
+        if (plan == null || !"plan-s05-v1".equals(plan.version()) || plan.steps().size() != 3)
+            throw LabException.invalid("研究计划版本或节点数不合法");
+        var steps = new ArrayList<Step>();
+        for (var node : plan.steps()) {
+            var role = AgentRegistry.require(node.action());
+            if (!Objects.equals(node.stepId(), node.action()) || !role.agentId().equals(node.agentId())
+                    || !role.taskTypes().contains(node.taskType()) || !"SOURCE_GROUNDED".equals(node.qualityRequirement())
+                    || !node.input().keySet().equals(Set.of("focus")) || node.input().get("focus") == null
+                    || node.input().get("focus").isBlank() || node.input().get("focus").length() > 400
+                    || new HashSet<>(node.dependsOn()).size() != node.dependsOn().size()) throw LabException.invalid("计划参数或角色越界");
+            steps.add(new Step(node.stepId(), node.action(), node.agentId(), node.dependsOn()));
+        }
+        var sorted = validate(steps);
+        var report = plan.steps().stream().filter(n -> n.action().equals("report")).findFirst().orElseThrow();
+        if (!new HashSet<>(report.dependsOn()).equals(Set.of("research", "analysis"))) throw LabException.invalid("报告必须汇合两角色");
+        return sorted;
+    }
+
     /**
      * 固定上限八节点，拒绝重复 ID、未知动作、越权角色和依赖环。
      */

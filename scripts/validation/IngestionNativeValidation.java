@@ -412,7 +412,7 @@ public final class IngestionNativeValidation {
                     named.update("DELETE FROM sessions WHERE user_id IN (:users)", users);
                     for (String table : List.of("ai_runs", "knowledge_access_audit", "request_deduplications")) named.update("DELETE FROM " + table + " WHERE actor_user_id IN (:users)", users);
                     for (String table : List.of("auth_tokens", "profile_memories")) named.update("DELETE FROM " + table + " WHERE user_id IN (:users)", users);
-                    for (String table : List.of("task_document_pages","task_document_coverage","task_step_progress","task_steps","artifacts"))
+                    for (String table : List.of("task_plans","task_document_pages","task_document_coverage","task_step_progress","task_steps","artifacts"))
                         named.update("DELETE FROM " + table + " WHERE task_id IN (SELECT id FROM ai_tasks WHERE requester_user_id IN (:users))",users);
                     named.update("DELETE FROM ai_tasks WHERE requester_user_id IN (:users)",users);
                     for (long id : DOCUMENTS) {
