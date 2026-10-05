@@ -10,6 +10,8 @@
 
 数据库实现放在 `lab-data` 内。业务与 Web 模块依赖契约端口，不接触 Mapper、PO、SQL 或 Wrapper。SQL 参数使用 MyBatis 绑定；动态列名使用固定分支，禁止拼接外部输入。
 
+MyBatis-Plus Mapper 依赖通过 Spring 构造器注入，确保 MapperFactoryBean 完成注册后再使用。不要在仓库构造期间直接从 SqlSessionTemplate 获取尚未注册的 Mapper。
+
 ## 已完成的迁移
 
 账户、令牌和知识库的常规操作使用 MyBatis-Plus `BaseMapper` 与 Wrapper。其余仓库中的业务 JDBC SQL 已迁入按仓库组织的 Mapper 接口和 XML，保留原事务注解、行锁顺序、版本条件、执行代次、受影响行数检查及数据库时间函数。
@@ -28,7 +30,9 @@
 
 ## 验证结果
 
-2026-10-05 全模块测试：334 项，329 项通过，5 项跳过，0 失败、0 错误。
+2026-10-05 全模块测试：335 项，330 项通过，5 项跳过，0 失败、0 错误；全模块打包成功。
+
+新增 `MapperRegistrationTest` 使用真实 Mapper 扫描和 MyBatis-Plus 自动配置，无需连接数据库。该测试复现并防止令牌 Mapper 在注册前被仓库获取的启动错误；账户仓库已改用构造器注入 `AuthTokenMapper`。重新打包后通过 `LabApplication` 实际启动，健康接口返回 200；启动验证关闭后台任务和自动初始化。
 
 覆盖 MyBatis XML 解析与动态分支、主键映射、网络正文超时和取消、视频状态与用量衔接、媒体 HTTP 参数校验、PPT 文件重开及双栏边界、无结果响应、Spring 应用装配。16 个原生验收入口已编译通过，未执行其中会写数据库或调用付费服务的流程。
 

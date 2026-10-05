@@ -29,12 +29,12 @@ public class AccountRepository implements UserStorePort, AuthTokenStorePort {
     private final AuthTokenMapper tokens;
 
     /**
-     * MyBatis-Plus 常规读取，关键事务使用同一数据源显式 SQL。
+     * Mapper 由 Spring 先完成注册再注入；关键事务使用同一数据源显式 SQL。
      */
-    public AccountRepository(SqlSupport sql, UserMapper mapper) {
+    public AccountRepository(SqlSupport sql, UserMapper mapper, AuthTokenMapper tokens) {
         this.sql = sql; this.mapper = sql.mapper(AccountMapper.class);
         this.users = mapper;
-        this.tokens = sql.mapper(AuthTokenMapper.class);
+        this.tokens = tokens;
     }
 
     /**
