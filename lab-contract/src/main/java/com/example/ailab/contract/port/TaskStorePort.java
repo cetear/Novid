@@ -28,6 +28,8 @@ public interface TaskStorePort {
      * 领取或恢复过期租约，返回当前可信请求者。
      */
     Optional<TaskLease> claim(String workerId);
+    /** 媒体与普通报告队列分开领取，正常查询不增加异常恢复次数。 */
+    default Optional<TaskLease> claimMedia(String workerId) { return Optional.empty(); }
 
     /**
      * 续租核验用户、worker、fencing 与状态。

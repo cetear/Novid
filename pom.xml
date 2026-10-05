@@ -38,6 +38,7 @@
         <elasticsearch.version>8.15.5</elasticsearch.version>
         <springdoc.version>2.9.1</springdoc.version>
         <archunit.version>1.4.1</archunit.version>
+        <poi.version>5.5.1</poi.version>
 
     </properties>
 

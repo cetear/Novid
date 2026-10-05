@@ -22,7 +22,14 @@ public final class BoundedToolLoop {
     /** 首轮可合法主备；工具状态开始后固定目标，不重复已成功调用。 */
     public Result run(UserContext actor, ScopeRequest scope, ModelRegistry.Selection selection, ModelInput initial,
                       ExecutionBudget budget, Runnable verify) {
-        var specs = tools.definitions(actor, "KNOWLEDGE_QA").stream().map(ToolRegistry::specification).toList();
+        return run(actor,scope,selection,initial,budget,verify,"KNOWLEDGE_QA",6);
+    }
+    /** 媒体研究Worker含首次调用最多三轮，同ID工具结果仍走统一执行器和共享预算。 */
+    public Result run(UserContext actor,ScopeRequest scope,ModelRegistry.Selection selection,ModelInput initial,
+            ExecutionBudget budget,Runnable verify,String toolTask,int maximumRounds) {
+        int rounds=1;
+        var specs = tools.definitions(actor, toolTask).stream().map(ToolRegistry::specification).toList();
+        if(specs.isEmpty())throw new LabException("SEARCH_UNAVAILABLE","此媒体研究角色没有已配置的受控工具");
         var sent = new java.util.concurrent.atomic.AtomicReference<ModelInput.Prepared>();
         var turn = models.toolTurn("KNOWLEDGE_QA", selection, target -> {
             verify.run(); var prepared = initial.prepare(target); sent.set(prepared); return prepared;
@@ -47,7 +54,7 @@ public final class BoundedToolLoop {
                 verify.run(); tools.verify(actor, scope, evidence);
                 if (evidence.size() >= 6 && !request.name().equals("get_knowledge_statistics"))
                     throw new LabException("BUDGET_EXCEEDED", "工具证据包数已满");
-                var outcome = tools.execute(actor, scope, "KNOWLEDGE_QA", request.id(), request.name(), request.arguments(),
+                var outcome = tools.execute(actor, scope, toolTask, request.id(), request.name(), request.arguments(),
                         "E" + (evidence.size() + 1), budget, query -> {
                             var vector = models.embed(List.of(query), budget);
                             return new ToolExecutionService.ModelVector(vector.vectors().get(0), vector.modelVersion());
@@ -62,6 +69,7 @@ public final class BoundedToolLoop {
                 finally { requested.close(); }
             }
             paired(requests, results); messages.addAll(results);
+            if(rounds++>=maximumRounds)throw new LabException("BUDGET_EXCEEDED","研究Worker工具续轮超过有限上限");
             String pinned = turn.modelId(); var actualEvidence = List.copyOf(evidence);
             try(var continuation=budget.trace().span("CONTINUATION","tool_results",null,null,resultNodes);
                 var active=budget.activate(continuation.context())) {

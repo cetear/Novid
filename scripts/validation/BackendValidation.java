@@ -57,11 +57,13 @@ public class BackendValidation {
     private static ElasticsearchClient es;
     private static String testIndex, testSchema, configuredUrl, testUrl;
     private static boolean schemaCreated, indexCreated;
-    private static boolean configuredEmptySchema;
+    private static boolean offline;
     private static boolean focused;
     private static String userPrefix;
     private static final String PASSWORD = "Review-"+UUID.randomUUID()+"-2026";
     private static final String FIXTURE = "# 验收资料\n\n项目代号为晨星。\n验收编号为 NVD-7319。\n负责人是测试用户。\n\n## 发布规则\n\n每周三做一次备份；保留七份备份。\n\n```text\n# 代码中的井号不是章节\n```\n";
+    /** 资源不足和程序失败分列，且完整验收均不能退出为通过。 */
+    private static final class IsolationUnavailable extends RuntimeException { }
     @FunctionalInterface interface Checked { void run() throws Exception; }
 
     private static void check(String name, Checked action) {
@@ -112,15 +114,18 @@ public class BackendValidation {
         return DriverManager.getConnection(configuredUrl,properties);
     }
 
+    /** 随机独立库才启动应用；零购买模式关闭全部扫描和媒体外发。 */
     public static void main(String[] args) throws Exception {
         configuredUrl=System.getenv("DB_URL");
         if(args.length>0&&args[0].equals("--inspect-database")){inspectDatabase();return;}
         focused=args.length>0&&args[0].equals("--focused");
+        offline=args.length>0&&args[0].equals("--offline");
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
         String suffix=UUID.randomUUID().toString().replace("-","").substring(0,12);
         testSchema="novid_review_"+suffix;
         testIndex="novid_review_"+suffix;
         userPrefix="review_"+suffix+"_";
-        META.put("date","2026-10-03 Asia/Shanghai");META.put("isolation","random temporary MySQL schema and ES index");
+        META.put("date",java.time.OffsetDateTime.now(java.time.ZoneId.of("Asia/Shanghai")).toString());META.put("models",offline?"SIMULATED":"REAL");META.put("isolation","random temporary MySQL schema and ES index");
         try {
             if(!focused)testLocalModelProtocol();
             try(var connection=configuredConnection()) {
@@ -128,26 +133,34 @@ public class BackendValidation {
                 try(var statement=connection.createStatement()) {
                     try { statement.executeUpdate("CREATE DATABASE `"+testSchema+"` CHARACTER SET utf8mb4");schemaCreated=true; }
                     catch(SQLException denied) {
-                        if(denied.getErrorCode()!=1044)throw denied;
-                        assertEmptyProjectSchema(connection);
-                        configuredEmptySchema=true;META.put("isolation","configured empty project schema; unique test users; random ES index");
-                        META.put("migrations_retained",true);
+                        // S11：建库权限不足时不回退配置库，更不对现有资料做空库清理。
+                        if(denied.getErrorCode()!=1044 && denied.getErrorCode()!=1045)throw denied;
+                        RESULTS.add(Map.of("case","isolated_database_required","status","NOT_RUN","reason","CREATE_DATABASE_DENIED"));
+                        throw new IsolationUnavailable();
                     }
                 }
             }
             var uri=URI.create(configuredUrl.substring("jdbc:".length()));
-            testUrl=configuredEmptySchema?configuredUrl:"jdbc:mysql://"+uri.getRawAuthority()+"/"+testSchema+(uri.getRawQuery()==null?"":"?"+uri.getRawQuery());
+            testUrl="jdbc:mysql://"+uri.getRawAuthority()+"/"+testSchema+(uri.getRawQuery()==null?"":"?"+uri.getRawQuery());
             var application=new SpringApplication(LabApplication.class);
             context=application.run("--spring.datasource.url="+testUrl,"--server.port=0","--server.address=127.0.0.1",
                     "--lab.bootstrap.enabled=false","--lab.search.enabled=true","--lab.search.index="+testIndex,
                     "--lab.ingestion.worker-enabled=false","--lab.task.worker-enabled=false",
+                    "--lab.media.worker-enabled=false","--lab.media.enabled=false","--lab.governance.cleanup-enabled=false",
+                    "--lab.observability.export-enabled=false", "--lab.model.mode="+(offline?"mock":"real"),
                     "--lab.model.models.primary.output-limit=512","--logging.level.root=OFF","--spring.main.banner-mode=off");
             origin="http://127.0.0.1:"+((ServletWebServerApplicationContext)context).getWebServer().getPort();
             accounts=context.getBean(AccountApplicationService.class);bases=context.getBean(KnowledgeBaseApplicationService.class);
             documents=context.getBean(DocumentApplicationService.class);personal=context.getBean(PersonalApplicationService.class);
             taskApplication=context.getBean(TaskApplicationService.class);taskStore=context.getBean(TaskStorePort.class);
             ingestion=context.getBean(DocumentIngestionStorePort.class);jdbc=context.getBean(JdbcTemplate.class);
-            check("real_mysql_flyway_v1_v3_and_spring_http_startup",()->require(jdbc.queryForObject("SELECT COUNT(*) FROM flyway_schema_history WHERE success=TRUE",Integer.class)==3,"expected three applied migrations"));
+            check("real_mysql_all_current_migrations_and_spring_http_startup",()->{
+                // 按正式包里的全部版本核对；追加迁移不再要求手工改一个过时的总数。
+                var flyway=context.getBean(org.flywaydb.core.Flyway.class);flyway.validate();
+                var info=flyway.info();require(info.pending().length==0,"unapplied migrations");
+                require(Arrays.stream(info.all()).allMatch(i->i.getState().isApplied()),"migration set incomplete");
+                META.put("migration_versions",Arrays.stream(info.applied()).map(i->i.getVersion().toString()).toList());
+            });
             var config=context.getBean(SearchProperties.class);
             esTransport=new RestClientTransport(ElasticsearchClientFactory.create(config),new JacksonJsonpMapper());
             es=new ElasticsearchClient(esTransport);META.put("es_version",es.info().version().number());
@@ -155,19 +168,24 @@ public class BackendValidation {
             context.getBean(KnowledgeIndexPort.class).initialize();indexCreated=true;
             check("real_es_index_2048_dimensions",()->require(es.indices().getMapping(r->r.index(testIndex)).result().get(testIndex).mappings().properties().get("vector").denseVector().dims()==2048,"unexpected vector mapping"));
             setupAccounts();
-            if(focused) {
+            if(offline) {
+                testAuthentication();testKnowledge();testFixedDataset();testNotesAndMemory();testTaskState();
+                testSseDiagnostics();
+                RESULTS.add(Map.of("case","real_model_quality_and_media","status","NOT_RUN","reason","ZERO_NEW_PURCHASE_SCOPE"));
+            } else if(focused) {
                 document1=documents.upload(user1,base1.id(),"review.md","text/markdown",FIXTURE.getBytes(StandardCharsets.UTF_8),"focused-upload");
                 testSseDiagnostics();
                 testResearchReport();
             } else {
                 testAuthentication();testKnowledge();testNotesAndMemory();testRag();testTaskState();testRealReport();testDefects();
             }
+        } catch(IsolationUnavailable unavailable) {
+            META.put("isolation_available",false);
         } catch(Throwable e) {
             RESULTS.add(Map.of("case","validation_setup_or_execution","status","FAIL","reason",safeReason(e)));
             System.out.println("validation stopped: "+safeReason(e));
         } finally {
             if(context!=null)try{context.close();}catch(Exception e){META.put("context_cleanup",safeReason(e));}
-            if(configuredEmptySchema)try{cleanupTestData();}catch(Exception e){META.put("test_data_cleanup",safeReason(e));}
             if(indexCreated&&es!=null)try{es.indices().delete(r->r.index(testIndex));META.put("temporary_es_index_removed",true);}catch(Exception e){META.put("temporary_es_index_removed",false);}
             if(esTransport!=null)try{esTransport.close();}catch(Exception ignored){}
             if(schemaCreated)try(var connection=configuredConnection();var statement=connection.createStatement()){
@@ -177,29 +195,17 @@ public class BackendValidation {
                 statement.executeUpdate("DROP DATABASE `"+testSchema+"`");META.put("temporary_mysql_schema_removed",true);
             }catch(Exception e){META.put("temporary_mysql_schema_removed",false);}
             long passed=RESULTS.stream().filter(r->r.get("status").equals("PASS")).count();
-            META.put("passed",passed);META.put("failed",RESULTS.size()-passed);
+            META.put("passed",passed);META.put("failed",RESULTS.stream().filter(r->r.get("status").equals("FAIL")).count());
+            META.put("not_run",RESULTS.stream().filter(r->r.get("status").equals("NOT_RUN")).count());
             Files.createDirectories(Path.of("var/backend-review"));
             Files.writeString(Path.of(focused?"var/backend-review/results-focused.json":"var/backend-review/results.json"),JSON.writerWithDefaultPrettyPrinter().writeValueAsString(Map.of("metadata",META,"cases",RESULTS)));
             System.out.println(toJson(META));
         }
         if(RESULTS.stream().anyMatch(r->r.get("status").equals("FAIL")))System.exit(1);
+        if(RESULTS.stream().anyMatch(r->r.get("status").equals("NOT_RUN")))System.exit(2);
     }
 
-    private static void assertEmptyProjectSchema(Connection connection) throws Exception {
-        var expected=new TreeSet<String>();
-        for(String file:List.of("V1__identity_knowledge_and_private_resources.sql","V2__versioned_ingestion.sql","V3__persistent_tasks_and_artifacts.sql")){
-            var matcher=java.util.regex.Pattern.compile("(?m)^CREATE TABLE ([a-z_]+)").matcher(Files.readString(Path.of("lab-data/src/main/resources/db/migration",file)));
-            while(matcher.find())expected.add(matcher.group(1));
-        }
-        try(var statement=connection.createStatement()) {
-            var found=new TreeSet<String>();try(var rows=statement.executeQuery("SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE()")){while(rows.next())found.add(rows.getString(1));}
-            if(found.isEmpty())return;
-            var withHistory=new TreeSet<>(expected);withHistory.add("flyway_schema_history");require(found.equals(withHistory),"schema contains existing or incomplete structures; refusing to use it");
-            for(String table:expected)if(!table.equals("system_control"))try(var rows=statement.executeQuery("SELECT COUNT(*) FROM "+table)){rows.next();require(rows.getInt(1)==0,"existing project data found; refusing to use configured schema");}
-            try(var rows=statement.executeQuery("SELECT COUNT(*) FROM flyway_schema_history WHERE success=TRUE")){rows.next();require(rows.getInt(1)==3,"migration history incomplete");}
-        }
-    }
-
+    /** 本机协议故障注入不是提供方事故，不使用真实密钥。 */
     private static void testLocalModelProtocol() throws Exception {
         var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         var executor=Executors.newFixedThreadPool(2);server.setExecutor(executor);
@@ -223,7 +229,8 @@ public class BackendValidation {
                 require(model.chat("QA","synthetic","synthetic",budget).modelId().equals("backup")&&backupCalls.get()==1,"503 did not reach backup");
             });
             check("regression_local_http_protocol_truncated_model_output_rejected",()->{
-                denied("MODEL_INVALID_OUTPUT",()->protocolGateway(endpoint,List.of("truncated"),30).chat("QA","synthetic","synthetic",new ExecutionBudget(Duration.ofSeconds(10),2)));
+                // 现行契约区分截断、拒绝和结构错误，不能沿用旧笼统错误码。
+                denied("MODEL_TRUNCATED",()->protocolGateway(endpoint,List.of("truncated"),30).chat("QA","synthetic","synthetic",new ExecutionBudget(Duration.ofSeconds(10),2)));
             });
             check("regression_model_specific_timeout_is_enforced",()->{
                 long start=System.nanoTime();try{protocolGateway(endpoint,List.of("slow"),1).chat("QA","synthetic","synthetic",new ExecutionBudget(Duration.ofSeconds(10),2));}catch(LabException e){require((System.nanoTime()-start)<Duration.ofMillis(1400).toNanos(),"configured one-second timeout exceeded");return;}
@@ -232,11 +239,15 @@ public class BackendValidation {
         } finally {server.stop(0);executor.shutdownNow();}
         META.put("local_http_protocol_is_external_provider_validation",false);
     }
+    /** 本机协议网关仅注入合成认证头，独立入口也不依赖外部脚本设置环境密钥。 */
     private static ModelGateway protocolGateway(String endpoint,List<String> names,int timeout) {
         var definitions=new LinkedHashMap<String,ModelProperties.Definition>();
         for(String name:names)definitions.put(name,new ModelProperties.Definition("openai-compatible",endpoint+"/"+name+"/v1",name,"REVIEW_LOCAL_MODEL_KEY",true,Set.of("CHAT"),Set.of("review"),Set.of("PRIVATE"),16000,64,0,timeout));
         var config=new ModelProperties("real",definitions,Map.of("qa",new ModelProperties.Profile(names,Set.of("CHAT"),Set.of("review"),true)),new ModelProperties.Routing("review",Map.of("QA","qa")),true);
-        return new ModelGateway(new ModelRegistry(config));
+        var environment=new org.springframework.core.env.StandardEnvironment();
+        environment.getPropertySources().addFirst(new org.springframework.core.env.MapPropertySource("synthetic-protocol",
+                Map.of("REVIEW_LOCAL_MODEL_KEY","synthetic-local-only-key")));
+        return new ModelGateway(new ModelRegistry(config,environment));
     }
 
     private static void inspectDatabase() throws Exception {
@@ -264,39 +275,6 @@ public class BackendValidation {
         Files.writeString(Path.of("var/backend-review/database-state.json"),JSON.writerWithDefaultPrettyPrinter().writeValueAsString(result));System.out.println(toJson(result));
     }
 
-
-    private static void cleanupTestData() {
-        var source=new DriverManagerDataSource(configuredUrl,System.getenv("DB_USERNAME"),System.getenv("DB_PASSWORD"));
-        var cleanup=new JdbcTemplate(source);var named=new NamedParameterJdbcTemplate(cleanup);
-        var transaction=new TransactionTemplate(new DataSourceTransactionManager(source));
-        transaction.executeWithoutResult(status->{
-            var users=cleanup.queryForList("SELECT id FROM users WHERE username IN (?,?,?)",Long.class,userPrefix+"admin",userPrefix+"user1",userPrefix+"user2");
-            if(users.isEmpty()){META.put("test_data_removed",true);return;}
-            var parameters=Map.<String,Object>of("users",users);
-            var ids=named.queryForList("SELECT id FROM documents WHERE owner_user_id IN (:users)",parameters,Long.class);
-            var baseIds=named.queryForList("SELECT id FROM knowledge_bases WHERE owner_user_id IN (:users)",parameters,Long.class);
-            named.update("DELETE FROM artifacts WHERE requester_user_id IN (:users)",parameters);
-            named.update("DELETE FROM task_steps WHERE task_id IN (SELECT id FROM ai_tasks WHERE requester_user_id IN (:users))",parameters);
-            // S05新增计划外键，仅清本次合成用户任务的附属行。
-            named.update("DELETE FROM task_plans WHERE task_id IN (SELECT id FROM ai_tasks WHERE requester_user_id IN (:users))",parameters);
-            named.update("DELETE FROM ai_tasks WHERE requester_user_id IN (:users)",parameters);
-            for(String table:List.of("ai_runs","knowledge_access_audit","approvals","operations","request_deduplications"))named.update("DELETE FROM "+table+" WHERE actor_user_id IN (:users)",parameters);
-            for(String table:List.of("auth_tokens","profile_memories"))named.update("DELETE FROM "+table+" WHERE user_id IN (:users)",parameters);
-            if(!ids.isEmpty()){
-                var docs=Map.<String,Object>of("ids",ids);
-                // S03批次事实须先按本次文档集合清理，防止外键失败留下合成资料。
-                for(String table:List.of("ingestion_model_attempts","ingestion_batches"))named.update("DELETE FROM "+table+" WHERE ingestion_id IN (SELECT id FROM document_ingestions WHERE document_id IN (:ids))",docs);
-                for(String table:List.of("source_dependencies","chunks","context_parents","document_sections","document_ingestions","document_versions"))named.update("DELETE FROM "+table+" WHERE document_id IN (:ids)",docs);
-                named.update("DELETE FROM outbox_events WHERE event_type IN ('INGEST_DOCUMENT','DELETE_DOCUMENT','PRUNE_DOCUMENT') AND resource_id IN (:ids)",docs);
-            }
-            if(!baseIds.isEmpty())named.update("DELETE FROM outbox_events WHERE event_type='DELETE_BASE' AND resource_id IN (:ids)",Map.of("ids",baseIds));
-            named.update("DELETE FROM documents WHERE owner_user_id IN (:users)",parameters);
-            named.update("DELETE FROM knowledge_bases WHERE owner_user_id IN (:users)",parameters);
-            named.update("DELETE FROM users WHERE id IN (:users)",parameters);
-            META.put("test_data_removed",true);
-            META.put("remaining_test_users",cleanup.queryForObject("SELECT COUNT(*) FROM users WHERE username IN (?,?,?)",Integer.class,userPrefix+"admin",userPrefix+"user1",userPrefix+"user2"));
-        });
-    }
 
     private static void setupAccounts() throws Exception {
         accounts.bootstrap(userPrefix+"admin",PASSWORD);
@@ -356,6 +334,37 @@ public class BackendValidation {
             require(expect(200,request("GET","/documents/"+document1.id(),token1,null,null)).path("text").asText().equals(FIXTURE),"canonical original differs");
             expect(403,request("GET","/documents/"+document1.id(),token2,null,null));expect(200,request("GET","/documents/"+document1.id(),adminToken,null,null));
             require(request("GET","/documents/"+document1.id()+"/source",token1,null,null).body().equals(FIXTURE),"source download differs");
+        });
+    }
+    /** 隔离库固定三身份／各两库／每库三份资料；旧新版、同名和注入与允许动作由版本化数据集保存。 */
+    private static void testFixedDataset() {
+        check("fixed_three_identity_six_base_eighteen_document_dataset",()->{
+            var dataset=JSON.readTree(Files.readString(Path.of("scripts/fixtures/s11-core.json")));
+            var actors=Map.of("admin",admin,"u1",user1,"u2",user2);
+            var fixtureBases=new HashMap<String,KnowledgeBaseSnapshot>();
+            var fixtureDocuments=new HashMap<String,Long>();
+            fixtureBases.put("KB-ADMIN-A",adminBase);fixtureBases.put("KB-U1-A",base1);fixtureBases.put("KB-U2-A",base2);
+            for(var entry:dataset.path("documents")){
+                String owner=entry.path("owner").asText();String base=entry.path("base").asText();
+                var actor=actors.get(owner);require(actor!=null,"unknown fixed identity");
+                var target=fixtureBases.computeIfAbsent(base,id->bases.create(actor,id,"固定合成资料"));
+                if(entry.path("id").asText().equals("DOC-U1-A01"))continue; // 已由真实multipart上传并核对原文。
+                var created=documents.upload(actor,target.id(),entry.path("filename").asText(),"text/markdown",entry.path("text").asText().getBytes(StandardCharsets.UTF_8),entry.path("id").asText());
+                fixtureDocuments.put(entry.path("id").asText(),created.id());
+            }
+            // 同一文档追加版本形成固定旧／新事实，不修改主问答资料的正式备份规则。
+            for(var revision:dataset.path("revisions")){
+                var id=fixtureDocuments.get(revision.path("document").asText());
+                require(id!=null,"fixed revision document missing");
+                documents.revise(user1,id,revision.path("from_version").asInt(),"同名笔记.md",revision.path("text").asText());
+                require(jdbc.queryForObject("SELECT current_version FROM documents WHERE id=?",Integer.class,id)==revision.path("to_version").asInt(),"fixed revision mismatch");
+            }
+            require(fixtureBases.size()==6,"fixed base set incomplete");
+            for(var actor:actors.values())require(bases.list(actor,ScopeRequest.self(),0,20).size()==2,"fixed owner base count");
+            require(jdbc.queryForObject("SELECT COUNT(*) FROM documents WHERE owner_user_id IN (?,?,?)",Integer.class,admin.userId(),user1.userId(),user2.userId())==18,"fixed document set incomplete");
+            META.put("fixed_dataset_version",dataset.path("version").asText());
+            // 候选召回／排序／引用支持仍须真实模型评测，种子成功不产生质量成绩。
+            META.put("fixed_quality_status","NOT_RUN");
         });
     }
     private static void testNotesAndMemory() throws Exception {
@@ -467,6 +476,7 @@ public class BackendValidation {
             } finally {worker.close();}
         });
     }
+    /** 完整传输断言使用程序统计，不购买模型调用。 */
     private static void testSseDiagnostics() {
         check("focused_real_http_sse_complete_transfer",()->{
             var logger=(ch.qos.logback.classic.Logger)org.slf4j.LoggerFactory.getLogger("org.springframework.security.web.access.ExceptionTranslationFilter");

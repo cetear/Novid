@@ -19,7 +19,7 @@ $jar = Join-Path $workspace 'lab-app/target/lab-app-0.1.0-SNAPSHOT.jar'
 if (-not (Test-Path -LiteralPath $jar)) { throw '请先在项目目录完成 Maven 构建' }
 # 仅明确初始化命令建索引；已有索引不会删除。
 # 明确 UTF-8，避免维护命令的中文结果被本机默认编码破坏。
-if ($InitializeIndex) { & java '-Dfile.encoding=UTF-8' -jar $jar --lab.command=init-index --lab.bootstrap.enabled=false --lab.search.enabled=true --lab.ingestion.worker-enabled=false --lab.task.worker-enabled=false --spring.main.web-application-type=none }
-elseif ($CleanupIndex) { & java '-Dfile.encoding=UTF-8' -jar $jar --lab.command=cleanup-index "--lab.cleanup.max-batches=$CleanupMaxBatches" --lab.bootstrap.enabled=false --lab.search.enabled=true --lab.ingestion.worker-enabled=false --lab.task.worker-enabled=false --spring.main.web-application-type=none }
+if ($InitializeIndex) { & java '-Dfile.encoding=UTF-8' -jar $jar --lab.command=init-index --lab.bootstrap.enabled=false --lab.search.enabled=true --lab.ingestion.worker-enabled=false --lab.task.worker-enabled=false --lab.media.worker-enabled=false --spring.main.web-application-type=none }
+elseif ($CleanupIndex) { & java '-Dfile.encoding=UTF-8' -jar $jar --lab.command=cleanup-index "--lab.cleanup.max-batches=$CleanupMaxBatches" --lab.bootstrap.enabled=false --lab.search.enabled=true --lab.ingestion.worker-enabled=false --lab.task.worker-enabled=false --lab.media.worker-enabled=false --spring.main.web-application-type=none }
 else { & java '-Dfile.encoding=UTF-8' -jar $jar }
 exit $LASTEXITCODE

@@ -91,7 +91,8 @@ public final class S08NativeValidation {
             evidence.put("es",databaseOnly?"NOT_RUN":"real isolated index with synthetic two-dimensional vectors");
             evidence.put("models","NOT_RUN: zero model or embedding calls");
             evidence.put("migration_version",jdbc.queryForObject("SELECT MAX(CAST(version AS UNSIGNED)) FROM flyway_schema_history WHERE success=TRUE",Integer.class));
-            evidence.put("not_verified",List.of("real database outage (fault injection separately)","full HTTP question plus paid model plus SQL chain","production throughput or multi-instance rate limiting","backup restore RPO/RTO","S04 provider automatic failover and quality","S07 prices and final invoice","S09 and later are not implemented"));
+            // 本探针只验证治理边界；后续媒体虽已有实现，不能从治理专项推导它们已验收。
+            evidence.put("not_verified",List.of("real database outage (fault injection separately)","full HTTP question plus paid model plus SQL chain","production throughput or multi-instance rate limiting","backup restore RPO/RTO","S04 provider automatic failover and quality","S07 prices and final invoice","media and presentation end-to-end quality are outside this governance probe"));
             Files.createDirectories(Path.of("var/stage-S08"));Files.writeString(Path.of("var/stage-S08/"+(databaseOnly?"database-native-results.json":"native-results.json")),JSON.writerWithDefaultPrettyPrinter().writeValueAsString(evidence));
             System.out.println(JSON.writeValueAsString(Map.of("passed",CHECKS.size(),"own_fixtures_removed",true,"models","NOT_RUN")));
         }

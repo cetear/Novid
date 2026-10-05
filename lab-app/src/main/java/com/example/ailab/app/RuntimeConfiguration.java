@@ -11,6 +11,16 @@ import org.springframework.boot.ApplicationRunner;
  */
 @Configuration
 public class RuntimeConfiguration {
+    /** S11在创建任何队列Bean之前校验维护配置，避免等ApplicationRunner时后台扫描已启动。 */
+    @Bean
+    public static org.springframework.beans.factory.config.BeanFactoryPostProcessor maintenanceStartupIsolation(
+            org.springframework.core.env.Environment env) {
+        return factory -> {
+            String command = env.getProperty("lab.command", "");
+            if (java.util.Set.of("governance-cleanup", "fees-reconcile", "init-index", "cleanup-index").contains(command))
+                requireMaintenanceIsolation(env);
+        };
+    }
     /** 单一 RAG 参数源经框架无关契约交给数据端，正式装配不引入反向依赖。 */
     @Bean
     public com.example.ailab.contract.dto.ContextPolicy contextPolicy(com.example.ailab.ai.orchestration.rag.RagProperties config) {
@@ -47,6 +57,12 @@ public class RuntimeConfiguration {
                                          org.springframework.context.ConfigurableApplicationContext context) {
         return args -> {
             String command = env.getProperty("lab.command");
+            // S11：所有维护命令都可能改变持久事实，先阻止自动扫描和首次初始化并发运行。
+            // 仅检查实际维护入口，普通正式启动继续沿用原有Worker配置。
+            if (java.util.Set.of("governance-cleanup", "fees-reconcile", "init-index", "cleanup-index")
+                    .contains(command == null ? "" : command)) {
+                requireMaintenanceIsolation(env);
+            }
             if ("governance-cleanup".equals(command)) {
                 // 运维命令一次只清一批；必须关闭业务扫描，不能消费正式用户队列。
                 if (env.getProperty("lab.task.worker-enabled", Boolean.class, true)
@@ -78,6 +94,16 @@ public class RuntimeConfiguration {
                 org.springframework.boot.SpringApplication.exit(context);
             }
         };
+    }
+
+    /** 维护进程必须显式关闭三个队列及初始化；缺省开启视为未隔离，拒绝任何写操作。 */
+    static void requireMaintenanceIsolation(org.springframework.core.env.Environment env) {
+        for (String key : java.util.List.of("lab.task.worker-enabled", "lab.ingestion.worker-enabled",
+                "lab.media.worker-enabled", "lab.bootstrap.enabled")) {
+            boolean defaultEnabled = key.equals("lab.task.worker-enabled") || key.equals("lab.ingestion.worker-enabled");
+            if (env.getProperty(key, Boolean.class, defaultEnabled))
+                throw new IllegalArgumentException("维护命令必须关闭任务、入库、媒体Worker及首次初始化");
+        }
     }
 
     /**

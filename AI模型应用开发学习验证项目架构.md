@@ -2,11 +2,13 @@
 
 > 文档用途：作为后续模型实施开发、验证与交付的依据。参考《AI模型应用开发学习指南（零基础到实践）》。
 >
-> 修订日期：2026-10-02。当前状态：架构设计，尚未生成项目、完成依赖解析或运行集成测试。
+> 修订日期：2026-10-04。当前状态：架构与已验收实现共同维护；完成状态及限制以开发进展／验收报告为准，分镜媒体新方案尚待完整实施与验收。
+>
+> S11实施补充（2026-10-05）：本轮零新增购买。维护入口在Spring装配前强制检查报告／入库／媒体worker及管理员初始化均关闭；旧迁移V1～V17不改。已提供分层验收、固定三身份资料与局部PPTX强杀恢复探针。固定质量门槛、完整用户流程、提供方恢复、MySQL备份／新ES重建和人工媒体质量缺证据，P0～P4不标全完成；精确结论见[开发进展S11交接](docs/项目开发进展.md)及[验收报告](docs/测试验证与验收报告.md)。
 >
 > 实施补充（2026-10-04，S02）：章节详情／最新入库元数据、块与原文映射、实际参数策略及逐页报告覆盖已交付；报告受六轮硬预算约束，明确完整或未读范围，不能保证任意长文全读。词元为UTF-8字节保守估计，迁移最新V6；实施事实、限制及下阶段S03交接以[项目开发进展](docs/项目开发进展.md)和[验收报告](docs/测试验证与验收报告.md)为准，原架构P0～P4未全部完成。
 >
-> 产物规划补充（2026-10-04，仅文档）：S09／S10 改为以复杂 Agent 架构生成笔记 PPT，配图支持生图 API 与事实图片网络搜索；教学视频按预登记角色／配音／场景＋脚本审批＋视频生成 API 预留，与 PPT 同级，暂不阻塞核心交付。当前实现与测试历史不因此改变。
+> 产物规划补充（2026-10-04，用户已确认）：S09完成真实图像生成及分镜教学视频，采用复杂Agent脚本／导演／质检、本人审批、逐镜头视频API原生音频提交／按ID查询、JavaCV后期与私人发布；S10完成可编辑PPTX，S11完整验收。旧R01视频预留由本次方案覆盖，已完成阶段历史不改写。
 >
 > 最终方案：多用户个人知识库与 AI 助手；Java 17 + Spring Boot 3 + LangChain4j + MyBatis-Plus + MySQL 8.4 LTS + Elasticsearch；六个核心 Maven 模块 + 一个实验模块；业务架构与 AI 六层架构分别表达。
 
@@ -35,7 +37,7 @@
 12. 主模型负责生成计划或汇总，不直接调用“子模型”。编排器调度步骤／Agent，模型层选择实际模型；同一角色可换模型，不因换模型就新建 Agent。
 13. 管理员可读取所有未删除且启用的知识库资料，普通用户只读自己的；管理员修改资料默认也限于自己的知识库。管理员知识检索权不能扩展为读取他人会话、记忆、任务、生成报告或追踪详情。
 14. 第一版使用单应用的用户与知识库所有权隔离，不引入组织 tenantId、共享成员或任意文档 ACL。普通用户之间不共享知识库，权限不足默认拒绝。
-15. 笔记 PPT 与教学视频是同级的本人私有衍生产物，继承全部来源约束；共用七模块、可靠任务与审批。付费生成绑定预览批准，状态不明不盲目重提；本地取消不等于远程取消／退款。PPT 为本轮交付项，视频为 API 预留项。
+15. 笔记 PPT 与教学视频是同级本人私有衍生产物，共用七模块、来源复核、可靠任务／费用与审批。S09交付真实图像和逐镜头视频原生音频／异步查询／后期，S10交付PPTX；未知提交不自动重购，本地取消不等于远程取消或退款，完整媒体验收属于核心交付。
 16. 切片归属由结构解析和版本化 ID 决定；只检索小片、再受控扩展父段／邻片。当前处理批次、所有实际交付原文范围、权限与总上下文预算必须复核，不能让模型自行猜章节或用 Top-k 冒充整章覆盖。
 
 **阅读／实施顺序：**先读 0／3／5 的边界，知识库入库与检索以 8 章为准，媒体以 6.10 为准；12～14 是表／接口／配置，15～17 是验收与阶段。默认值以对应参数表为唯一来源，概要章节只引用；候选依赖版本不等于兼容性已通过。
@@ -60,13 +62,13 @@
 | AI 保存笔记 | “把这次总结存到我的 AI 学习库” | 展示目标、内容和来源，确认后保存，重复请求只产生一份文档 |
 | FAQ／研究报告 | “对比这几个库，生成专题报告” | 持久化任务，暂停／恢复／取消／重启继续，校验后由请求者下载 |
 | 笔记生成 PPT | “把我的 RAG 笔记做成教学演示文稿” | 大纲／内容／版式与混合来源配图，审批后生图并导出可编辑 PPTX，私人下载 |
-| 笔记生成教学视频（预留） | 选择已登记角色、配音和场景，把笔记生成教学视频 | 根据选择和笔记生成脚本，审批后调用真正的视频生成 API；当前未接 API |
+| 笔记生成教学视频（S09规划） | 选择登记人物、音色、场景，把笔记生成教学视频 | 复杂Agent脚本／分镜与质检，审批后逐镜头视频API生成原生有声／无声片段、按ID查询、JavaCV字幕／拼接、私人发布；完整链路待验收 |
 | 数据分析 | “统计我的资料入库情况” | 程序统计授权范围，模型解释；分析质量不由模型价格直接证明 |
 | 个人记忆 | “以后回答简洁些” | 用户授权保存偏好，可查看、更正、删除，不跨用户使用 |
 | 模型路由／主备 | 检索摘要选经济模型，复杂分析选强模型 | 统一路由与有限主备切换，保留每次选择原因与费用 |
 | 运行检查／实验 | 查看执行图或运行 Demo | 树／时间线／流程图、用量／错误及固定输入的验收报告 |
 
-**【默认】**轻量 HTML + 原生 JavaScript，至少有登录、知识库／文档、聊天、任务／确认（含 PPT 页面／配图与预留视频脚本／登记项／费用预览）、个人记忆、运行检查；管理员额外看到用户管理和检索范围选择。界面权限来自服务端，隐藏按钮不能代替后端授权。
+**【默认】**轻量 HTML + 原生 JavaScript，至少有登录、知识库／文档、聊天、任务／确认（含 PPT 页面／配图与教学视频脚本／登记项／费用预览）、个人记忆、运行检查；管理员额外看到用户管理和检索范围选择。界面权限来自服务端，隐藏按钮不能代替后端授权。
 
 ### 1.2 角色与操作权限矩阵
 
@@ -121,8 +123,8 @@ UserContext 由当前有效登录与数据库用户状态／角色生成；每�
 ### 1.6 范围划分
 
 - 核心：七模块、正式认证／用户管理、自有知识库 CRUD（TXT／Markdown）、管理员只读跨库、章节树／父段／小片、授权上下文扩展 RAG／来源、模型注册／任务路由／主备、工具、确认保存笔记、可靠任务、个人记忆、可视化、评测。
-- 复杂任务：最小受限规划与检索／分析两角色；分析数值来自程序。PPT 内容／布局 Worker 共享稳定页标识，配图用生图 API 或受控网络搜索；每任务最多两个 Worker 并行。视频另按登记角色／配音／场景与批准脚本对接视频生成 API，当前预留。
-- 扩展：共享知识库成员与 ACL、所有权转移、更多 Agent／编排、质量升级、MCP、PDF／DOCX／CSV／XLSX／OCR／其他多模态／训练／本地推理，以及额外媒体提供方对照。PPT 的生图／事实图片搜索属于 P4 本轮交付；同级教学视频为预留功能，不作为 PPT 子能力或仅归 P6。
+- 复杂任务：受限规划与研究／分析角色，PPT内容／布局共享slideId，两类配图受控；视频脚本／导演共享shotId，视频API／JavaCV由程序按批准分镜执行。每任务Worker最多2，媒体独立共享预算。
+- 扩展：共享成员／ACL、更多Agent、质量升级、MCP、OCR／其他多模态／训练／本地推理及额外媒体提供方。PPT生图／事实图片搜索与同级分镜教学视频均归P4，视频不移作PPT子能力或P6基础补齐。
 - 不建设企业工单／订单业务，不因管理员权限引入一个用户一个数据库／ES 索引，也不新增组织租户模块。
 
 ## 2. 技术基线、版本管理与部署形态
@@ -145,7 +147,7 @@ UserContext 由当前有效登录与数据库用户状态／角色生成；每�
 | 可视化 | 本地运行检查页；可选 Langfuse 后端 | 本地无需新增数据库；外部观测接入按 11 章验收 |
 | API／测试 | springdoc-openapi 2.9.1；JUnit 5、MockMvc、Mockito、Testcontainers、ArchUnit | 程序行为、真实存储、模块边界和模型效果分别验收 |
 | 演示文稿 | Java 受控可编辑 PPTX 导出、中文字体、IMAGE_GENERATION 与网络图片搜索 | 库与 Java 17 兼容性在实施时核对；真实可编辑文件和两类配图分别验收 |
-| 教学视频（预留） | VIDEO_GENERATION API、登记角色／配音／场景目录 | 脚本审批后调用 API；暂缺服务，明确不可用，不替换为本地合成 |
+| 教学视频（S09） | VIDEO_GENERATION、按需IMAGE_GENERATION与登记目录／JavaCV | 脚本／分镜审批后逐镜头真实动态视频及API原生声音、持久查询、后期与私人发布；完整验收待完成 |
 | 扩展 | LangGraph4j、LangChain4j MCP、PDFBox 3.x | LangGraph4j 原候选 1.9.2，按 Java 17 兼容性独立验证 |
 
 版本来源：[Boot 3.5 要求](https://docs.spring.io/spring-boot/3.5/system-requirements.html)、[LangChain4j 发布](https://github.com/langchain4j/langchain4j/releases)、[MyBatis-Plus 安装](https://baomidou.com/getting-started/)、[MySQL 8.4 发布记录](https://dev.mysql.com/doc/relnotes/mysql/8.4/en/)与[LTS 策略](https://dev.mysql.com/doc/refman/8.4/en/mysql-releases.html)、[ES 下载版本](https://www.elastic.co/downloads/elasticsearch)、[ES Java Client 发布](https://github.com/elastic/elasticsearch-java/releases)、[springdoc v2](https://springdoc.org/v2/)。
@@ -175,7 +177,7 @@ UserContext 由当前有效登录与数据库用户状态／角色生成；每�
     → MySQL：业务／状态／原文
     → ES：全文／向量索引
     → 外部模型提供方（real 模式）
-    → 演示文稿：受控 PPTX 导出＋生图 API／网络图片搜索；教学视频：预留 VIDEO_GENERATION API
+    → 演示文稿：受控 PPTX 导出＋生图 API／网络图片搜索；教学视频：S09逐镜头 VIDEO_GENERATION API
     → 可选观测后端 Langfuse
 
 lab-demo：独立 CLI 入口，复用 business + ai + data，不依赖 lab-app
@@ -216,7 +218,7 @@ API 与 Worker 默认同进程；后续可以同一应用 JAR 用 `api / worker`
 
 **【注意】**contract 不是所有类的集中仓库。只有多个模块需要共同理解的契约放进去；不为纯内部 DTO 制造公共依赖。PO 不继承公共 DTO，VO 不直接复用 PO；暂不引入 MapStruct／Lombok 也能完成转换。
 
-公共端口保持窄而明确：`AiGatewayPort`、`KnowledgeCapabilityPort`、`MediaCapabilityPort`、`MediaRenderPort`、`MediaJobStorePort`、`KnowledgeBaseRepository`、`DocumentStorePort`、`DocumentContextPort`、`DocumentIngestionStorePort`、`KnowledgeSearchPort`、`KnowledgeIndexPort`、`UserStorePort`、`AuthTokenStorePort`、`MemoryStorePort`、`TaskStorePort`、`OperationStorePort`、`ArtifactStorePort`、`TraceRecordPort`。按实际用例增加，禁止万能 `BaseService`、`Map<String,Object>` 贯穿全部边界或通用远程执行接口。
+公共端口保持窄而明确：`AiGatewayPort`、`KnowledgeCapabilityPort`、`MediaProviderPort`、`MediaFilePort`、`MediaStorePort`、`WebImageSearchPort`、`KnowledgeBaseRepository`、`DocumentStorePort`、`DocumentContextPort`、`DocumentIngestionStorePort`、`KnowledgeSearchPort`、`KnowledgeIndexPort`、`UserStorePort`、`AuthTokenStorePort`、`MemoryStorePort`、`TaskStorePort`、`OperationStorePort`、`ArtifactStorePort`、`TraceRecordPort`。按实际用例增加，禁止万能 `BaseService`、`Map<String,Object>` 贯穿全部边界或通用远程执行接口。
 
 ### 3.3 编译期依赖：唯一允许的方向
 
@@ -257,9 +259,9 @@ flowchart TD
 ### 3.4 各模块实施细则
 
 - **contract**：稳定、不可变、框架无关。端口中的身份与范围不可缺省；日期、分页、错误语义清晰，集合不可随意修改。
-- **data**：PO 转为 Snapshot，资源查询应用用户／知识范围；原文映射、入库持久事实与确认消费均通过窄端口和短事务保存。媒体目录／预览／操作／资产仍存 data；MediaRenderPort 负责受控 PPTX 导出、文件检查／存储与网络图片取回，不调用生成模型。
-- **business**：账户、资料和统一授权策略负责身份／所有权／版本／来源；PresentationApplicationService 与预留 VideoApplicationService 分别管理同级用例、预览和归属，独立 MediaCapabilityAdapter 核验导出／产物命令，不回调发起 AI 的 Application。教学角色不参与 ADMIN／USER 权限判断。
-- **ai**：六层遵循 5.2；RAG、PPT 内容／布局及预留视频脚本编排在 orchestration，搜索经受控 tools；生图及预留视频生成 API 在 model，经 ModelGateway 的媒体入口管理能力、数据策略与费用，不假定提供方都有 SDK 原生适配。
+- **data**：PO 转为 Snapshot，资源查询应用用户／知识范围；原文映射、入库持久事实与确认消费均通过窄端口和短事务保存。媒体目录／预览／镜头操作／资产通过MediaStorePort持久化；MediaFilePort实现受控文件取回／检查、逐镜头JavaCV制作及S10的PPTX导出，WebImageSearchPort实现受控事实图片搜索，不调用生成模型。
+- **business**：账户、资料和统一授权策略负责身份／所有权／版本／来源；复用MediaApplicationService管理同级PPT／视频用例、预览／批准、归属及逐镜头执行授权，经contract媒体端口衔接编排、提供方与文件能力，不回调发起AI的Application，不另建视频任务体系。教学角色不参与 ADMIN／USER 权限判断。
+- **ai**：六层遵循 5.2；RAG、PPT 内容／布局及教学视频脚本编排在 orchestration，搜索经受控 tools；生图与视频提交／查询在model，复用MediaModelGateway实现MediaProviderPort；能力、数据策略与费用统一受控，Provider一次查询返回事实，不阻塞轮询，不假定提供方都有SDK原生适配。
 - **web**：认证过滤器调用 Account 用例读取当前登录／用户状态并建立可信 SecurityContext；提供登录／管理员用户管理／知识库页面。既不注入 AI 实现也不调 data；普通 CRUD 和 AI 请求分别传输。密码哈希实现由受控 PasswordEncoder 组件提供，不回传 HTTP。
 - **app**：装配认证／授权、模型与工具、Worker／追踪、媒体提供方和目录；校验受控主题／布局／中文字体、搜索／网络地址策略及有限导出池。各模块维护自身配置属性，短事务仍在 data，不把核心业务写在启动模块。
 - **demo**：复用正式模块的接口与实现，独立入口和数据集。纯单元测试仍放各模块的 `src/test`；跨模块端到端测试放 app／demo 的测试目录，无须再建测试模块。
@@ -293,16 +295,16 @@ ai-learning-lab/
 │  │  ├─ transaction/              # 原子提交、领取／CAS／幂等
 │  │  ├─ search/                   # ES 查询、索引、RRF
 │  │  ├─ storage/                  # 上传／产物文件访问
-│  │  ├─ media/                    # 受控 PPTX 导出／资产文件／图片取回，MediaRenderPort
+│  │  ├─ media/                    # MediaFilePort／WebImageSearchPort：文件、JavaCV制作与PPTX／事实搜索
 │  │  └─ config/
 │  └─ resources/
 │     ├─ db/migration/             # 唯一生产迁移路径
 │     ├─ mapper/                   # Mapper XML
 │     └─ es/                      # 索引 mapping／模板
 ├─ lab-business/src/main/java/com/example/ailab/business/
-│  ├─ application/                # Account／KnowledgeBase／Assistant／Document／Task／Video 用例
+│  ├─ application/                # Account／KnowledgeBase／Assistant／Document／Task／Media 同级用例
 │  ├─ domain/                     # KnowledgeAccessPolicy、库／文档规则、领域服务
-│  └─ capability/                 # KnowledgeCapabilityAdapter、独立 MediaCapabilityAdapter
+│  └─ capability/                 # KnowledgeCapabilityAdapter；媒体授权复用Media用例，不回调AI发起入口
 ├─ lab-ai/src/main/
 │  ├─ java/com/example/ailab/ai/
 │  │  ├─ gateway/
@@ -322,7 +324,7 @@ ai-learning-lab/
 │  │  ├─ security/
 │  │  ├─ exception/
 │  │  └─ sse/
-│  └─ resources/static/            # 登录、用户管理、知识库／文档、聊天、任务／PPT与预留视频预览／运行页
+│  └─ resources/static/            # 登录、用户管理、知识库／文档、聊天、任务／PPT与教学视频预览／运行页
 ├─ lab-app/src/main/
 │  ├─ java/com/example/ailab/app/   # 主类、装配、Properties、Exporter
 │  └─ resources/application*.yml   # api／worker、mock／real 等配置
@@ -408,9 +410,10 @@ Model、Tools、Memory 的结果返回编排层；图中省略返回箭头。模
 | OperationStorePort | contract，由 data 实现 | 具体写命令的原子提交，合并确认消费／权限条件／幂等结果 |
 | TraceRecordPort | contract，由 data 实现 | 脱敏运行摘要／节点记录；供本地检查页使用 |
 | ArtifactStorePort | contract，由 data 实现 | 临时产物、发布、读取；归属与任务状态校验 |
-| MediaCapabilityPort | contract，由 business 实现 | 校验当前用户、任务／预览版本／确认／来源后的导出与私人产物命令；不回调发起 AI 的 PPT／视频 ApplicationService |
-| MediaRenderPort | contract，由 data 实现 | 可编辑 PPTX 导出、资产／文件检查；仅服务端布局、素材 ID 与 storageKey，不接命令或任意路径 |
-| MediaJobStorePort | contract，由 data 实现 | 外部媒体子操作／提交意图／providerJobId／用量／状态的 CAS 与查询；不是媒体模型调用接口 |
+| MediaProviderPort | contract，由ai的MediaModelGateway实现 | 经有效批准的图像、逐镜头视频提交及一次原ID查询；不保存业务事务、不阻塞轮询 |
+| MediaFilePort | contract，由data实现 | 受控素材取回／检测、逐镜头制作／字幕拼接及S10可编辑PPTX；只接素材ID和受控规格，不接任意命令／路径 |
+| MediaStorePort | contract，由data实现 | 目录／Storyboard／批准／操作意图／providerJobId／镜头状态与资产的可靠事实、短事务／CAS；不是模型调用接口 |
+| WebImageSearchPort | contract，由data实现 | 受控事实图搜索候选及出处；AI研究Worker有限选择／核验，不接受任意联网指令 |
 | ModelGateway | ai 内部 | ModelCallContext＋输入 → generate／stream／embed，含媒体能力入口；按策略选择，返回续轮消息／用量／结束原因，能力分开验收 |
 | ResultAggregator | ai 内部 | 候选 + 证据 + 执行事实 → 已校验结果／修复请求／安全失败 |
 | Evaluator | demo 内部 | 固定样本 + 版本化配置 → PASS／FAIL／SKIPPED 与证据 |
@@ -467,7 +470,7 @@ ModelTurn 是 AI 内部类型，保留继续工具循环所需的原始消息及
 | currencyCostLimit | real 模式显式配置 | 金额上限及币种；不可报价时依靠硬调用／Token 限额并标记未知 |
 | threadPool／queue | 配置固定有限值 | 拒绝超载，记录错误，不无限排队 |
 
-数值是教学默认值，不是生产最优参数。模型输出上限须按能力配置；上下文不得超出模型窗口。后台任务单独配置有限总期限、步骤预算与输入大小。PPT 与预留视频采用 6.10 的独立有限任务预算，不修改普通在线请求默认值；外部轮询不计 LLM 轮数，但有自己的次数／期限／并发与费用约束。
+数值是教学默认值，不是生产最优参数。模型输出上限须按能力配置；上下文不得超出模型窗口。后台任务单独配置有限总期限、步骤预算与输入大小。PPT 与教学视频采用 6.10 的独立有限任务预算，不修改普通在线请求默认值；外部轮询不计 LLM 轮数，但有自己的次数／期限／并发与费用约束。
 
 重试和模型故障切换只有一个责任主体，默认模型层；禁用或显式核对 SDK 隐式重试，避免 SDK × Orchestration × Worker 乘法放大。429 尊重提供方限流范围与 Retry-After；等待、同模型重试或可用独立备用均受期限／预算约束，不能用备用规避同一账号额度。权限错误、参数错误和未确认写入不重试。写操作重试只复用同一稳定 operationId。
 
@@ -510,9 +513,9 @@ AgentDefinition 至少包含 agentId、version、职责、允许 taskTypes、输
 | PresentationContentWorker | PPT 逐页要点、示例与讲者备注 | report | 已授权证据／大纲与稳定 slideId，不提交付费媒体 |
 | PresentationLayoutWorker | PPT 受控版式、配图用途与来源策略 | economy | 同一 slideId，仅布局枚举／资产引用，不输出可执行模板 |
 | VisualResearchWorker | 真实配图搜索、结果筛选与出处核验 | economy | 受控关键词与只读工具，最多三轮续轮，不购买图片 |
-| SceneDirectorWorker（视频预留） | 登记人物／声音／场景下的动作、镜头与教学视觉安排 | report | 稳定shotId、已授权证据，不改变用户选项、不提交视频 |
+| SceneDirectorWorker（视频） | 登记人物／声音／场景下的动作、镜头与教学视觉安排 | report | 稳定shotId、已授权证据，不改变用户选项、不提交视频 |
 | TeachingReviewWorker | 结构化教学质检、来源／图文／脚本一致性问题与修复建议 | analysis | 独立结果上下文、意见需程序核验，无自动批准或付费生成权 |
-| VideoScriptWorker（预留） | 结合登记人物／配音／场景与笔记生成脚本 | report | 按目录版本和 API 能力，不提交视频，不改变教学人物选择 |
+| VideoScriptWorker | 结合登记人物／声音／场景与笔记生成脚本 | report | 按目录版本和 API 能力，不提交视频，不改变教学人物选择 |
 | AnalysisWorker | 使用受控数据工具分析并解释 | analysis | 数值来自程序计算，不执行任意 SQL／脚本 |
 | ReportWriter | 根据已验证结果组织报告 | report | 不新增未经检索的事实；最终再过 Aggregator |
 | Supervisor／PlanExecutor | 校验计划、按依赖调度、收集结果 | 默认不需要模型 | 汇总格式化需要模型时调用 report，不能绕过 Gateway／预算 |
@@ -540,9 +543,9 @@ ModelProfile 是一个服务端逻辑别名，包含有序 candidateModelIds、�
 | PPT_LAYOUT | economy | STRUCTURED_OUTPUT、slideId、受控布局及配图来源策略 |
 | VISUAL_RESEARCH | economy | CHAT／TOOLS／STRUCTURED_OUTPUT，真实来源核验及受限工具续轮 |
 | TEACHING_REVIEW | analysis | STRUCTURED_OUTPUT，问题定位与引用支持；图像／视频理解须另声明实际能力 |
-| VIDEO_DIRECTION（预留） | report | STRUCTURED_OUTPUT，shotId与登记人物／声音／场景兼容规则 |
-| VIDEO_SCRIPT（预留） | report | STRUCTURED_OUTPUT、shotId、登记 characterId／voiceId／sceneId 及来源对应 |
-| IMAGE_GENERATION／VIDEO_GENERATION（预留） | 独立媒体 provider profile | 能力、输入限制、数据策略、计费与异步模式明确；网络搜索是工具，不能套用 CHAT／Embedding 候选 |
+| VIDEO_DIRECTION（S09规划） | report | STRUCTURED_OUTPUT，shotId与登记人物／声音／场景兼容规则 |
+| VIDEO_SCRIPT（S09规划） | report | STRUCTURED_OUTPUT、shotId、登记 characterId／voiceId／sceneId 及来源对应 |
+| IMAGE_GENERATION／VIDEO_GENERATION（S09规划） | 独立媒体 provider profile | 能力、输入限制、数据策略、计费与异步模式明确；网络搜索是工具，不能套用 CHAT／Embedding 候选 |
 | EMBEDDING | embedding | 指定向量空间，不套聊天模型候选规则 |
 
 多个 profile 可引用同一真实模型；角色并不要求各有独立供应商。经济模型、分析模型与其备用以真实模型评测确定，不把“贵”作为质量通过条件。最低配置可先验证一个 profile 的两目标故障切换；若要同时验证经济／分析差异以及各自主备，必须配置足够的合格目标，不能把同一模型的两个别名作为证据。
@@ -628,7 +631,7 @@ S04实施说明（2026-10-04）：正式入口已增加服务端EXACT白名单�
 
 **【必须】**`NOTES_PPT` 与 `NOTES_VIDEO` 是任务类型的同级功能，分别生成演示文稿和教学视频。PPT 不是视频的中间产物，视频也不是 PPT 导出的附属格式。两者共享本人权限、来源复核、持久任务、预览审批、可靠费用和私人产物管理，分别使用类型化输入、工作流和能力检查。
 
-**【默认／P4 本轮交付】**根据笔记生成可编辑 `.pptx`，由生图 API 生成概念／装饰配图，通过搜索工具寻找适合客观事实的真实网络配图。**【预留】**教学视频因暂缺视频生成 API，当前不实施实际生成，不阻塞本轮核心交付；保留下面完整方案和能力不可用语义。不得改用聊天脚本、独立 TTS 配音与本地视频合成作为实现或降级方案。
+**【默认／P4 本轮交付】**PPT采用概念生图与事实网络配图并导出可编辑.pptx；同级教学视频采用6.10.5的分镜、真实视频API原生音频及JavaCV后期。图像与视频关键链路在S09完成，PPTX在S10完成；不再以缺视频API列预留豁免，正式未启用或协议不匹配时明确能力不可用。
 
 输入继承可信请求者、授权 SELF／SELECTED／ALL、有限 documentIds、主题、受众和语言。PPT 追加页数、服务端主题、配图策略及费用上限；视频追加已登记 characterId／voiceId／sceneId、目标时长及费用上限。客户端不能指定提供方地址、凭证、存储路径或提升系统预算。DTO／端口保持框架无关；本节为规划，实际已交付接口以接口文档的“已实现”清单为准。
 
@@ -655,7 +658,7 @@ flowchart TD
     REVIEW -->|可修复且剩余额度允许| REPLAN[最多一次局部重规划／返工]
     REPLAN --> VALIDATE
     REVIEW -->|缺资源、超限或无法修复| STOP[明确等待／部分交付／失败]
-    PREVIEW -->|有效批准| EXEC[程序提交生图／导出或视频生成 API]
+    PREVIEW -->|有效批准| EXEC[程序执行生图／逐镜头视频API原生音频／JavaCV或PPTX导出]
     EXEC --> CHECK[程序检查及受支持的内容复核]
     CHECK --> PUBLISH[当前来源复核后私人发布]
 ```
@@ -668,13 +671,13 @@ flowchart TD
 | 知识研究 | ResearchWorker 按受控章节／范围补证据，保存覆盖与未读范围 | 复用同一角色与来源规则，补脚本知识依据 |
 | 教学表达 | PresentationContentWorker 生成逐页正文／示例／备注与引用 | VideoScriptWorker 生成台词、教学节奏与知识引用 |
 | 视觉组织 | PresentationLayoutWorker 选择受控版式、图片用途与生成／搜索策略 | SceneDirectorWorker 依据所选登记项设计 shotId、动作、镜头及场景安排，不更换用户人物／声音／场景 |
-| 配图研究 | VisualResearchWorker 按真实搜索结果调整关键词、筛选原图、核验事实来源；最多三轮工具续轮 | 仅视频 API 支持参考素材且计划确有需求时调用；能力缺失不强行加入参考图 |
+| 配图研究 | VisualResearchWorker有限搜索、核验原图与事实出处 | 在实际支持的参考图／固定人物需求下有限研究；登记参考图优先复用，新付费图批准后生成，不支持明确拒绝 |
 | 教学质检 | TeachingReviewWorker 检查要点遗漏、引用支持、图文／布局约定和事实图片出处 | 同一质检角色检查脚本／镜头对应、目录选择、时长和知识一致性 |
-| 副作用执行 | 有效审批后的生图、受控取图／文件导出与发布由程序负责 | 有效审批后的真正 VIDEO_GENERATION 提交／查询／回调／发布由程序负责 |
+| 副作用执行 | 批准后的生图、受控取图／导出与发布由程序负责 | 批准后的逐镜头视频提交、持久查询、取回、JavaCV拼接／字幕与发布由程序负责；不是新增Agent |
 
 Planner 在一次计划中仅选本任务真正需要的角色，不为增加角色数强制额外模型调用。ResearchWorker 可以作为准备阶段的已登记动作；PPT 内容／布局能否并行由输入引用是否齐备决定，视频脚本／导演依据共同教学大纲及稳定 shotId 协作，必要依赖不得为了展示并行而删除。角色之间通过类型化结果引用通信，不共享可变聊天历史。
 
-S09 交付计划生成／校验、内容／布局／配图研究／质检、有限返工、预览与有效批准意图；S10 交付批准后的图片／导出、实际文件检查和持久恢复。R01 对视频独立验收同一复杂编排能力及真实视频 API，当前仍为预留，不阻塞 PPT。每阶段具体证据与跨会话交接见开发进展。
+S09交付两类产物复杂Agent规划／协作／研究／质检及本人预览批准，完成真实生图和分镜视频的逐镜头视频异步提交／保存ID／查询／素材取回、JavaCV及私人发布／恢复；S10复用批准素材导出可编辑PPTX；S11完整验收，原R01并入S09。阶段证据及新会话交接以开发进展为准。
 
 #### 6.10.3 PPT 两类配图及来源事实
 
@@ -694,25 +697,80 @@ S09 交付计划生成／校验、内容／布局／配图研究／质检、有�
 
 PPTX 正文为可编辑文本／形状，配图为嵌入图片，附讲者备注和来源页／清单；不能把每页整张截图装入 PPTX 冒充可编辑。产物记录 MIME、大小、checksum、相对 storageKey 和发布状态，通过本人认证下载并复核全部笔记来源。真实验收要实际打开文件、抽查中文字体、布局／溢出、图文一致性、备注／引用；结构检查成功不等于教学质量通过。当前文本型产物及一任务一产物约束需追加迁移扩展为二进制描述与多类产物，不修改旧成功迁移。
 
-#### 6.10.5 教学视频 API 预留方案
+#### 6.10.5 分镜教学视频：配置化视频API、原生音轨／无声参数与JavaCV
 
-视频入口先让用户选择服务端提前登记的教学角色、配音和场景，再结合授权笔记生成教学脚本。注册目录保存稳定 ID、类型、展示元数据、版本／启用状态及受控 provider 映射；所选组合须由目标视频 API 实际支持。教学角色是视频人物 characterId，配音是 voiceId，场景是 sceneId；分别区别于 ADMIN／USER 权限角色和 Agent 的 agentId／role。
+##### 视频原生音频与JavaCV后期（2026-10-05）
 
-流程：选择登记项 → 来源准备 → 生成含人物台词、动作、场景、镜头、时长与知识引用的脚本 → 用户查看／修改脚本和估价 → 审批 → 视频生成 API 提交 → 持久查询／可验证回调 → 校验与私人发布。脚本编辑保留原始来源约束，改变脚本或登记项必须重新审批。默认目标 60～90 秒、最多六个脚本镜头；场景目录 sceneId 与脚本镜头 shotId 分开，不能把目录 ID 当作媒体操作唯一单元。实际提供方的角色／声音／场景／时长限制需接入时核对，不支持所选组合则明确不可用，不悄悄忽略用户选择。
+视频声音由生成API原生输出，有声／无声参数随脚本由本人审批。JavaCV负责镜头拼接、中文字幕烧录及视频／音轨流检测。
 
-**【预留默认预算】**总执行20分钟（不含用户审批等待），确认有效期30分钟；每版计划节点8、Worker并行2、共享模型24轮／36次真实尝试、结构修复1次／局部重规划1次／语义返工1次，研究型Worker含首次调用最多三轮，工具24次、单任务文件200 MB。默认按批准的整份脚本提交一个视频生成操作，至多两次有明确未受理证据的合法提交；UNKNOWN不重提。查询初始5秒、退避至30秒、最多60次且不超剩余期限；提交超时／时长／文件限制在接入时与提供方更严格约束取较小值，重启不清零。更长异步生成如需调整有限总期限，须在R01记录必要性及新预算，不能默认无限等待。
+现行视频链路：同片唯一登记API及版本→本人脚本／人物／声音／场景／价格审批→逐镜头直接提交视频→持久保存providerJobId并只查询原ID→取回原视频→JavaCV检测视频及其原生音轨／实际时长→复用原镜头→拼接及可选字幕烧录→技术检查／本人验收。单镜头不要求烧录时直接复用原视频；SRT继续独立保存。画面和声音来自同一提供方返回的视频容器。
 
-批准同时绑定脚本 hash、characterId／voiceId／sceneId 及目录版本、来源版本、视频模型／参数、时长和费用。ModelGateway 的媒体入口适配真正 VIDEO_GENERATION API，并把批准的脚本及登记项映射到其支持字段。没有真实服务时明确 MEDIA_CAPABILITY_UNAVAILABLE，不返回假 providerJobId 或视频，不以独立配音和本地拼接代替。只生成脚本可作为明确的部分交付，不能标完整视频成功。
+`shots[].audioMode`仅使用`NATIVE`（API输出声音）或`NONE`（无声），映射为API原生布尔音频参数。无声模式有台词时在审批前报`MEDIA_AUDIO_REQUIRED`；返回的音轨与批准参数不一致报`MEDIA_AUDIO_MISMATCH`。音轨存在与时长合法不能替代台词完整、口型和画面风格的人工验收。同片不混API规则保持不变。
 
-预留 submit／query／cancel／callback 的类型化契约与能力声明：同步／异步、任务标识、幂等／查询／取消支持、鉴权、用量与计费单位均依提供方事实决定。只在未来 R01 会话接入、验证与开发；视频缺 API 不阻塞 S09／S10／S11，视频阶段本身始终记录未实现／未验收，不能记已完成。
+历史素材、操作、原批准、未知费用及迁移继续保留供审计核对，不改变本轮购买授权。未发送操作的配置摘要变化时必须重新预览并审批。
+
+**2026-10-05 用户确认的最新范围（优先于历史执行方式）：** 多视频API按版本配置登记，Planner从能力目录为整片建议唯一API，并逐镜头建议规格、声音模式，随脚本一起由本人审批。不同成片可选择Vidu或百炼万相，同一成片禁止混用；视频输出有声／无声作为批准参数，有台词时禁止无声输出。JavaCV在项目内完成音视频流检测、镜头拼接及可选字幕烧录，替代外部ffmpeg.exe／ffprobe.exe；仍依赖随包FFmpeg原生库。SRT始终保留，burnSubtitles默认false；单个原声片段无需烧录时直接复用。共享预算、超范围重新审批、持久原ID查询及未知结果禁止重购不变。
+
+同类HTTP JSON同步／异步协议的新API可通过配置增加；当前加载需要重启。新认证、上传或传输协议需扩展底层，不能承诺任何API零代码。历史配置版本必须保留用于在途查询；禁用只阻止新购买。当前实现TEXT_TO_VIDEO，参考图上传与IMAGE_TO_VIDEO尚未完整实现／验收，不虚报支持。技术完成进入WAITING_MEDIA_REVIEW，本人验收当前预览后才转SUCCEEDED；人工拒绝暂停且不自动重购。
+
+百炼万相3北京采用业务空间域名`https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis`，提交`X-DashScope-Async: enable`，保存`output.task_id`，查询原ID路径`/api/v1/tasks/{id}`，读取`output.task_status`／`output.video_url`。密钥来自后端引用，`parameters.audio`决定原生音轨。[官方协议](https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference)及[公开价格](https://help.aliyun.com/zh/model-studio/wan3-0-video)不等于账户最终账单。
+
+**【用户确认，2026-10-04】**视频改为“复杂Agent脚本与分镜→本人审批→整片唯一API及逐镜头音频参数→真实视频与实测时长→JavaCV处理→私人发布”。视频与真实图像生成都在S09完成，旧R01不再独立。PPT仍与视频同级，S10负责可编辑PPTX，S11完整验收。本文是实施规范，不表示新功能已完成或已真实联调。原始[视频建议](docs/视频生成架构建议.txt)只作参考，项目采用范围与差异以下文为准。
+
+用户先选登记characterId／voiceId／sceneId，再选授权笔记、主题及费用上限。characterId为画面人物，voiceId为视频API原生声音提示的登记选择，sceneId为登记视觉场景；镜头使用稳定shotId，不能把sceneId或数组下标当镜头身份。人物／场景描述或参考图映射到实际视频能力，音色映射到实际视频原生声音能力；配置开关不能代替协议与真实效果核验。不支持所选组合明确拒绝，不能静默忽略选择。首版交付人物画面与旁白，数字人、口型同步、角色LoRA、复杂转场、BGM与专业时间线编辑列后续扩展。
+
+```mermaid
+flowchart TD
+    A[授权笔记与登记人物／音色／场景] --> B[Planner生成受限依赖计划]
+    B --> C[脚本Worker与分镜导演协作]
+    C --> D[教学质检与程序校验]
+    D -->|一次局部返工且预算允许| C
+    D -->|通过| E[预览脚本／分镜／费用并本人审批]
+    E --> F[按批准校验原生音频／无声参数及台词]
+    E --> G[按需复用或生成角色／场景参考图]
+    F --> H[全部依赖就绪后核对规格与批准范围]
+    G --> H
+    H -->|需改脚本／素材或超出批准范围| E
+    H -->|符合批准范围| I[逐镜头视频API提交并持久保存ID]
+    I --> J[按原ID持久查询／下载／校验]
+    I -->|提交无ID且结果未知| U[UNKNOWN：停止自动重购]
+    J -->|生成中且次数／期限允许| J
+    J -->|音轨不符或超出批准范围| E
+    J -->|符合批准范围| K[原生音轨／实测时长检查与整片拼接／SRT字幕]
+    K --> L[成品检查／来源复核／私人发布]
+```
+
+**【必须】Storyboard中间模型：**版本化类型契约保存storyboardVersion／hash、aspectRatio、目录／来源版本、顺序及shots。每个镜头包含shotId、narration、visualPrompt、motionPrompt、generationType、referenceAssetIds、sourceRefs和estimatedDurationMs；实测audioDurationMs、providerDurationSeconds、timelineStartMs／timelineEndMs属于程序产生的执行事实，不由LLM精确猜测。时间轴用整数毫秒，累计区间单调、无重叠，字幕依据实际发布片段时间轴生成。DTO不含SDK、任意路径或可执行代码，文件只保存受控assetId／storageKey／checksum。
+
+- TEXT_TO_VIDEO生成真实动态视频；IMAGE_TO_VIDEO在实际模型支持时使用参考图。固定人物优先复用登记参考图／已批准角色图并验证一致性，不能只靠同一文字描述承诺外观稳定。参考图用提供方支持的Base64或受控上传传递，不把本机路径或需要本人鉴权的下载URL直接交给提供方。
+- 生图能力与PPT共用；新付费参考图在本人批准后生成，已存在且当前授权／输入hash有效的素材复用。事实照片沿受控搜索与出处核验，不能把生成图伪装成客观事实。STATIC_IMAGE若以后启用须明确作为静态素材用途，不能代替本阶段的真实动态片段验收。
+- 首次审批绑定脚本／分镜、目录／来源／配置／价格版本、参考素材选择或生成规则、镜头数量／时长档位上限、原生音频参数及其与台词的校验规则、币种／估价／金额上限及有效期。视频取回后保存实测执行清单及其与批准hash的关联，不覆盖原批准快照。只有实测时长、素材和费用都落在已批准范围内才继续；改台词、增镜头、换付费素材或超出范围形成新预览并重新批准。
+
+**【必须】音频模式与时间轴：**每镜头的audioMode仅支持NATIVE（视频API原生音频）或NONE（无声），随脚本审批并按登记协议映射输出参数。有台词时必须选择NATIVE，且API具有该能力；NONE与非空台词在付费提交前拒绝。视频取回后由JavaCV实测视频、音轨及实际时长，原生声音缺失或与批准模式不一致时停止发布；超出批准时长、素材或费用范围需重新审批。台词完整性及实际教学效果由本人听验。SRT按镜头时间轴保存，不声称已有逐字时间戳、强制对齐或口型同步。
+
+**【必须】模型时长映射：**LLM只估计教学节奏。按选定API支持的档位与批准脚本选择合法视频时长，通过登记协议的duration等字段发送，不只在prompt中写目标秒数。视频取回后实测视频及原生音轨，超出批准范围须重新审批；音轨存在与时长合法不证明台词完整，仍由本人听验。不得截断台词或强行拉长画面。改台词、拆分镜头、调整时长档位或换API都形成新预览，复用仍有效的已付费素材。不同API的时长／分辨率／参考图能力分别记录，不能把原“最多六镜头、60～90秒”当所有API都支持的规格。
+
+**【必须】逐镜头异步提交：**每个shotId下的按需IMAGE_GENERATION、VIDEO_GENERATION分别保存稳定operationId、批准版本、真实尝试／预留／状态及资产。先持久提交意图和预算，再事务外发起视频提交，立即保存返回id为providerJobId。按批准API版本查询；智谱镜头使用`GET https://open.bigmodel.cn/api/paas/v4/async-result/{id}`，路径只取该操作已保存的providerJobId，后端添加`Authorization: Bearer <API_KEY>`。读取task_status的PROCESSING／SUCCESS／FAIL和video_result[].url／cover_image_url，HTTP200不等于生成成功；请求与字段依据[官方查询协议](https://docs.bigmodel.cn/api-reference/%E6%A8%A1%E5%9E%8B-api/%E6%9F%A5%E8%AF%A2%E5%BC%82%E6%AD%A5%E7%BB%93%E6%9E%9C)。前端只查本人本地任务，不接受客户端任意外部id。
+
+**【默认预算，唯一数值来源】**验收顺序为单镜头→三镜头；正式默认3镜头、最多6镜头，目标总时长不得超过实际模型档位、批准脚本及上述镜头上限共同允许的范围。每版8个Agent逻辑节点、同时2个Worker，整任务共享24模型轮／36次真实尝试，结构修复／局部重规划／语义返工各最多一次，研究Worker含首次最多三轮，工具24次；不能每镜头重置预算或把镜头都展开为新的Agent计划。付费生图／视频实际发送共用任务尝试／金额上限，常规问答／报告额度不变。总执行及外部等待累计20分钟，审批等待排除，审批有效期30分钟；需要更长实际服务期限须在S09以证据登记有限调整，不无限等待。
+
+查询按批准API版本登记间隔（当前示例15秒、允许5～60秒）、最多60次，整任务查询总上限为计划镜头数×60（最大360），且均受总期限、当前执行权与提供方更严格限制。查询单独计数，不算新生成、LLM轮数或普通异常恢复领取次数；保存nextPollAt后释放等待占用，不在Provider内部阻塞到生成完成。采用已有数据库调度／租约／fencing，不新增MQ或分布式Worker。一次远程请求30秒、JavaCV检测30秒、一次本地渲染120秒，均与剩余期限取较小值；本地渲染同一输入最多两次。图片10MB／1600万像素、视频单文件160MB，全部中间素材与成品共享任务200MB空间，不能每镜头另获一份；引用传给提供方时另取其更严格输入大小限制。
+
+**【必须】JavaCV制作与验收：**MediaFilePort在项目内调用JavaCV及原生FFmpeg库，不调用外部可执行程序。单片段原声且无烧录可直接复用。同API片段统一H.264、30fps及1280×720；有声输出采用AAC、48kHz双声道（规范化不会提高原素材清晰度）。原生音轨完整保留，不能用shortest截掉台词；SRT按实际发布片段整数毫秒时间轴生成，按本人选择烧录，不宣称逐字对齐或口型同步。所有文件受控、空间共享、并发有界、同输入本地恢复最多两次；原生调用硬中断和长期音画漂移仍须专项验证。文本Reviewer不能冒称看过／听过成品，实际播放和知识、人物、音色、场景须本人验收。
+
+**【必须】恢复与费用：**有providerJobId恢复只查原ID；无ID未知视频提交停止自动重购。确定未发送／未受理的合法重试最多两次，仍受原批准与共享预算；提供方FAIL后重新生成是新付费操作，须新的有效本人批准，不套用建议中的自动2～3次重生。下载／临时文件／拼接／字幕失败先复用原结果有限重建，不触发新生图／视频。编辑使受影响镜头及下游成品失效，输入hash、来源和目录未变的成功素材可复用，但新发布仍绑定当前预览。暂停／取消不新提交／发布，保留原远程事实及可能费用；未提供的取消、回调、幂等或按请求键找回能力不虚构。
+
+费用分别按提供方真实图片数／视频次数或秒／查询规则记账，实测时长不等于账单用量。本地检测、下载及JavaCV不伪装成模型生成费用。缺报价阻止新付费批准，缺用量保留UNKNOWN而非零；批准消费、操作意图和预留原子保存，外部请求在事务外。最终文件未取回／校验／发布前不显示100%，前端明确镜头总数／完成数、各镜头视频生成／取回／流检测状态、当前拼接阶段、等待原因与上次／下次查询时刻。
+
+**【接入参考，核对日期2026-10-04】**[视频生成官方协议](https://docs.bigmodel.cn/api-reference/%E6%A8%A1%E5%9E%8B-api/%E8%A7%86%E9%A2%91%E7%94%9F%E6%88%90%E5%BC%82%E6%AD%A5.md)。实际模型、可用字段、音色、规格、价格和账户权限仍由S09记录真实证据；API已获取、文档已核对和源码已有适配不等于全部功能通过。
 
 #### 6.10.6 操作恢复、模块边界与观测
 
-付费生图或视频先登记稳定 operationId／输入 hash 和预留，再发送；保存 ACCEPTED／RUNNING／SUCCEEDED／FAILED／UNKNOWN 等实际外部事实。响应丢失进入 UNKNOWN，使用原任务标识、供应商幂等键或可验证回调对账；无查询及幂等能力时停止并人工核对，不自动重购。暂停／重启不重置预算，迟到响应不能越过租约、取消、审批版本或来源撤销发布；本地取消不等于远程取消／退款。
+付费生图或逐镜头视频先登记稳定operationId／输入hash和预留，再发送；保存 ACCEPTED／RUNNING／SUCCEEDED／FAILED／UNKNOWN 等实际外部事实。响应丢失进入UNKNOWN；已保存视频providerJobId只查询原操作，无ID未知视频不能靠查询恢复。仅已核验的提供方幂等键／查询／回调可用于对账；没有这些能力停止并人工核对，不自动重购。暂停／重启不重置预算，迟到响应不能越过租约、取消、审批版本或来源撤销发布；本地取消不等于远程取消／退款。
 
-图片下载后保存受控文件与 checksum，恢复复用已完成资产；PPT 导出可有限重建，付费素材损坏优先找回原结果。ai 负责内容／布局编排、搜索工具执行控制及模型适配；business 负责权限、审批、用例与状态规则；data 负责目录／操作／资产持久化、受控联网取图／文件保存及 PPT 导出；app 负责注册、白名单、主题／中文字体和有限运行时装配，web 不直接调用模型。
+图片下载后保存受控文件与 checksum，恢复复用已完成资产；PPT 导出可有限重建，付费素材损坏优先找回原结果。ai 负责内容／布局编排、搜索工具执行控制及模型适配；business 负责权限、审批、用例与状态规则；data负责目录／Storyboard／镜头操作／资产持久化、受控联网取图／文件保存、JavaCV制作及PPT导出；app 负责注册、白名单、主题／中文字体和有限运行时装配，web 不直接调用模型。
 
-验收记录 taskId → stepId → agentId → model／tool attempt → mediaOperationId → assetId／artifactId，区分搜索、下载、生成、审批等待、外部查询、本地导出。PPT 必须有真实生图与事实检索图两类样例、可编辑成品、来源清单和恢复证据；视频只有 R01 获得真实 API 后才补实际人物／声音／场景一致性及视频质量证据。
+验收记录taskId→planVersion→stepId→agentId→model／tool attempt→shotId或slideId→mediaOperationId→assetId／artifactId；视频另连Storyboard、视频及原生音轨实测时长、每镜头原ID、时间轴和JavaCV事件。S09提供真实生图、单镜头／三镜头视频、恢复及技术／人工质量证据，S10提供可编辑PPTX，S11复核两类产物；不将普通查询或本地拼接冒充Agent工具续轮。
 
 #### 6.10.7 复杂 Agent 的计划契约、返工和验收证据
 
@@ -734,7 +792,7 @@ TeachingReviewWorker 返回 ACCEPT／REPAIR／NEEDS_USER／FAIL、问题代码�
 6. 人工修改、拒绝／过期、价格／来源／目录变化使原批准失效；审批前付费图片或视频生成提交次数为零。API 结果未知、迟到／重复回调、取消与恢复不盲目重购／越权发布。
 7. 运行图由真实事件重建，关联 taskId→planVersion→stepId→agentId→toolCallId／attempt→reviewIssue→mediaOperationId→artifactId；显示派发、工具续轮、返工、审批、恢复及已知／未知费用，不展示隐藏思维链。
 
-上述必须成为 S09／S10／S11 和未来 R01 的具体退出条件。只生成最终 PPT／视频或只画静态多 Agent 图，不表示复杂 Agent 能力已通过。
+上述必须成为S09／S10／S11退出条件。视频含参考图、真实视频API原生音频与JavaCV后期阶段，但复杂Agent计划、工具续轮和有限返工仍须单独举证；只交成品或静态流程图不算复杂Agent通过。
 
 ## 7. Tools 注册、动态暴露和安全执行
 
@@ -810,7 +868,7 @@ ToolOutcome 区分 SUCCESS、DENIED、INVALID_ARGUMENTS、WAITING_APPROVAL、FAI
 确认消费、新笔记文档／版本、Outbox 入库事件、operation 结果放同一 MySQL 原子事务；重放已成功的相同 operationId 返回既有结果，同 operationId 不同参数冲突拒绝。授权／状态／任务执行权在事务提交前再次检查。对当前数据操作，data 接收业务计算出的约束并以原子条件落实，不能只在事务外做一次检查。
 
 
-### 7.6 PPT 与预留视频的受控工具
+### 7.6 PPT 与教学视频的受控工具
 
 工具仍显式注册、校验参数、授权、限额和记录；Worker 只准备内容／版式，不持支付凭证。付费生成只能由编排器在有效审批后提交，统一通过模型层的媒体能力入口，不能在导出器或取图工具中另建模型客户端。
 
@@ -818,12 +876,13 @@ ToolOutcome 区分 SUCCESS、DENIED、INVALID_ARGUMENTS、WAITING_APPROVAL、FAI
 |---|---|---|
 | search_web_images | 搜索真实事实配图候选 | 必要关键词、有限候选，返回原网页与图片来源；不把缩略图当成已核验素材 |
 | fetch_image_asset | 核验并保存已选择的网络图片 | 服务端搜索候选 ID，校验地址／重定向、媒体类型、字节／像素上限；拒绝内部网络地址和任意磁盘路径 |
-| MediaModelGateway.generateImage | 根据批准的配图计划生图 | IMAGE_GENERATION profile、有效批准、稳定 operationId、预算与 UNKNOWN 控制 |
+| MediaModelGateway.submit（IMAGE_GENERATION） | 根据批准的配图计划生图 | IMAGE_GENERATION profile、有效批准、稳定 operationId、预算与 UNKNOWN 控制 |
 | build_pptx／inspect_pptx | 导出和检查可编辑文稿 | 仅受控布局、已登记资产与storageKey，不执行模型生成的模板／脚本 |
-| MediaModelGateway.submitVideo／queryJob／cancelJob | 预留真正视频生成 API | 仅批准的脚本和登记角色／配音／场景；实际能力声明，未配置不调用 |
-| inspect_video | 预留视频文件与内容抽查 | 技术可用性和人工教学质量分别记录；不代替来源和人物／声音／场景一致性核验 |
+| MediaModelGateway.submit／query | S09真实视频API原生音频与原ID查询 | 仅本人批准的Storyboard／目录／原生时长／参考素材，稳定镜头操作及共享预算；取消／回调只有实际能力已核验才接入，不假定存在 |
+| probe_video／concat_video／burn_subtitles（规划） | 实测视频／原生音轨时长、拼接及SRT | 程序经MediaFilePort操作受控文件，限次／限时／限空间；完整旁白与字幕，失败先本地恢复，不自动购买新素材 |
+| inspect_video | 教学视频文件与内容抽查 | 技术可用性和人工教学质量分别记录；不代替来源和人物／声音／场景一致性核验 |
 
-本地文件／导出经 MediaCapabilityAdapter → MediaRenderPort，不能回调发起 AI 的业务 Application。只接稳定资产 ID 与受控参数；所有读写素材检查 requester／来源，不能开放模型任意 URL、文件路径或 Shell。真实成功返回 operationId、assetId／artifactId、checksum、状态与已知用量；ACCEPTED／RUNNING 不是产物完成。受同一有效预览批准覆盖的素材不逐个弹确认，恢复保持操作 ID。生成提交和内部工具执行纳入任务工具预算，外部查询单独限次且不冒充新生成。
+本地文件／制作／导出复用MediaApplicationService的授权规则与MediaFilePort，持久事实经MediaStorePort保存，不回调发起AI的业务Application；现有端口扩展而非并列再建MediaRenderPort／MediaJobStorePort。只接稳定资产 ID 与受控参数；所有读写素材检查 requester／来源，不能开放模型任意 URL、文件路径或 Shell。真实成功返回 operationId、assetId／artifactId、checksum、状态与已知用量；ACCEPTED／RUNNING 不是产物完成。受同一有效预览批准覆盖的素材不逐个弹确认，恢复保持操作 ID。生成提交和内部工具执行纳入任务工具预算，外部查询单独限次且不冒充新生成。
 
 ## 8. RAG、文件解析、结构切片与索引一致性
 
@@ -1001,7 +1060,7 @@ RUNNING / WAITING_EXTERNAL → WAITING_RECONCILIATION → QUEUED / FAILED / CANC
 非终态 → CANCEL_REQUESTED → CANCELLED（未运行任务可以直接取消）
 ```
 
-PARTIAL 是已校验且明确缺项的部分交付终态，普通 resume 不重做；新任务仍受原操作／费用事实约束。PPT 只有可编辑文件、必要资产及校验通过才 SUCCEEDED，视频只有真实 API 产物及校验通过才 SUCCEEDED；仅大纲或脚本不能计最终产物通过。步骤枚举独立，WAITING_EXTERNAL／PARTIAL 不是某次生成成功。
+PARTIAL 是已校验且明确缺项的部分交付终态，普通 resume 不重做；新任务仍受原操作／费用事实约束。PPT 只有可编辑文件、必要资产及校验通过才 SUCCEEDED，视频只有真实片段、完整旁白、字幕／拼接、最终校验与私人发布均完成才SUCCEEDED；仅大纲或脚本不能计最终产物通过。步骤枚举独立，WAITING_EXTERNAL／PARTIAL 不是某次生成成功。
 
 任务与步骤分别保存状态、stateVersion、attempt、workerId、leaseUntil、fencingToken、nextAttemptAt、budget、workflowVersion、工具／提示词版本。checkpoint 保存已完成事实和操作 ID，以及计划／Agent 版本、profile、routingPolicyVersion、已用／预留预算；不保存可执行 Java 对象或密钥。模型不可用时恢复依据 6.8 的合法切换规则，不改变已完成步骤的事实。
 
@@ -1023,19 +1082,21 @@ TaskStorePort 的领取／续租／提交必须是明确原子方法。使用 My
 
 保存 AI 笔记、operation、确认消费在一次 MySQL 事务提交，唯一约束覆盖 actorUserId + operationId。事务方法置于 data 独立组件，通过 Spring 代理调用，避免自调用让 `@Transactional` 失效。业务服务不在模型调用期间开启长事务。
 
-FAQ／报告／PPT／预留视频先写稳定 artifactId 的受控临时文件，汇聚校验后原子替换；ArtifactStorePort 仅在执行权、本人和来源有效时登记可下载。二进制用文件描述／storageKey，不按 Markdown String／UTF-8 发送；多类产物唯一键需追加迁移并兼容旧报告。崩溃核对状态与 checksum，孤立文件不公开。
+FAQ／报告／PPT／教学视频先写稳定 artifactId 的受控临时文件，汇聚校验后原子替换；ArtifactStorePort 仅在执行权、本人和来源有效时登记可下载。二进制用文件描述／storageKey，不按 Markdown String／UTF-8 发送；多类产物唯一键需追加迁移并兼容旧报告。崩溃核对状态与 checksum，孤立文件不公开。
 
 **【注意】**本地事务能够保证本地笔记与结果一起提交，不能证明真实外部系统恰好执行一次。媒体外部提交采用 6.10 的意图／子操作／未知状态与对账规则；其他外部写接口需提供方幂等键、查询对账／补偿机制，扩展前单独设计。
 
-### 10.4 图片与预留视频子操作的恢复
+### 10.4 图片与分镜视频子操作的恢复
 
-使用稳定 taskId＋previewVersion＋assetId／unitId＋action 唯一键；视频整体生成以固定 VIDEO 单元标识，不能假定 API 支持逐镜头提交。先保存提交意图、输入摘要和预留预算，再在事务外发送；提交、查询、下载、本地导出各记独立尝试、费用与执行权。
+采用taskId＋previewVersion＋shotId／slideId＋capability＋action控制稳定操作，attempt单独持久记录；整片渲染按Storyboard／时间轴hash与素材checksum控制。sceneId是登记场景，不作为镜头键，旧固定VIDEO／AUDIO整片单元只作兼容历史。来源、目录、输入hash、批准版本与执行权在每次恢复复核，预算不清零。
 
-外部返回后先保存真实 providerJobId／响应摘要，再下载到受控临时区、核验并登记素材。发送中崩溃、超时或响应丢失进入 UNKNOWN；优先查询同一任务或供应商认可的幂等键，不盲目重新生成。提供方没有可用查询或幂等时标待对账，不声称严格一次生成。重复／乱序回调验证签名、去重并 CAS，旧执行者可以补原尝试费用事实，不能发布新产物。
+先持久提交意图与预留，再事务外调用。视频返回providerJobId后立即保存，调度按原ID查询；Provider一次查询后返回事实，不阻塞轮询。查询次数／nextPollAt／剩余期限以6.10.5为准。无ID的未知视频提交不得自动重购。只有已核验的提供方幂等或请求键查找能力才能补充恢复。
 
-成功图片及 checksum 复用；已选网络图片不可在恢复时悄悄更换来源或内容。PPT 文件缺失可以在有限预算内复用原素材重新导出，付费图片缺失优先找回提供方原结果，不重购；网络图片不可用则等待用户重新选图并审批或明确缺图。预算、租约、当前来源、批准版本和任务状态每次恢复重新核验。暂停／取消后不新提交／发布，远程状态与费用如实保留。
+每镜头参考图、视频和后期片段分别保存状态／资产，生成操作记录真实费用，原生音轨实测结果随视频保存。成功且输入未变的素材复用，失败镜头不使其他已成功镜头重生。提供方FAIL后再次生成是新付费操作，需本人新批准；查询故障、链接过期、下载失败或本地拼接失败不证明远程未计费，先查询／取回原结果或有限本地重建。
 
-私人产物发布与本地文件不是一个跨系统事务；只有任务执行权、当前审批、必要子操作、校验摘要及来源复核都通过才登记可下载。文件清理按稳定 storageKey、保留期和活跃引用有界执行；不公开临时文件，不清理其他用户资料。
+用户修改失效受影响镜头与依赖它的字幕／成品，未变素材复用，但发布绑定当前批准及Storyboard版本。暂停／取消阻止新提交／发布，晚到响应可补原费用事实，不越过租约／fencing、来源撤销、账户禁用或旧批准发布；不假定提供方存在取消／回调接口。已验证回调若以后启用须验签、去重、关联原ID及CAS。
+
+文件与SQL不是一个事务。受控文件原子落盘、检测MIME／大小／时长／checksum；下载／中间渲染未发布不公开，私人下载每次复核本人及来源。备份覆盖SQL、批准／可靠预算／操作、Storyboard／时间轴、视频及其原生音轨／参考图／字幕／最终文件及配置版本；有界清理不删除仍被任务或未知费用引用的素材。PPT导出重建同样不得重新购买图片。
 
 ## 11. LLM 观测、成本统计与执行链路可视化
 
@@ -1051,7 +1112,7 @@ FAQ／报告／PPT／预留视频先写稳定 artifactId 的受控临时文件�
 
 图中的步骤边使用编排显式记录的 stepId／parentStepId／依赖关系；仅 span 父子树不能完整表示并行汇合的 DAG，应区分“调用嵌套”与“步骤依赖”。循环展开为实际调用节点，重复节点带序号，不把每次重试覆盖成最后一次。
 
-PPT 任务展示内容／布局 Worker 派发与并行汇合、搜索／选图、审批、图片生成、下载、导出／检查／发布依赖；预留视频展示目录选择、脚本审批与 API 提交／查询。多次恢复 trace 关联 taskId，区分模型、搜索、远程等待和本地导出；查询不计新生成。每个资产能追溯 operationId／来源，摘要仍仅本人可读。
+PPT 任务展示内容／布局 Worker 派发与并行汇合、搜索／选图、审批、图片生成、下载、导出／检查／发布依赖；教学视频展示目录选择、脚本审批与 API 提交／查询。多次恢复 trace 关联 taskId，区分模型、搜索、远程等待和本地导出；查询不计新生成。每个资产能追溯 operationId／来源，摘要仍仅本人可读。
 
 **【默认可选接入】**保留 OpenTelemetry 导出至 Langfuse 的配置路径。外部后端关闭或不可用时主应用正常工作；real 模式不自动上传提示词、资料原文或工具结果。启用外部观测必须显式配置地址、密钥和允许字段，脱敏先于本地保存与导出。
 
@@ -1079,7 +1140,7 @@ LangChain4j 的模型监听支持请求、响应和错误；部分模型实现�
 | 关联 | traceId、spanId、parentSpanId、requestId、sessionId、taskId、stepId、mediaOperationId、slideId／shotId／assetId、artifactId | 身份 ID 按需脱敏，不作指标高基数标签；视频登记项 characterId／voiceId／sceneId 单独记目录版本，不冒充操作单元 |
 | 模型 | agentId、taskType、profile、policyVersion、requestedModel、actualModel、provider、attempt、fallbackHop、routeReason、failureCategory、promptVersion、finishReason | 每次实际尝试独立节点，显示选型／切换／无兼容候选的原因；不记录密钥 |
 | 用量 | inputTokens、outputTokens、cachedInputTokens、reasoningTokens、usageSource | 以提供方用量为优先，估算明确标记 |
-| 媒体 | mediaProvider／profile／jobId、字符数／音频或视频秒数／图片数、submitAttempt、pollCount、renderMs／waitMs | 依提供方实际计费单位，查询不冒充新的生成；生成事实与任务发布状态分开 |
+| 媒体 | mediaProvider／profile／jobId、视频秒数／生成次数／图片数、submitAttempt、pollCount、renderMs／waitMs | 依提供方实际计费单位，查询不冒充新的生成；生成事实与任务发布状态分开 |
 | 延迟 | totalMs、modelMs、modelTtftMs、firstDeliverableMs、toolMs、retrievalMs | 未发生的首 Token／交付时间为空，不记成零 |
 | 成本 | amount、currency、priceVersion、ESTIMATED／PROVIDER_REPORTED／UNKNOWN／SIMULATED | 不冒充结算账单；Mock 不记入真实费用 |
 | 可靠性 | success／error／timeout／retry、queueRejected、telemetryDropped | HTTP 成功不等于业务任务成功 |
@@ -1124,7 +1185,7 @@ S07实施说明（2026-10-04）：V10追加fee_scopes／fee_attempts，正式Mod
 5. Planner → 检索／分析 Worker → 汇总的并行、依赖与 Worker 恢复关联正确；节点能核对不同角色实际模型，静态流程与实际执行路径可对照。
 6. 观测后端故障不阻断问答；丢弃／不完整有标记。
 7. 本地检查页没有越权与原文泄露；外部导出启用后用真实接收记录验收，关闭时明确未验证。
-8. notes_ppt 能看见内容／布局派发、预览批准、搜索与生图分列、资产复用、导出校验和恢复 trace；查询不重复算生成费用。notes_video 仅在未来 API 阶段补登记选项、脚本／审批、提交／查询及私有发布证据，不阻塞当前验收。
+8. notes_ppt看见内容／布局派发、预览批准、搜索与生图分列、素材复用、导出校验与恢复trace；notes_video在S09记录Storyboard／shotId、本人批准、视频及原生音轨实测时长、每镜头提交／原ID查询／素材、JavaCV／字幕／私人发布及局部恢复，S11复核完整证据。外部查询不重复算生成费用；两类产物复杂Agent与真实媒体均为核心验收要求。
 
 S06实施说明（2026-10-04）：已追加V9、类型化TraceNode／TraceGraph、本人图API及同源运行检查页。实际模型叶节点、工具申请／续轮、角色真线程依赖／复用、入库批次与ES步骤分别记录；每次领取新trace关联上一执行。统一app收集器采用2000节点／2KB上限、32完成运行队列、7天保留、100%限量采样与一次写重试；未完成落库、截断和故障明确不完整。预算继续由ExecutionBudget和可靠任务／批次端口守住，节点不是费用账本。OTLP HTTP JSON仅脱敏元数据且默认关闭，外部Langfuse未配置验收；模型TTFT不可用、服务器首次放行另记，完整分层证据与缺口见验收报告。不开发S07费用或媒体阶段。
 
@@ -1134,7 +1195,7 @@ S06实施说明（2026-10-04）：已追加V9、类型化TraceNode／TraceGraph�
 
 一个管理员 admin、两个普通用户 u1／u2，每人至少两个知识库，每库数篇资料。样例含个人学习笔记、技术说明、同名文档、旧／新版、无答案问题、恶意注入资料，以及管理员跨库生成的报告／笔记。使用 KB-A1／KB-U1-A／KB-U2-A、DOC-U1-01／DOC-U2-01 等固定标识。
 
-测试必须证明 USER 自有、ADMIN 跨库只读且任何角色不读他人私人资源。PPT 样例提供真实笔记、逐页期望事实／引用、概念生图及真实事实搜索配图、中文字体和受控布局，实际生成可编辑 PPTX；视频目录／批准脚本仅作预留，真实 API 和视频质量未来补验。其他扫描／表格输入仅在对应扩展启用；种子仅 dev／demo，不等同正式认证。
+测试必须证明USER自有、ADMIN跨库只读且不读他人私人资源。PPT验真实两类配图、可编辑文字、备注／来源与中文版式；分镜视频验单镜头／三镜头、人物／音色／场景、真实原生音轨／实测时长／视频ID、字幕拼接、费用与局部恢复。扩展输入按实际能力启用，种子仅dev／demo，非正式认证。
 
 ### 12.2 表组与约束
 
@@ -1150,17 +1211,17 @@ S06实施说明（2026-10-04）：已追加V9、类型化TraceNode／TraceGraph�
 | 记忆 | memories；扩展 memory_edges | userId、来源／授权／有效期／deleted／version；仅本人 |
 | 任务 | tasks、task_steps、checkpoints | requesterUserId、taskType／outputMode、scopeSnapshot／policyVersion、状态、租约、fencingToken、stateVersion、步骤事实／来源／预算／执行期限 |
 | 确认／操作／请求去重 | approvals、operations | actorUserId、operationType、targetType／targetId／targetVersion、参数／来源／费用配置 hash、确认者／到期；操作唯一 actorUserId＋operationId；请求创建记录 REQUEST_CREATE、API 命名空间／key／请求 hash／资源标识／保留期，唯一 actorUserId＋命名空间＋key，无需用户确认 |
-| 产物预览（规划） | generation_previews | taskId＋outputKind＋previewVersion；PPT 页面／布局／图片来源计划或视频脚本／目录项版本、来源 hash、profile、估价／币种；新增迁移，非已建表 |
+| 产物预览（分镜扩展规划） | generation_previews | 版本化Storyboard／shots、脚本／参考素材／目录／来源hash、批准的时长映射规则与估价／币种／上限；复用现有预览，不另建video_task体系 |
 | 登记目录（规划） | media_catalog_items | character／voice／scene／presentation_theme，稳定 ID、版本／启用、展示信息与受控 provider 映射；不表示权限角色或 Agent |
 | 配图资产／来源（规划） | media_assets、media_asset_sources | GENERATED／WEB_SEARCH、task／slide／operation、storageKey／checksum、原网页／图片／许可／检索时刻及生成元数据；继承笔记来源权限 |
-| 媒体子操作（规划） | media_operations、media_attempts | operationId、taskId／previewVersion／assetId或稳定视频单元／action、真实 providerJobId、提交／运行／成功／失败／UNKNOWN／取消、nextPollAt、结果与 checksum、尝试／费用／CAS |
+| 媒体子操作（分镜扩展规划） | media_operations、media_attempts | operationId、taskId／previewVersion／shotId或slideId／capability／action、inputHash、原providerJobId、状态／nextPollAt／累计查询、结果／checksum／费用／CAS；复用现有结构，具体迁移由S09核对 |
 | 同步 | outbox_events | 类型、资源／版本、状态、限次重试、nextAttemptAt、租约、去重键 |
 | 产物 | artifacts；规划追加二进制及多类产物 | artifactId、requesterUserId／taskId、kind／revision／previewVersion、slideId／shotId或assetId／mediaOperationId、实际MIME／大小／时长、checksum／相对storageKey、发布态／来源；taskId＋kind＋revision唯一，兼容旧报告 |
 | 观测／审计 | ai_runs、ai_spans、knowledge_access_audit | trace／步骤、请求者、Scope／路由／用量；管理员跨库列表／检索／原文读取记录对象／结果，禁止整篇内容 |
 | ES | knowledge_chunks_vN；扩展 memory_vectors_vN | knowledgeBaseId、ownerUserId、documentId／version／processingRevision、section／祖先／parent／chunk／位置、embeddingText／向量及模型／维度；记忆向量仅本人 |
 | 缓存版本 | 库 version／全局 knowledgeEpoch | 资料／库状态更新后使 SELF／SELECTED／ALL 缓存正确失效；可采用明确失效事件实现 |
 
-不建工单／订单表、不建组织 tenants 或成员／文档 ACL。表名 snake_case，Java camelCase；utf8mb4、UTC 时间；状态／过滤字段不是全塞 JSON。建立 ownerUserId＋状态、knowledgeBaseId＋documentVersion、sessionId＋seq（唯一且会话 owner 校验）、documentId＋documentVersion＋processingRevision＋sectionOrdinal／chunkIndexInSection、contextParentId＋chunkIndexInParent、任务／入库租约等实际查询需要的索引；规划媒体以 taskId＋previewVersion＋assetId或稳定视频单元＋action 控制唯一操作，不能用登记场景sceneId当每镜头键。provider／账户引用＋非空 providerJobId 去重，状态＋nextPollAt 支持有界查询；新增表／约束只追加迁移，原已应用表不视为已具备本节规划字段。
+不建工单／订单表、不建组织 tenants 或成员／文档 ACL。表名 snake_case，Java camelCase；utf8mb4、UTC 时间；状态／过滤字段不是全塞 JSON。建立 ownerUserId＋状态、knowledgeBaseId＋documentVersion、sessionId＋seq（唯一且会话 owner 校验）、documentId＋documentVersion＋processingRevision＋sectionOrdinal／chunkIndexInSection、contextParentId＋chunkIndexInParent、任务／入库租约等实际查询需要的索引；规划媒体以 taskId＋previewVersion＋assetId或shotId＋capability＋action 控制唯一操作，不能用登记场景sceneId当每镜头键。provider／账户引用＋非空 providerJobId 去重，状态＋nextPollAt 支持有界查询；新增表／约束只追加迁移，原已应用表不视为已具备本节规划字段。
 
 **【必须】**知识库／文档关联完整，删除标志、幂等唯一键和 CAS 在迁移中落实；MySQL 8.4.12 Compose／Testcontainers 一致，Flyway／Connector/J 成套验证，不依赖 MySQL 9.x 特有语法。MyBatis-Plus 不使用组织租户插件代替本项目授权；所有数据端口都要求可信范围，SQL／ES 过滤与 MySQL 复核明确实现。
 
@@ -1199,9 +1260,9 @@ S06实施说明（2026-10-04）：已追加V9、类型化TraceNode／TraceGraph�
 | POST /documents/{id}/index-actions | retry／reprocess 当前内容 | 第一版 owner；仅技术处理白名单／服务器配置，不改原文；管理员跨库维护仅受控内部命令，不暴露给模型 |
 | PATCH／DELETE /documents/{id} | 手工修订／删除 | 自有目标，版本／来源约束、Outbox／缓存失效；不套 AI 确认 |
 | POST /chat、POST /chat/stream | 普通知识问答／SSE | SELF／SELECTED／ALL 请求先授权，会话归属；SSE 仅已汇聚内容 |
-| POST /tasks、GET /tasks/{id} | FAQ／报告；规划同级 NOTES_PPT／NOTES_VIDEO | 202／taskId、受控输入、幂等、本人及来源；PPT 待实施，视频 API 预留不可用 |
+| POST /tasks、GET /tasks/{id} | FAQ／报告；规划同级NOTES_PPT／NOTES_VIDEO | 202及时返回本地taskId；媒体新契约未完整验收，视频的镜头／视频生成／等待／拼接进度由持久事实返回 |
 | GET /tasks/{id}/preview、GET /tasks/{id}/media-operations（规划） | 类型化 PPT／视频预览及真实媒体状态 | 本人＋当前来源；逐页内容／配图出处或人物／声音／场景及脚本；费用明确，不回凭证 |
-| GET /media/catalogs（规划） | 已登记角色、配音、场景和 PPT 主题 | 返回启用项 ID／版本／可展示元数据与兼容能力；不泄露提供方凭证、内部路径，不当权限角色目录 |
+| GET /media/catalogs（规划） | 已登记人物、原生声音提示、场景和 PPT 主题 | 返回启用项 ID／版本／可展示元数据与兼容能力；不泄露提供方凭证、内部路径，不当权限角色目录 |
 | POST /tasks/{id}/actions | pause／resume／cancel／reconcile | 请求者与当前状态；reconcile 仅触发受控提供方查询，不允许客户端强制成功／盲目重提；恢复复核 Scope，resume 不代替确认 |
 | POST /approvals/{id}/decision | 批准／拒绝保存笔记或 PPT／视频媒体提交 | 本人确认、operationType／参数／来源／目标版本／费用上限、期限复核 |
 | GET /artifacts/{id} | 下载报告／PPT／图片／视频／脚本等产物 | 本人 + 已发布 + 当前源资料可读；支持受认证 Range 时逐次检查，不能公开静态视频地址 |
@@ -1260,9 +1321,9 @@ app 是默认正式启动入口；demo 不依赖 app，使用相同模块配置�
 
 `lab.storage`：uploads／artifacts／runs 受控根目录、文件限制与清理。
 
-`lab.presentation`／`lab.image`（规划）：PPT 页数／图片配额、主题／中文字体、可编辑导出器、IMAGE_GENERATION profile、搜索工具提供方与地址策略、事实图片来源元数据、预览批准、下载／导出／查询期限与文件保留期。`lab.media`（预留视频）：enabled、VIDEO_GENERATION profile、character／voice／scene 登记版本、时长与价格、查询／幂等／回调能力和外发策略。ai 适配模型，data 导出／存文件，app 装配；新配置仅在相应阶段交付后启用，不提前写未知环境项。
+`lab.presentation`／`lab.image`管理PPT主题／字体／导出与两类配图；`lab.media`管理S09图像／视频目标、凭证引用、目录映射、参考图／时长档位／统一规格、逐镜头调度与总预算、JavaCV原生运行时及私有存储。已出现部分配置／适配源码，新增分镜项在S09核验白名单和默认值后交付；本次不修改.env或application.yml，不把规划键当已可用配置。
 
-聊天、图片生成、图片搜索与视频模式分别声明真实／模拟／禁用及实际提供方。PPT 核心验收需真实聊天、生图、事实网络配图和可编辑导出；视频当前禁用并标预留，不作为本轮核心阻塞项。Mock 图片／假 jobId 只测分支，不能证明真实产物；R01 视频自身仍须真实 API 完整验收。
+聊天、图片生成、事实图片搜索、视频与本地制作分别声明真实／模拟／禁用及能力／价格状态。S09须真实图像与完整分镜视频，S10须真实可编辑PPT；Mock图片／音频／假ID或固定文件只验证分支，不能算真实交付。能力未启用明确不可用，但不豁免核心验收。
 
 `lab.auth`：token 期限／撤销、密码组件、登录限流、临时密码策略；`lab.bootstrap`：显式启用、管理员用户名／环境密码，只初始化空系统。
 
@@ -1321,8 +1382,8 @@ lab:
         PPT_LAYOUT: economy
         VISUAL_RESEARCH: economy
         TEACHING_REVIEW: analysis
-        VIDEO_DIRECTION: report # 视频功能预留
-        VIDEO_SCRIPT: report # 视频API功能预留
+        VIDEO_DIRECTION: report # S09视频规划
+        VIDEO_SCRIPT: report # S09视频规划
         EMBEDDING: embedding
     failover:
       maxFallbackHops: 1
@@ -1394,7 +1455,7 @@ java -jar lab-demo/target/lab-demo.jar --spring.profiles.active=cli,real --lab.c
 java -jar lab-demo/target/lab-demo.jar --spring.profiles.active=cli,mock --lab.command=eval --lab.suite=core
 ```
 
-计划 notes_ppt CLI 先发布预览和 taskId／approvalId，经本人明确批准再继续生图／导出，不自动批准。task-preview／task-decision／task-run 仅当前 Demo 身份，审批与预算／操作事实持久化；未出 PPTX 不标完整 PASS。notes_video 在提供方未启用时明确能力不可用，未来沿用同级预览／审批并调用视频生成 API；不能用 CLI 改成独立配音／本地合成。以上入口在对应阶段实现后才可执行。
+计划notes_ppt／notes_video CLI先发布预览及taskId／approvalId，经本人明确批准继续付费操作；不自动批准。视频沿同级任务按镜头真实视频原生音频、原ID查询、JavaCV后期，预算／来源／执行事实持久化。入口在相应阶段真实交付后才能执行，素材就绪不等于PPTX或成品视频成功。
 
 Maven 常规 verify 不调用付费模型或图片／视频生成服务；真实模型／媒体评测为独立显式命令。MySQL／ES Testcontainers 集成测试通过明确 `integration` Maven Profile 与 Failsafe 启用；未启用在报告中列未运行，而不是成功。集成命令为 `.\mvnw.cmd -Pintegration clean verify`，依赖可用容器环境。
 
@@ -1434,7 +1495,7 @@ Maven 常规 verify 不调用付费模型或图片／视频生成服务；真实
 | `durable_task` / 进阶 | 14：队列、状态、检查点、恢复、取消 | FAQ 拆为检索/草稿/检查/导出；每步持久化；中途结束 Worker 再重启 | 可继续未完成步骤；暂停不调度新步骤，取消不发布新产物；历史外部操作不会自动回滚 |
 | `multi_agent` / 基础 | 15：Supervisor、并行、通信、汇总 | 检索／分析两个 Worker，按依赖串行或受限并行，按角色 profile 选模型，程序 Supervisor 汇总 | 独立输入输出与共同预算；不同模型可核对；一个失败报告部分完成；更多 Agent 留作进阶 |
 | `notes_ppt` / 基础 | 8、10～11、14～19：RAG、规划、Agent、工具、审批、资产与恢复 | 同一笔记生成可编辑 PPT；概念 API 生图与事实网络检索图，预览批准后导出；注入故障／重启／权限变化 | 派发／汇合可核验，来源完整，批准前不生图，已付费图片复用，UNKNOWN 对账，PPT 可编辑且图文正确 |
-| `notes_video` / 预留 | 与 notes_ppt 同级，授权、目录、脚本、视频 API 与恢复 | 用户选登记角色／配音／场景＋笔记生成脚本，审批后视频 API 生成；暂缺 API | 当前不可用明确；未来核验选择映射、审批、真实任务与视频质量，响应未知不盲重购 |
+| `notes_video` / 基础 | 与notes_ppt同级，授权／目录／复杂Agent脚本分镜、视频原生音频／后期与恢复 | 用户选人物／音色／场景，审批后逐镜头真实视频原生音频／原ID查询／JavaCV／字幕，私人发布 | S09真实镜头与音画／字幕、审批／计费／局部恢复／人物一致性及完整运行图；S11复核 |
 | `eval` / 基础 | 16：检索、生成、工具、回归、模型裁判 | 固定 JSONL；计算 Recall@k/MRR、任务成功率、引用支持率、越权拦截结果 | 分开报告；人工校准裁判样本；重复跑真实模型，记录波动 |
 | `security` / 基础 | 17：注入、隔离、泄露、文件安全 | 恶意资料要求读他人库；伪造 ADMIN；猜文档／私有报告 ID；路径穿越／网页脚本 | 同一授权策略拦截；管理员缓存不供 USER；文件受控，日志／页面安全 |
 | `trace_visualization` / 基础 | 18：指标、调用链、流程图 | 本地执行树／时间线／步骤图；Mock 固定 Token；超时重试与恢复；可选 OTLP 导出 | 能从 traceId 定位失败步骤；无重复费用；未知标记；授权／脱敏；图对应实际步骤 |
@@ -1442,7 +1503,7 @@ Maven 常规 verify 不调用付费模型或图片／视频生成服务；真实
 | `frameworks` / 扩展 | 11、14：声明式 Agent、Graph | 比较 LangChain4j AI Services 与受限手写循环；LangGraph4j 条件图配持久 CheckpointSaver 演示恢复 | 同一验收集；检查点落 MySQL，重启后能恢复；不宣称与 Python LangGraph API 相同 |
 | `mcp` / 扩展 | 12：Host、Client、Server、tools/resources/prompts | LangChain4j MCP Client + Java MCP SDK Server；先 stdio，再可选 Streamable HTTP；发现并调用工具、资源和提示模板 | 真实协议往返；Server 独立核验身份与范围；不把普通 Java 方法调用称为 MCP |
 | `documents` / 扩展 | 8、19：PDF／Office／CSV／OCR／表格 | PDFBox 文本 PDF；受控 DOCX／CSV／XLSX；真实 OCR；完整行／表头／章节／位置；图表视觉模型单独验证 | 格式启用才上传；保留页码／表格行与映射；乱码／加密／空文本失败，文本提取不冒充 OCR／图表理解 |
-| `multimodal` / 扩展 | 19：图片、ASR、TTS | 图片问题→视觉模型；短音频→ASR→文字问答→TTS | 真实输入与真实产物；能力不足给出明确状态；遵守文件大小和数据保留限制 |
+| `multimodal` / 扩展 | 19：图片、ASR | 图片问题→视觉模型；短音频→ASR→文字问答 | 真实输入与真实产物；能力不足给出明确状态；遵守文件大小和数据保留限制 |
 | `finetune` / 扩展 | 19：SFT、LoRA、DPO、数据与评测 | Java 清洗/导出数据，提交托管训练或独立训练服务，轮询任务并评测；SFT 可用 LoRA，DPO 另用偏好对与对应目标 | 有真实训练记录与模型/适配器产物；训练服务独立配置，LangChain4j 负责应用调用，不承担权重训练 |
 | `local_inference` / 扩展 | 19：本地部署、量化、KV Cache | 接入实际本地推理服务；比较相同测试集；资源允许时比较精度/量化及缓存开关 | 记录模型、硬件、内存、延迟和质量；无法控制缓存开关时标注该实验未完成 |
 | `model_theory` / 扩展 | 3、19：Tokenizer、Decoder、因果注意力 | 用对应模型 Tokenizer 展示分词；小矩阵演示因果 Mask 和逐 Token 生成过程 | 未来位置被屏蔽；明确这是原理实验，不声称训练了可用的大模型 |
@@ -1465,7 +1526,7 @@ CLI 对 FAIL 返回非零退出码；请求了必须能力但缺配置也返回�
 
 ### 15.2 六层覆盖关系
 
-Gateway：ai_gateway／knowledge_access；Orchestration：routing_skill／hybrid_orchestration／orchestration／durable_task／multi_agent；Model：model_api／selection／model_routing／model_failover／structured；Tools：tool_registry／tools／search／mcp；Memory：memory／memory_store；Aggregator：aggregation／rag_answer。notes_ppt 与同级预留 notes_video 横向验证授权证据、模型与媒体路由、两角色、工具、持久任务和汇聚；不要求为了衍生产物保存个人记忆。trace_visualization 横向覆盖六层，ops 验证工程控制，eval 验证效果。
+Gateway：ai_gateway／knowledge_access；Orchestration：routing_skill／hybrid_orchestration／orchestration／durable_task／multi_agent；Model：model_api／selection／model_routing／model_failover／structured；Tools：tool_registry／tools／search／mcp；Memory：memory／memory_store；Aggregator：aggregation／rag_answer。notes_ppt 与同级 notes_video 横向验证授权证据、模型与媒体路由、两角色、工具、持久任务和汇聚；不要求为了衍生产物保存个人记忆。trace_visualization 横向覆盖六层，ops 验证工程控制，eval 验证效果。
 
 MCP Server 在独立进程运行，协议 Demo 放 lab-demo 或外部示例入口，无须新增核心模块。stdio 的 stdout 只用于协议，日志到 stderr、关闭横幅；HTTP Server 自行验证调用身份与范围，不能仅信任传入 userId。工具发现不等于授权。[LangChain4j MCP](https://docs.langchain4j.dev/tutorials/mcp/)
 
@@ -1515,7 +1576,7 @@ MCP Server 在独立进程运行，协议 Demo 放 lab-demo 或外部示例入�
 | 单片 C3 命中与父段／邻片扩展 | 得到真实背景，去重／预算／顺序正确，引用可包含未命中但已扩展 C2 | matched／included 分列、父段过大兜底、最终包数与 Token |
 | 伪造父段／邻接、旧处理批次 | 跨用户／文档／版本／代次扩展拒绝，不送模型 | USER／ADMIN／降级、缓存命中／ES 滞后和范围断言 |
 | 切块重处理／部分 bulk／激活失败 | 内容版本不伪变；新批次完整可见才激活，旧事件不抢占 | MySQL CAS／fencing、期望ID／hash集合、处理配置与故障恢复 |
-| 整章总结／PPT或预留视频完整笔记 | 授权分页覆盖，不把 Top-k 当全文；预算不足说明未读 | 原文范围、分段／汇总用量与真实抽查 |
+| 整章总结／PPT或教学视频完整笔记 | 授权分页覆盖，不把 Top-k 当全文；预算不足说明未读 | 原文范围、分段／汇总用量与真实抽查 |
 | 备用上下文较小／可靠预算丢 span | 重新装包，预算保持有效；非法超长不发 | 不同计数器／上下文目标、telemetryDropped 后费用预留／attempt断言 |
 | 上传 DB 登记前后崩溃／重复创建 | 孤立文件不公开；同键同参只一个资源，不同参冲突 | 源文件／checksum、MySQL＋Outbox、幂等与清理测试 |
 | 同会话并发／记忆删除 | 不覆盖串写，不再使用删除信息；任何角色不读他人会话／记忆 | 数据版本和后续上下文断言 |
@@ -1532,8 +1593,7 @@ MCP Server 在独立进程运行，协议 Demo 放 lab-demo 或外部示例入�
 | PPT 暂停／取消／超额 | 不新生成／发布，不重置预算，费用如实保留 | 查询／文件／工具配额与持久记录 |
 | PPT 来源撤销／跨用户访问 | 不可读不预览／发布／下载，ADMIN不读他人产物 | 三身份、降级、来源删除和图片／PPT下载 |
 | PPT 可编辑性／教学质量 | 文本可编辑、图文正确、中文布局／备注／来源齐全 | 实际 PPTX 打开与人工抽查，真实生图和搜索证据 |
-| 视频 API 预留边界 | 登记角色／配音／场景→脚本→审批→视频 API；无服务明确不可用 | 当前不算视频完成、不阻塞本轮核心；R01补真实选择映射、任务／费用／质量 |
-
+| 分镜教学视频完整链路 | 登记人物／音色／场景→脚本／Storyboard→审批→逐镜头原生音频参数→视频API按ID查询→拼接／字幕→私人发布 | S09真实单镜头／三镜头、素材复用／失败／UNKNOWN／费用与人工质量；S11复核，不再预留豁免 |
 
 检索 Recall@k／MRR 的标注单位固定到可追溯片段／来源版本；评测配置变化需映射原文范围，不能换切片规则后直接比较不同分母。扩展上下文覆盖与小片召回分别报告，答案检查引用支持与任务成功；工具准确率与越权拦截独立报告。小样本标注“问题—预期证据—答案要点—允许动作”，模型裁判经人工校准后才参与评分。
 
@@ -1547,24 +1607,24 @@ MCP Server 在独立进程运行，协议 Demo 放 lab-demo 或外部示例入�
 | P1：身份／知识库与 Mock 闭环 | 正式登录／用户管理、库／文档 CRUD、KnowledgeAccessPolicy、AI 六层／工具／模型策略、CLI | admin／u1／u2 权限矩阵通过；正常／越权／假成功／主备故障贯通，model mock 不代替正式认证 |
 | P2：真实授权问答与索引 | 多模型／主备、有限入库批次／embedding、TXT／MD结构、章节／父段／小片、上下文扩展、双路 Scope、MySQL／Outbox／会话 | admin 跨库、USER 自有；C3 背景与引用正确，处理批次不混；主备／重新装包、同步／撤销／切片评测报告 |
 | P3：观测／审计与工程控制 | Token／费用、预算／主备、图、Scope 缓存、访问审计、HTTP／SSE／页面 | 本人链路隔离；admin 跨库访问可审计；角色／模型原因可核对；无缓存／流式泄露 |
-| P4：笔记／长任务与复杂分工 | 原笔记确认、FAQ／报告、记忆、来源、受限规划与两 Worker；notes_ppt 混合配图／预览批准／可编辑导出；同级 notes_video API 方案预留 | 写入及恢复幂等、授权／撤销通过；报告与真实 PPT 完整，角色汇合可核验，图片不重购；视频缺 API 单列预留，不阻塞核心 |
+| P4：笔记／长任务与复杂分工 | 笔记确认、FAQ／报告、记忆、来源与受限多Agent；同级PPT混合配图／可编辑导出及分镜教学视频 | S09真实图像与逐镜头视频原生音轨／后期／恢复，S10可编辑PPTX，S11完整安全／费用／质量证据，不能以视频预留免验 |
 | P5：进阶实验 | 更多 Agent、更多编排策略／图／Blackboard／反思、AI Services／Agentic 对比、可选质量升级 | 共用正式模块，各策略独立报告并守同一预算／权限 |
-| P6：资源型扩展 | MCP／图调试／更多格式／OCR／其他多模态／额外媒体提供方对照／训练／本地推理／原理 | 每项真实协议或产物证据；不把 P4 PPT 或同级预留视频挪成扩展子能力；未启用明确未验收 |
+| P6：资源型扩展 | MCP／图调试／更多格式／OCR／其他多模态／额外媒体提供方对照／训练／本地推理／原理 | 每项真实协议或产物证据；不把 P4 PPT 或同级教学视频挪成扩展子能力；未启用明确未验收 |
 
-观测从 P1 开始，P3 补计量与可视化。P4 同时交付复杂受限规划／分工与 PPT：以真实受限计划、角色分工／工具续轮／有限质检返工形成预览批准闭环，再验证两类配图、可编辑导出与恢复。教学视频预留目录选择→脚本审批→真正视频 API，不阻塞本轮核心，也不挪为 PPT 附属或要求本地合成。P0 核对最小兼容性，P2 核对真实路由／主备；媒体额外提供方对照才归 P6。
+观测从P1开始，P3补计量与可视化。P4包含复杂受限规划、同级PPT与分镜教学视频：S09完成真实生图及脚本／分镜／审批／异步视频原生音频／JavaCV／恢复，S10完成PPTX，S11完整验收。视频不作为PPT附属，也不移到P6；额外提供方对照才归扩展。
 
-**核心完成定义：**P0～P4 交付可运行程序、固定资料、CLI／HTTP／轻量 UI、38 组能力状态（含预留／扩展，非全部默认通过）、核心程序测试与真实模型／PPT 配图导出评测、运行图、故障示例、安装及已知限制。视频未提供 API 明确预留不阻塞本轮核心，不能记为已实现；其自身交付待 R01 完整验收。
+**核心完成定义：**P0～P4交付可运行程序、固定资料、CLI／HTTP／轻量UI、38组能力状态（扩展未启用明确）、核心测试及真实模型／图像／分镜视频／PPT评测、运行图、故障、安装及限制。真实图像和完整分镜视频是S09核心要求，缺配置／报价／兼容或质量证据记未完成，不能通过旧R01预留豁免。
 
 **交付必须包含：**
 
-- README：环境与正式身份、权限／知识资料操作、app／demo、PPT 主题／字体／生图／搜索配置、预览审批和私人下载、清理及故障；教学视频 API 预留和登记项说明。
+- README：环境与正式身份、权限／知识资料操作、app／demo、PPT 主题／字体／生图／搜索配置、预览审批和私人下载、清理及故障；分镜视频、音频模式／JavaCV运行时和登记项说明。
 - implementation-status：每项 IMPLEMENTED／VERIFIED／SKIPPED／TODO；不混淆实现与验证。
 - version-validation：解析后的依赖版本、Java／容器信息、兼容性问题及最小调整。
 - 评测报告：真实／Mock／数据库／外部能力分别记录，失败和未运行不隐藏。
-- 故障演示：越权、主备、重复写入、Worker 恢复、ES 滞后；PPT 增加生图后重启、响应丢失、事实图片失配／不可用、内容／版式冲突和取消。未来视频补真实 API 响应丢失与目录版本变化案例。
+- 故障演示：越权、主备、重复写入、Worker 恢复、ES 滞后；PPT 增加生图后重启、响应丢失、事实图片失配／不可用、内容／版式冲突和取消。视频补逐镜头响应丢失、音画时长冲突、字幕／合成故障与目录变化案例。
 - API／配置文档：格式与输入限额、8.3 切片／扩展参数与唯一默认值、章节／父段／原文位置、处理代次与覆盖、错误／幂等、SSE／确认／恢复、工具／观测／媒体、价格表与费用单位。
 - 恢复说明：MySQL＋关联源文件＋版本化配置的备份／恢复、ES 重建／批次激活与清理验证；明确 RPO／RTO 是实测结果，不能凭有备份脚本就宣称可靠。
-- PPT 验收包：可编辑 PPTX、页面预览、讲者备注、笔记来源、网络图片出处和生成标识、技术／人工报告、实际派发／恢复时间线；视频方案与未验收资源单列，真实 API 获得后补视频验收包。产物均私人，不默认公开上传。
+- PPT 验收包：可编辑 PPTX、页面预览、讲者备注、笔记来源、网络图片出处和生成标识、技术／人工报告、实际派发／恢复时间线；视频验收包含Storyboard、带原生音轨的真实片段、时间轴、字幕、成品与技术／人工结果，未验资源单列。产物均私人，不默认公开上传。
 - .gitignore：var、实际密钥、日志、临时产物、target 不进入代码库。
 
 ## 18. 给实施模型的工作说明
@@ -1578,7 +1638,7 @@ MCP Server 在独立进程运行，协议 Demo 放 lab-demo 或外部示例入�
 7. **小范围处理兼容问题。**优先修正依赖配置与适配；确需换补丁版本记录原因和测试，不自行更换 Boot 大版本、数据库或模块方案。
 8. **先完成授权范围内工作再报告。**本文不要求每个类／阶段重新审批；真正变更核心架构或引入真实外部副作用才另行确认。
 9. **更新实施状态与证据。**报告“做了什么、如何验证、未验证什么”；测试未运行不能写通过，只有 Mock 不能写真实联调完成。
-10. **最后以完整用户流程验收。**初始化／两用户→各自资料→权限／问答／引用→本人确认笔记→报告暂停恢复→复杂分析→PPT 内容／布局及事实图候选→预览批准→生图后中断恢复→可编辑 PPTX 私人下载／来源复核→主备／本人图。视频单列目录→脚本→批准→视频 API 的预留边界，未来 R01 补真实链路。
+10. **最后以完整用户流程验收。**初始化／两用户→各自资料→权限／问答／引用→本人确认笔记→报告暂停恢复→复杂分析→PPT 内容／布局及事实图候选→预览批准→生图后中断恢复→可编辑 PPTX 私人下载／来源复核→主备／本人图。视频按目录→脚本／分镜→批准→逐镜头视频提交／原ID查询→字幕拼接→私人发布验收。
 
 ### 18.1 不允许的常见替代实现
 
@@ -1629,4 +1689,24 @@ MCP Server 在独立进程运行，协议 Demo 放 lab-demo 或外部示例入�
 
 本次修订落实文件白名单／输入限额、结构切片与唯一参数表、章节树／受限父段／小片归属、单片命中后的权限复核／上下文补全／引用、整章覆盖任务、内容版本与处理代次、批次完整性／激活／清理，并同步端口、表、API、配置、38 组 Demo 与验收。全文复审还明确文件／数据库事务边界、批量 embedding 独立预算、备用模型输入重计数、请求去重、任务 PARTIAL 终态、可靠预算与可丢遥测的区别、执行池依赖等待和备份恢复；未增加 Maven 模块。
 
-保留 ADMIN 跨库只读／USER 自有、正式身份、MySQL 8.4 LTS、七模块／AI 六层、混合编排与主备。2026-10-04 产物修订增加同级 notes_ppt，P4 本轮验收改为 API 生图＋事实图片搜索＋可编辑 PPT；notes_video 按登记角色／配音／场景、脚本审批与真正视频生成 API 预留。文档规划不等于代码、配置或真实媒体验收已完成。
+保留ADMIN跨库只读／USER自有、正式身份、MySQL8.4、七模块／AI六层、混合编排与主备。2026-10-04最新确认采用同级PPT与分镜教学视频：S09真实图像及真实视频API原生音频／JavaCV，S10可编辑PPT，S11完整验收。旧R01预留被覆盖，文档同步不等于运行时实现、价格或媒体验收通过。
+
+### S09 最新确认：同片单API与音频输出参数（2026-10-05）
+
+多API仍可配置登记，Planner为整部视频建议一个API及配置版本，所有镜头保持一致，由本人连同脚本、人物／声音／场景和预算审批。不能在镜头失败后自动换API；同一API也不保证人物与风格绝对一致，仍须人工验收。
+
+- `shots[].audioMode=NATIVE`：要求视频API输出音轨，映射至注册协议的布尔 `audio=true`。
+- `shots[].audioMode=NONE`：要求无声输出，映射为 `audio=false`；脚本台词必须为空，有台词在分镜及审批阶段以 `MEDIA_AUDIO_REQUIRED` 拦截。
+- 实际返回必须解码检查。有声参数返回无音轨，或无声参数返回音轨，均以 `MEDIA_AUDIO_MISMATCH` 拦截，不能自动重购或伪报成功。音轨存在不代表台词完整／口型同步，仍由本人听验。
+- 新增V16只把实测音轨时长允许为0：NULL表示未测，0表示解码确认没有音轨，正数表示真实音轨时长。V1—V15不改写。无声视频按真实视频流计时、拼接；无台词SRT不添加虚假台词。
+- 同片混用API或配置版本报 `MEDIA_SINGLE_VIDEO_API_REQUIRED`。登记参数支持不足时不可选；同时支持有声／无声的配置必须登记 `inputs.audio` 映射。同协议新API仍配置接入，旧版本保留供原ID查询。
+
+真实验收状态：单镜头万相原声人工通过；原三镜头混合成品人工拒绝，用户指出第二镜头存在明显噪音／延迟且跨API风格无法衔接，已保留拒绝记录。未将其计为S09通过，未购买替换镜头。后续建议同片万相原声，保留可用的第一、第三镜头，只对第二镜头提出新版审批；台词仍为“水汽遇冷，凝成水滴。”，总费用继续受20元约束，截止与购买批准必须另核对，不能静默续期。
+
+S09仍在验收中；真实Planner全链路、事实配图及参考素材等未通过项如实保留，不进入S10，不开发PPTX。
+
+## S10 实施事实补充（2026-10-05）
+
+用户明确允许S10独立推进并保留S09未验限制，覆盖历史“不得进入S10”的阶段条件；没有将S09补写为已完成，没有生图／视频新购买。Java17的POI 5.5.1导出器位于lab-data，经框架无关PresentationPort由既有媒体编排调用；复杂Agent原计划／结果、原审批／操作／费用及共享执行权不重建。
+
+已实现文字／形状可编辑PPTX、嵌入原比例PNG／JPEG、中文／备注／来源页、真实文件重开和限量页面PNG、私人候选及本人质量验收复用。新总页数含来源页2～12，配图≤8；字体／页数／图数付费前检查。结构通过与REQUIRES_HUMAN_REVIEW分开，候选认证下载用于本人检查，技术等待低于100%，接受后成功，拒绝暂停不重购。V17持久同批准输入两次本地构建，临时文件未登记不可下载，内容编辑撤下旧导出。实际协议、文件证据及PowerPoint／真实两类配图未验限制见接口／验收及S10完整交接；不因此标P4全部完成。

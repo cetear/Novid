@@ -10,6 +10,6 @@ import com.example.ailab.ai.orchestration.rag.RagProperties;
  */
 @Configuration
 @ComponentScan("com.example.ailab.ai")
-@EnableConfigurationProperties({ModelProperties.class, RagProperties.class, com.example.ailab.ai.model.FeeProperties.class})
+@EnableConfigurationProperties({ModelProperties.class, RagProperties.class, com.example.ailab.ai.model.FeeProperties.class, com.example.ailab.ai.model.MediaProperties.class, com.example.ailab.ai.model.VideoApiProperties.class})
 public class AiConfiguration {
 }

@@ -17,6 +17,8 @@ public interface FeeStorePort {
     void release(FeeReservation reservation);
     /** 保存已知／未知用量，重复结果幂等；UNKNOWN 可被同一提供方响应补全但不能改已定价事实。 */
     void complete(FeeReservation reservation, Integer input, Integer output, String outcome);
+    /** 媒体按明确提供方单位记录；缺usage保持UNKNOWN，不把预留数量当真实已收费数量。 */
+    default void completeMedia(FeeReservation reservation, Long units, String outcome) { throw new UnsupportedOperationException("媒体单位尚未实现"); }
     /** 本人摘要可以独立于观测保留期读取，运行筛选只统计本次真实尝试。 */
     FeeSummary summary(UserContext actor, String kind, String resourceId);
     /** 管理员仅低基数聚合；时间窗口有界，不提供私人钻取。 */

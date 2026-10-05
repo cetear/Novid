@@ -26,9 +26,21 @@ public class FeeRepository implements FeeStorePort {
         if (input < 0 || output < 0 || input > 10000000 || output > 10000000 || tokenLimit < 1
                 || limit == null || limit.signum() <= 0 || !currency.matches("[A-Z]{3}")
                 || !operationId.matches("[0-9a-fA-F-]{36}") || !modelId.matches("[A-Za-z0-9_.-]{1,128}")
-                || !Set.of("CHAT", "EMBEDDING").contains(operationType)) throw LabException.invalid("费用预留参数无效");
+                || !Set.of("CHAT", "EMBEDDING","IMAGE_GENERATION","VIDEO_GENERATION","AUDIO_GENERATION").contains(operationType)) throw LabException.invalid("费用预留参数无效");
+        boolean media = Set.of("IMAGE_GENERATION","VIDEO_GENERATION","AUDIO_GENERATION").contains(operationType);
+        // 缺价媒体不得付费；普通文本缺价仍沿用S07 UNKNOWN语义。
+        if (media && (price==null || price.unit().equals("PER_MILLION_TOKENS") || output!=0))
+            throw new LabException("FEE_PRICE_UNAVAILABLE","媒体需要明确单位和真实报价");
+        if (!media && price!=null && !price.unit().equals("PER_MILLION_TOKENS")) throw conflict();
         if (price != null && !price.currency().equals(currency)) throw conflict();
         sql.actor(scope.actor(), true);
+        if(mediaTask(scope)){
+            // 媒体首次规划就使用本人缩小后的金额上限，不能先创建30元scope再忽略批准上限。
+            try{
+                var request=new com.fasterxml.jackson.databind.ObjectMapper().readValue(sql.jdbc.queryForObject("SELECT request_json FROM ai_tasks WHERE id=? AND requester_user_id=?",String.class,scope.resourceId(),scope.actor().userId()),TaskRequest.class);
+                BigDecimal requested=request.taskType().equals("NOTES_VIDEO")?request.videoOptions().maximumAmount():request.presentationOptions().maximumAmount();limit=limit.min(requested);
+            }catch(Exception e){throw conflict();}
+        }
         String id = SqlSupport.hash(scope.actor().userId() + ":" + scope.kind() + ":" + scope.resourceId());
         var scopes = sql.jdbc.queryForList("SELECT * FROM fee_scopes WHERE scope_id=? FOR UPDATE", id);
         if (scopes.isEmpty()) {
@@ -48,18 +60,19 @@ public class FeeRepository implements FeeStorePort {
         }
         var used = totals(id, null);
         BigDecimal reserved = simulated || price == null ? null : price.amount(input, output);
-        long consumed = sql.jdbc.queryForObject("SELECT COALESCE(SUM(CASE WHEN state='RELEASED' THEN 0 WHEN state='SETTLED' THEN input_tokens+output_tokens ELSE reserved_input+reserved_output END),0) FROM fee_attempts WHERE scope_id=?", Long.class, id);
-        if (used.attempts() >= (scope.kind().equals("INGESTION") ? 160 : 10)
-                || consumed + input + output > ((Number)savedScope.get("token_limit")).longValue()
+        long consumed = sql.jdbc.queryForObject("SELECT COALESCE(SUM(CASE WHEN state='RELEASED' THEN 0 WHEN state='SETTLED' THEN COALESCE(input_tokens,0)+COALESCE(output_tokens,0) ELSE reserved_input+reserved_output END),0) FROM fee_attempts WHERE scope_id=?", Long.class, id);
+        if (used.attempts() >= (scope.kind().equals("INGESTION") ? 160 : mediaTask(scope) ? 36 : 10)
+                || consumed + (media?0:input + output) > ((Number)savedScope.get("token_limit")).longValue()
                 || used.overLimit() || reserved != null && used.estimatedAmount().add(used.reservedAmount()).add(reserved)
                     .compareTo((BigDecimal)savedScope.get("limit_amount")) > 0)
             throw new LabException("BUDGET_EXCEEDED", "累计费用或词元额度不足");
         // 历史调用无金额或未知价格时不能宣称金额上限已受控，继续仅受硬词元／尝试限制。
         sql.jdbc.update("INSERT INTO fee_attempts(operation_id,scope_id,run_id,model_id,operation_type,state,simulated,reserved_input,reserved_output,usage_source,price_ref,price_version,currency,price_unit,price_effective_at,input_rate,output_rate,reserved_amount,request_hash) VALUES(?,?,?,?,?,'RESERVED',?,?,?,'UNKNOWN',?,?,?,?,?,?,?,?,?)",
-                operationId, id, scope.runId(), modelId, operationType, simulated, input, output,
+                operationId, id, scope.runId(), modelId, operationType, simulated, media?0:input, media?0:output,
                 price == null ? null : price.ref(), price == null ? null : price.version(), currency,
                 price == null ? null : price.unit(), price == null ? null : Timestamp.from(price.effectiveAt()),
                 price == null ? null : price.inputRate(), price == null ? null : price.outputRate(), reserved, hash);
+        if (media) sql.jdbc.update("UPDATE fee_attempts SET reserved_units=? WHERE operation_id=?",input,operationId);
         return new FeeReservation(operationId, id);
     }
 
@@ -91,6 +104,7 @@ public class FeeRepository implements FeeStorePort {
         if (oldInput != null && input != null && !oldInput.equals(input) || oldOutput != null && output != null && !oldOutput.equals(output)) throw conflict();
         if (input == null) input = oldInput; if (output == null) output = oldOutput;
         String responseHash = SqlSupport.hash(input + ":" + output + ":" + outcome);
+        if (row.get("reserved_units")!=null) throw conflict();
         if (Set.of("SETTLED", "SIMULATED").contains(state)) {
             if (!responseHash.equals(row.get("response_hash"))) throw conflict();
             return;
@@ -108,6 +122,31 @@ public class FeeRepository implements FeeStorePort {
         // 超出估算也如实结算，不拒绝保存真实费用；后续预留将被累计预算拦截。
         sql.jdbc.update("UPDATE fee_attempts SET state=?,outcome=?,input_tokens=?,output_tokens=?,usage_source=?,estimated_amount=?,response_hash=?,completed_at=CURRENT_TIMESTAMP(6) WHERE operation_id=?",
                 next, outcome, input, output, simulated ? "SIMULATED" : input != null && output != null ? "PROVIDER_REPORTED" : "UNKNOWN", amount, responseHash, reservation.operationId());
+    }
+
+    /** 媒体账本单独保存真实单位，不把预留当已知usage，重复结果只补原键。 */
+    @Override @Transactional
+    public void completeMedia(FeeReservation reservation,Long units,String outcome) {
+        if (units!=null && (units<0 || units>10000000) || outcome==null || !outcome.matches("[A-Z_]{1,64}"))
+            throw LabException.invalid("媒体用量无效");
+        lock(reservation);
+        var row=sql.jdbc.queryForMap("SELECT * FROM fee_attempts WHERE operation_id=? AND scope_id=? FOR UPDATE",reservation.operationId(),reservation.scopeId());
+        if (row.get("reserved_units")==null) throw conflict();
+        Long old=row.get("used_units")==null?null:((Number)row.get("used_units")).longValue();
+        if (old!=null && units!=null && !old.equals(units)) throw conflict();
+        if (units==null) units=old;
+        String hash=SqlSupport.hash(units+":"+outcome);
+        if (row.get("state").equals("SETTLED")) { if(!hash.equals(row.get("response_hash"))) throw conflict(); return; }
+        if (!Set.of("SENDING","UNKNOWN").contains(row.get("state"))) throw conflict();
+        var price=new FeePrice((String)row.get("price_ref"),(String)row.get("price_version"),(String)row.get("currency"),
+                (String)row.get("price_unit"),((Timestamp)row.get("price_effective_at")).toInstant(),(BigDecimal)row.get("input_rate"),(BigDecimal)row.get("output_rate"));
+        sql.jdbc.update("UPDATE fee_attempts SET state=?,used_units=?,usage_source=?,estimated_amount=?,outcome=?,response_hash=?,completed_at=CURRENT_TIMESTAMP(6) WHERE operation_id=?",
+                units==null?"UNKNOWN":"SETTLED",units,units==null?"UNKNOWN":"PROVIDER_REPORTED",units==null?null:price.amount(units,0),outcome,hash,reservation.operationId());
+    }
+    /** 媒体TASK共享36次费用意图，普通报告／在线仍10，不能由客户端选择命名空间绕过。 */
+    private boolean mediaTask(FeeScope scope) {
+        if (!scope.kind().equals("TASK")) return false;
+        return sql.jdbc.queryForObject("SELECT COUNT(*) FROM ai_tasks WHERE id=? AND requester_user_id=? AND task_type IN ('NOTES_PPT','NOTES_VIDEO')",Integer.class,scope.resourceId(),scope.actor().userId())==1;
     }
 
     /** 统一scope锁先于attempt锁，发送和补账都采用同一锁顺序。 */
@@ -167,7 +206,7 @@ public class FeeRepository implements FeeStorePort {
         for(var row:rows) {
             String state=(String)row.get("state");
             if(state.equals("RELEASED")) continue;
-            budgetTokens+=state.equals("SETTLED")?((Number)row.get("input_tokens")).longValue()+((Number)row.get("output_tokens")).longValue()
+            budgetTokens+=state.equals("SETTLED") && row.get("reserved_units")==null?((Number)row.get("input_tokens")).longValue()+((Number)row.get("output_tokens")).longValue()
                     :((Number)row.get("reserved_input")).longValue()+((Number)row.get("reserved_output")).longValue();
         }
         boolean over = estimated.add(reserved).compareTo(limit) > 0 || budgetTokens>((Number)scope.get("token_limit")).longValue();

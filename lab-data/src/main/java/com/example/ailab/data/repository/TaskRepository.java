@@ -22,6 +22,8 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     private final DocumentSqlRepository docs;
     private final ObjectMapper json = new ObjectMapper();
     private final boolean workerEnabled;
+    @org.springframework.beans.factory.annotation.Value("${lab.media.worker-enabled:false}")
+    private boolean mediaWorkerEnabled;
 
     /**
      * 使用同一权威数据库与来源规则。
@@ -46,8 +48,10 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     public TaskSnapshot create(UserContext actor, TaskRequest request) {
         sql.actor(actor, true);
         // FIXED保留S04之前的规范JSON，旧幂等键不能因增加可选字段而参数冲突。
-        var canonical = json.valueToTree(new TaskRequest(request.taskType(), request.topic(), request.scope(), request.documentIds().stream().distinct().sorted().toList(), request.idempotencyKey(), request.strategy()));
+        var canonical = json.valueToTree(new TaskRequest(request.taskType(), request.topic(), request.scope(), request.documentIds().stream().distinct().sorted().toList(), request.idempotencyKey(), request.strategy(), request.presentationOptions(), request.videoOptions()));
         if (request.strategy().equals("FIXED")) ((com.fasterxml.jackson.databind.node.ObjectNode) canonical).remove("strategy");
+        // 老FAQ／报告幂等JSON不因新增媒体可选字段变化。
+        if (!media(request.taskType())) ((com.fasterxml.jackson.databind.node.ObjectNode)canonical).remove(java.util.List.of("presentationOptions","videoOptions"));
         String serialized = encode(canonical), hash = SqlSupport.hash(serialized);
         var old = sql.jdbc.query("SELECT request_hash,resource_id FROM request_deduplications WHERE actor_user_id=? AND namespace='TASK_CREATE' AND request_key=?", (r, n) -> Map.entry(r.getString(1), r.getLong(2)), actor.userId(), request.idempotencyKey());
         if (!old.isEmpty()) {
@@ -82,16 +86,18 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
         var t = read(actor, id);
         String state = switch (action) {
             case "pause" -> {
-                if (!Set.of("QUEUED", "RUNNING").contains(t.status()))
+                if (!Set.of("QUEUED", "RUNNING", "WAITING_EXTERNAL").contains(t.status()))
                     throw new LabException("OPERATION_CONFLICT", "当前状态不能暂停");
                 yield "PAUSED";
             }
             case "resume" -> {
-                if (!t.status().equals("PAUSED")) throw new LabException("OPERATION_CONFLICT", "仅暂停任务可以恢复");
+                if (!t.status().equals("PAUSED")&&!(media(t.taskType())&&Set.of("FAILED","NEEDS_RECONCILIATION").contains(t.status()))) throw new LabException("OPERATION_CONFLICT", "当前状态不能恢复");
+                if(media(t.taskType())&&sql.jdbc.queryForObject("SELECT COUNT(*) FROM media_operations WHERE task_id=? AND capability<>'AUDIO_GENERATION' AND state IN ('SENDING','UNKNOWN') AND provider_job_id IS NULL",Integer.class,id)>0)throw new LabException("MEDIA_SUBMISSION_UNKNOWN","无原ID的未知提交禁止自动重购");
+                if(media(t.taskType()))sql.jdbc.update("UPDATE media_operations SET state='WAITING_EXTERNAL',next_poll_at=CURRENT_TIMESTAMP(6) WHERE task_id=? AND state='UNKNOWN' AND provider_job_id IS NOT NULL",id);
                 yield "QUEUED";
             }
             case "cancel" -> {
-                if (Set.of("SUCCEEDED", "PARTIAL", "FAILED", "CANCELLED").contains(t.status()))
+                if (Set.of("SUCCEEDED", "PARTIAL", "FAILED", "CANCELLED", "MEDIA_READY").contains(t.status()))
                     throw new LabException("OPERATION_CONFLICT", "终态不能取消");
                 yield "CANCELLED";
             }
@@ -111,15 +117,22 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
      * 程序领取当前角色；attempt 仅统计异常租约恢复，模型和累计时长预算保持单调。
      */
     @Transactional
-    public Optional<TaskLease> claim(String worker) {
+    public Optional<TaskLease> claim(String worker) { return claimInternal(worker,false); }
+
+    /** 媒体查询等待不增加异常恢复次数，普通Worker不会消费媒体任务。 */
+    @Transactional
+    public Optional<TaskLease> claimMedia(String worker) { return claimInternal(worker,true); }
+
+    /** 同一锁顺序串行状态转换；等待时只挑到期原ID查询，绝不重新生成。 */
+    private Optional<TaskLease> claimInternal(String worker,boolean mediaQueue) {
         sql.jdbc.queryForObject("SELECT id FROM system_control WHERE id=1 FOR UPDATE", Integer.class);
         sql.jdbc.update("UPDATE ai_tasks t JOIN users u ON u.id=t.requester_user_id SET t.status=\'CANCELLED\',t.state_version=t.state_version+1,t.fencing_token=t.fencing_token+1,t.worker_id=NULL,t.lease_until=NULL WHERE u.enabled=FALSE AND t.status IN (\'QUEUED\',\'RUNNING\',\'PAUSED\')");
         // 自动撤销与显式取消采用相同步骤状态，不留下误导性的“执行中”标记。
         sql.jdbc.update("UPDATE task_step_progress p JOIN ai_tasks t ON t.id=p.task_id SET p.status='CANCELLED' WHERE t.status='CANCELLED' AND p.status NOT IN ('SUCCEEDED','CANCELLED')");
         // 正常暂停不消耗异常租约恢复次数；超限队列明确终止，不能永久停留 QUEUED。
-        sql.jdbc.update("UPDATE ai_tasks SET status='FAILED',error_code='BUDGET_EXCEEDED',fencing_token=fencing_token+1,state_version=state_version+1,worker_id=NULL,lease_until=NULL WHERE status IN ('QUEUED','RUNNING') AND (total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6)))>=1200 OR status='RUNNING' AND attempt>=3 AND lease_until<CURRENT_TIMESTAMP(6) OR (model_attempts>=10 OR model_turns>=6) AND completed_steps<3 AND (status='QUEUED' OR lease_until<CURRENT_TIMESTAMP(6)))");
+        sql.jdbc.update("UPDATE ai_tasks SET status='FAILED',error_code='BUDGET_EXCEEDED',fencing_token=fencing_token+1,state_version=state_version+1,worker_id=NULL,lease_until=NULL WHERE status IN ('QUEUED','RUNNING') AND (total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6)))>=1200 OR status='RUNNING' AND attempt>=3 AND lease_until<CURRENT_TIMESTAMP(6) OR task_type NOT IN ('NOTES_PPT','NOTES_VIDEO') AND (model_attempts>=10 OR model_turns>=6) AND completed_steps<3 AND (status='QUEUED' OR lease_until<CURRENT_TIMESTAMP(6)))");
         sql.jdbc.update("UPDATE task_step_progress p JOIN ai_tasks t ON t.id=p.task_id SET p.status='FAILED',p.error_code=t.error_code WHERE t.status='FAILED' AND p.status IN ('RUNNING','PAUSED')");
-        var ids = sql.jdbc.query("SELECT t.id FROM ai_tasks t JOIN users u ON u.id=t.requester_user_id WHERE u.enabled=TRUE AND u.password_change_required=FALSE AND (t.status='QUEUED' OR t.status='RUNNING' AND t.attempt<3 AND t.lease_until<CURRENT_TIMESTAMP(6)) ORDER BY t.id LIMIT 1 FOR UPDATE SKIP LOCKED", (r, n) -> r.getLong(1));
+        var ids = sql.jdbc.query("SELECT t.id FROM ai_tasks t JOIN users u ON u.id=t.requester_user_id WHERE u.enabled=TRUE AND u.password_change_required=FALSE AND (t.status='QUEUED' OR t.status='RUNNING' AND t.attempt<3 AND t.lease_until<CURRENT_TIMESTAMP(6) OR t.status='WAITING_EXTERNAL' AND EXISTS(SELECT 1 FROM media_operations m WHERE m.task_id=t.id AND m.state IN ('WAITING_EXTERNAL','SENDING','REMOTE_READY') AND m.next_poll_at<=CURRENT_TIMESTAMP(6))) AND " + (mediaQueue ? "t.task_type IN ('NOTES_PPT','NOTES_VIDEO')" : "t.task_type NOT IN ('NOTES_PPT','NOTES_VIDEO')") + " ORDER BY t.id LIMIT 1 FOR UPDATE SKIP LOCKED", (r, n) -> r.getLong(1));
         if (ids.isEmpty()) return Optional.empty();
         long id = ids.get(0);
         sql.jdbc.update("UPDATE ai_tasks SET attempt=attempt+IF(status='RUNNING',1,0),status='RUNNING',state_version=state_version+1,fencing_token=fencing_token+1,worker_id=?,lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND),total_execution_seconds=total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6))),claimed_at=CURRENT_TIMESTAMP(6),started_at=COALESCE(started_at,CURRENT_TIMESTAMP(6)),heartbeat_at=CURRENT_TIMESTAMP(6) WHERE id=?", worker, id);
@@ -170,7 +183,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public void reserveModelAttempt(TaskLease lease) {
         valid(lease);
-        if (sql.jdbc.update("UPDATE ai_tasks SET model_attempts=model_attempts+1 WHERE id=? AND model_attempts<10", lease.task().taskId()) != 1)
+        if (sql.jdbc.update("UPDATE ai_tasks SET model_attempts=model_attempts+1 WHERE id=? AND model_attempts<IF(task_type IN ('NOTES_PPT','NOTES_VIDEO'),36,10)", lease.task().taskId()) != 1)
             throw new LabException("BUDGET_EXCEEDED", "持久模型尝试预算耗尽");
     }
 
@@ -180,7 +193,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public void reserveModelTurn(TaskLease lease) {
         valid(lease);
-        if (sql.jdbc.update("UPDATE ai_tasks SET model_turns=model_turns+1 WHERE id=? AND model_turns<6", lease.task().taskId()) != 1)
+        if (sql.jdbc.update("UPDATE ai_tasks SET model_turns=model_turns+1 WHERE id=? AND model_turns<IF(task_type IN ('NOTES_PPT','NOTES_VIDEO'),24,6)", lease.task().taskId()) != 1)
             throw new LabException("BUDGET_EXCEEDED", "持久模型轮数耗尽");
     }
 
@@ -282,7 +295,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public int remainingModelTurns(TaskLease lease) {
         valid(lease);
-        return 6-sql.jdbc.queryForObject("SELECT model_turns FROM ai_tasks WHERE id=?",Integer.class,lease.task().taskId());
+        return (media(lease.request().taskType())?24:6)-sql.jdbc.queryForObject("SELECT model_turns FROM ai_tasks WHERE id=?",Integer.class,lease.task().taskId());
     }
 
     /** 当前租约下恢复唯一计划；已成功节点仍由原检查点复用。 */
@@ -326,7 +339,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public void reserveToolCall(TaskLease lease) {
         valid(lease);
-        if (sql.jdbc.update("UPDATE ai_tasks SET tool_calls=tool_calls+1 WHERE id=? AND tool_calls<8", lease.task().taskId()) != 1)
+        if (sql.jdbc.update("UPDATE ai_tasks SET tool_calls=tool_calls+1 WHERE id=? AND tool_calls<CASE task_type WHEN 'NOTES_PPT' THEN 40 WHEN 'NOTES_VIDEO' THEN 24 ELSE 8 END", lease.task().taskId()) != 1)
             throw new LabException("BUDGET_EXCEEDED", "持久工具预算耗尽");
     }
 
@@ -405,15 +418,30 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
      */
     public ArtifactSnapshot artifact(UserContext actor, long id) {
         sql.actor(actor, false);
-        var result = sql.jdbc.query("SELECT a.* FROM artifacts a JOIN ai_tasks t ON t.id=a.task_id WHERE a.id=? AND a.requester_user_id=? AND a.published=TRUE AND t.status IN ('SUCCEEDED','PARTIAL')", (r, n) -> new ArtifactSnapshot(r.getLong("id"), actor.userId(), r.getLong("task_id"), r.getString("filename"), r.getString("mime"), r.getString("content"), sources(r.getString("source_json"))), id, actor.userId()).stream().findFirst().orElseThrow(LabException::denied);
+        var result = sql.jdbc.query("SELECT a.* FROM artifacts a JOIN ai_tasks t ON t.id=a.task_id WHERE a.id=? AND a.requester_user_id=? AND a.published=TRUE AND t.status IN ('SUCCEEDED','PARTIAL','MEDIA_READY','WAITING_MEDIA_REVIEW')", (r, n) -> new ArtifactSnapshot(r.getLong("id"), actor.userId(), r.getLong("task_id"), r.getString("filename"), r.getString("mime"), r.getString("content"), sources(r.getString("source_json")),r.getString("kind"),(Long)r.getObject("byte_size"),r.getString("checksum"),r.getString("storage_key"),r.getString("media_operation_id"),r.getInt("revision"),(Integer)r.getObject("preview_version")), id, actor.userId()).stream().findFirst().orElseThrow(LabException::denied);
         docs.verifySources(all(actor), result.sourceDependencies());
         return result;
     }
 
+    /** 文件存储只有正式装配才注入；历史纯文本测试构造继续兼容。 */
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void files(MediaFilePort files) { this.mediaFiles = files; }
+    private MediaFilePort mediaFiles;
+    /** 下载先重核本人／来源，再检查真实文件摘要；Markdown沿用原字节内容。 */
+    public byte[] bytes(UserContext actor,long id) {
+        var a=artifact(actor,id);
+        if (a.storageKey()==null) return a.content().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        if (mediaFiles==null) throw new LabException("MEDIA_VALIDATION_FAILED","受控文件存储不可用");
+        var bytes=mediaFiles.read(new Media.FileFact(a.storageKey(),a.mime(),a.size(),a.checksum()));
+        artifact(actor,id); return bytes;
+    }
+    /** 任务类型决定独立预算，不改变普通报告额度。 */
+    private boolean media(String type) { return Set.of("NOTES_PPT","NOTES_VIDEO").contains(type); }
+
     /**
      * fencing/worker/租约/用户/工作流/累计期限全都必须满足。
      */
-    private void valid(TaskLease lease) {
+    void valid(TaskLease lease) {
         sql.actor(lease.actor(), true);
         int count = sql.jdbc.queryForObject("SELECT COUNT(*) FROM ai_tasks WHERE id=? AND requester_user_id=? AND worker_id=? AND fencing_token=? AND status='RUNNING' AND lease_until>CURRENT_TIMESTAMP(6) AND workflow_version='report-v1' AND total_execution_seconds+TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6))<1200", Integer.class, lease.task().taskId(), lease.actor().userId(), lease.workerId(), lease.fencingToken());
         if (count != 1) throw new LabException("STALE_EXECUTION", "任务执行权或累计期限已失效");
@@ -434,7 +462,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
         Instant measuredAt = r.getString("status").equals("RUNNING") ? now : instant(r, "updated_at");
         long elapsed = r.getLong("total_execution_seconds") + (claimedAt == null || measuredAt == null ? 0
                 : Math.max(0, Duration.between(claimedAt, measuredAt).getSeconds()));
-        var progress = TaskProgress.from(r.getString("status"), workerEnabled, leaseActive, steps,
+        var progress = media(r.getString("task_type")) ? TaskProgress.media(r.getString("status"), r.getString("media_phase"), mediaWorkerEnabled, leaseActive, steps, instant(r,"started_at"), instant(r,"updated_at"), instant(r,"heartbeat_at"), elapsed) : TaskProgress.from(r.getString("status"), workerEnabled, leaseActive, steps,
                 instant(r, "started_at"), instant(r, "updated_at"), instant(r, "heartbeat_at"), elapsed);
         return new TaskSnapshot(id, r.getLong("requester_user_id"), r.getString("task_type"), r.getString("status"), r.getLong("state_version"), r.getInt("model_attempts"), r.getInt("completed_steps"), r.getString("error_code"), (Long) r.getObject("artifact_id"), progress,coverage(id));
     }

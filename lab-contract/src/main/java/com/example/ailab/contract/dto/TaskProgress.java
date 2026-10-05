@@ -25,6 +25,29 @@ public record TaskProgress(String stage, String message, boolean workerEnabled, 
         };
     }
 
+    /** 媒体生命周期与模型DAG分开展示；等待外部时不估算提供方百分比。 */
+    public static TaskProgress media(String status,String phase,boolean enabled,boolean active,List<TaskStepSnapshot> steps,
+                                     Instant started,Instant updated,Instant heartbeat,long elapsed) {
+        String stage=phase==null?status:phase;
+        String message=switch(status) {
+            case "WAITING_APPROVAL" -> "预览就绪，等待本人审批";
+            case "WAITING_EXTERNAL" -> "视频生成中，等待下次查询原提供方任务";
+            case "NEEDS_RECONCILIATION" -> "外部结果待核对，停止自动重新购买";
+            case "MEDIA_READY" -> "图片素材就绪，等待可编辑PPTX导出";
+            case "WAITING_MEDIA_REVIEW" -> "文件技术检查完成，等待本人核对内容、配图或声音画面";
+            case "SUCCEEDED" -> "私人产物已通过本人验收";
+            case "PAUSED" -> "任务已暂停，外部事实及费用保留";
+            case "CANCELLED" -> "任务已取消，本地不再发布，远程费用仍须核对";
+            case "FAILED" -> "媒体任务失败，请查看错误码";
+            default -> enabled?"正在处理媒体任务："+stage:"媒体Worker未启用，尚未执行";
+        };
+        int done=(int)steps.stream().filter(s->s.status().equals("SUCCEEDED")).count();
+        boolean published=status.equals("SUCCEEDED");
+        return new TaskProgress(stage,message,enabled,status.equals("RUNNING")&&active,done,steps.size(),
+                published?100:Math.min(80,done*20),List.of(stage),steps,started,updated,heartbeat,elapsed,
+                List.of("FAILED","CANCELLED","MEDIA_READY","SUCCEEDED","PAUSED","NEEDS_RECONCILIATION").contains(status)?0:2000);
+    }
+
     /** 根据持久事实区分排队、停用、执行、租约恢复及终态，不用计时动画假装进度。 */
     public static TaskProgress from(String status, boolean workerEnabled, boolean leaseActive,
                                     List<TaskStepSnapshot> steps, Instant startedAt, Instant updatedAt,

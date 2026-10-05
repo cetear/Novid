@@ -32,5 +32,7 @@ var/
 !.env.example
 *.key
 *.pem
+# 用户提供的本地百炼凭证文件，保留原件且不纳入版本控制。
+docs/API资源.txt
 .idea/
 .vscode/

@@ -14,6 +14,13 @@ public final class ExecutionBudget {
     private final Runnable turnJournal;
     private final Runnable cancellationCheck;
     private int attempts, turns, tools, repairs;
+    private int maxTurns = 6, maxTools = 8;
+    /** 仅媒体入口显式启用独立预算，普通问答／报告仍六轮八工具。 */
+    public ExecutionBudget media(String taskType) {
+        if (!java.util.Set.of("NOTES_PPT", "NOTES_VIDEO").contains(taskType) || maxAttempts != 36)
+            throw new IllegalArgumentException("媒体预算仅限登记媒体任务");
+        maxTurns = 24; maxTools = taskType.equals("NOTES_PPT") ? 40 : 24; return this;
+    }
     private Runnable toolJournal = () -> {}, repairJournal = () -> {};
     private final java.util.List<com.example.ailab.contract.dto.ModelRoute.Attempt> observed = new java.util.ArrayList<>();
     private com.example.ailab.contract.context.TraceContext rootTrace = com.example.ailab.contract.context.TraceContext.disabled("none");
@@ -99,8 +106,9 @@ public final class ExecutionBudget {
      */
     public synchronized void turn() {
         check();
-        if (++turns > 6) throw new LabException("BUDGET_EXCEEDED", "模型轮数超过限制");
+        if (turns >= maxTurns) throw new LabException("BUDGET_EXCEEDED", "模型轮数超过限制");
         turnJournal.run();
+        turns++;
     }
 
     /**
@@ -108,7 +116,7 @@ public final class ExecutionBudget {
      */
     public synchronized void tool() {
         check();
-        if (tools >= 8) throw new LabException("BUDGET_EXCEEDED", "工具次数超过限制");
+        if (tools >= maxTools) throw new LabException("BUDGET_EXCEEDED", "工具次数超过限制");
         toolJournal.run(); tools++;
     }
 

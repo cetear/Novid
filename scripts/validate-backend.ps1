@@ -1,4 +1,4 @@
-param([string]$EnvFile = '.env', [switch]$InspectDatabase, [switch]$Focused)
+param([string]$EnvFile = '.env', [switch]$InspectDatabase, [switch]$Focused, [switch]$Offline)
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $workspace
@@ -31,6 +31,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # 验证会调用已配置真实模型，使用合成资料、有限输出；创建并清理独立临时库与索引。
 [Environment]::SetEnvironmentVariable('REVIEW_LOCAL_MODEL_KEY', 'synthetic-local-only-key', 'Process')
 if ($InspectDatabase) { & java '-Dfile.encoding=UTF-8' -cp $classpath BackendValidation --inspect-database }
+elseif ($Offline) { & java '-Dfile.encoding=UTF-8' -cp $classpath BackendValidation --offline }
 elseif ($Focused) { & java '-Dfile.encoding=UTF-8' -cp $classpath BackendValidation --focused }
 else { & java '-Dfile.encoding=UTF-8' -cp $classpath BackendValidation }
 exit $LASTEXITCODE
