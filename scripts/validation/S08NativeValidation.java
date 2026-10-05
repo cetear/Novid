@@ -42,7 +42,7 @@ public final class S08NativeValidation {
                 "--lab.observability.export-enabled=false", "--lab.model.mode=mock", "--spring.main.banner-mode=off", "--logging.level.root=OFF",
                 "--lab.search.enabled=" + !databaseOnly, "--lab.search.index=" + index, "--lab.search.dimensions=2", "--lab.search.embedding-model-version=s08-fixture"));
         try (var context = app.run(options.toArray(String[]::new))) {
-            var sql = context.getBean(SqlSupport.class); var jdbc = sql.jdbc;
+            var sql = ValidationSql.from(context); var jdbc = sql.jdbc;
             var tx = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
             var originalUsers = jdbc.queryForList("SELECT id FROM users ORDER BY id", Long.class);
             check(jdbc.queryForObject("SELECT COUNT(*) FROM auth_tokens WHERE expires_at<?", Integer.class, Timestamp.from(CUTOFF)) == 0
@@ -99,7 +99,7 @@ public final class S08NativeValidation {
     }
 
     /** 当前授权SQL与真实ES缓存命中、Scope切换、版本变化／滞后分别精确断言。 */
-    private static void cache(ElasticsearchRepository search,KnowledgeAccessPolicy policy,SqlSupport sql,TransactionTemplate tx,
+    private static void cache(ElasticsearchRepository search,KnowledgeAccessPolicy policy,ValidationSql sql,TransactionTemplate tx,
                               UserContext u1,UserContext u2,UserContext admin,Fixture d1,Fixture d2) {
         var all=policy.authorize(admin,new ScopeRequest(ScopeRequest.Mode.ALL,List.of(),null));
         var first=search.search(all,"缓存",List.of(0.6f,0.8f),"s08-fixture");
@@ -126,7 +126,7 @@ public final class S08NativeValidation {
     }
 
     /** 真HTTP认证令牌由正式哈希端口签发，审计列表／原文读取及聚合都走正式仓库。 */
-    private static void http(org.springframework.context.ApplicationContext context,SqlSupport sql,List<UserContext> actors,Fixture fixture,int port) throws Exception {
+    private static void http(org.springframework.context.ApplicationContext context,ValidationSql sql,List<UserContext> actors,Fixture fixture,int port) throws Exception {
         var tokens=context.getBean(AuthTokenStorePort.class);var raw=new ArrayList<String>();
         for(var actor:actors) {String token=UUID.randomUUID().toString()+UUID.randomUUID();raw.add(token);tokens.issue(context.getBean(UserStorePort.class).user(actor.userId()).orElseThrow(),AccountApplicationService.digest(token),Instant.now().plusSeconds(300));}
         check(get(port,"/admin/access-audit",null).statusCode()==401,"real_http_anonymous_admin_audit_401");
@@ -149,7 +149,7 @@ public final class S08NativeValidation {
     }
 
     /** 真MySQL最小截止范围，引用保留／每类上限／可靠事实和失败回滚分别断言。 */
-    private static void retention(GovernanceStorePort store,SqlSupport sql,TransactionTemplate tx,UserContext actor,UserContext admin,Fixture fixture) {
+    private static void retention(GovernanceStorePort store,ValidationSql sql,TransactionTemplate tx,UserContext actor,UserContext admin,Fixture fixture) {
         var jdbc=sql.jdbc;var source=JSON.createArrayNode().add(JSON.createObjectNode().put("knowledgeBaseId",fixture.base()).put("documentId",fixture.doc()).put("documentVersion",1)).toString();
         long task=tx.execute(s->sql.insert("INSERT INTO ai_tasks(requester_user_id,task_type,request_json,request_hash,status,model_attempts,model_turns) VALUES(?,'FAQ','{}',?,'PAUSED',3,2)",actor.userId(),"0".repeat(64)));
         for(String table:List.of("messages","sessions","approvals","task_steps","artifacts","task_document_pages","source_dependencies","task_document_coverage","ai_tasks")) {
@@ -158,7 +158,7 @@ public final class S08NativeValidation {
                 check(store.purge(CUTOFF,CUTOFF,100).structureRows()==0,"mysql_reference_retained_"+table);
             } finally {status.setRollbackOnly();}});
         }
-        var fee=new FeeRepository(sql);var feeScope=new FeeScope(actor,"RUN",UUID.randomUUID().toString(),UUID.randomUUID().toString());
+        var fee=new FeeRepository(sql.support());var feeScope=new FeeScope(actor,"RUN",UUID.randomUUID().toString(),UUID.randomUUID().toString());
         tx.executeWithoutResult(s->{var reserved=fee.reserve(feeScope,UUID.randomUUID().toString(),"synthetic","CHAT",10,0,null,"CNY",BigDecimal.TEN,10000,false);fee.sending(reserved);fee.complete(reserved,null,null,"SYNTHETIC_UNKNOWN");});
         tx.executeWithoutResult(s->{
             for(int n=0;n<3;n++) {jdbc.update("INSERT INTO auth_tokens(token_hash,user_id,permission_version,expires_at) VALUES(?,?,1,?)",SqlSupport.hash(UUID.randomUUID().toString()),actor.userId(),Timestamp.from(OLD));
@@ -185,7 +185,7 @@ public final class S08NativeValidation {
     }
 
     /** 各类真实来源夹具一次只加一种引用，回滚后不遗留新任务／会话／审批。 */
-    private static void reference(SqlSupport sql,UserContext actor,Fixture f,long task,String source,String table) {
+    private static void reference(ValidationSql sql,UserContext actor,Fixture f,long task,String source,String table) {
         var jdbc=sql.jdbc;
         switch(table) {
             case "source_dependencies" -> jdbc.update("INSERT INTO source_dependencies(document_id,document_version,source_base_id,source_document_id,source_document_version) VALUES(?,1,?,?,1)",f.doc(),f.base(),f.doc());
@@ -204,7 +204,7 @@ public final class S08NativeValidation {
     }
 
     /** 偏好从不缓存，正式删除重置本人摘要并撤销在途窗口。 */
-    private static void preference(org.springframework.context.ApplicationContext context,SqlSupport sql,UserContext actor) {
+    private static void preference(org.springframework.context.ApplicationContext context,ValidationSql sql,UserContext actor) {
         var memory=context.getBean(MemoryStorePort.class);var saved=memory.create(actor,"S08合成偏好");
         long session=sql.insert("INSERT INTO sessions(user_id,title,scope_json,summary_content,summary_covered_through_seq,summary_source_json,next_seq) VALUES(?,'合成','{}','旧摘要',1,'[]',2)",actor.userId());
         memory.delete(actor,saved.id(),saved.version());
@@ -213,13 +213,13 @@ public final class S08NativeValidation {
     }
 
     /** 合成账户不含真实密码，正式Bearer签发仅使用其无凭证快照。 */
-    private static UserContext actor(SqlSupport sql,String role) {
+    private static UserContext actor(ValidationSql sql,String role) {
         long id=sql.insert("INSERT INTO users(username,password_hash,role,password_change_required) VALUES(?,'unused-fixture',?,FALSE)","s08_"+UUID.randomUUID().toString().replace("-",""),role);
         return new UserContext(id,UserContext.Role.valueOf(role),true,1,false);
     }
 
     /** 只创建终态合成处理记录，无Outbox／待领队列，已有正式Worker不会消费测试资料。 */
-    private static Fixture fixture(SqlSupport sql,UserContext actor,boolean old) {
+    private static Fixture fixture(ValidationSql sql,UserContext actor,boolean old) {
         long base=sql.insert("INSERT INTO knowledge_bases(owner_user_id,name) VALUES(?,'S08合成库')",actor.userId());
         long doc=sql.insert("INSERT INTO documents(knowledge_base_id,owner_user_id,title,format) VALUES(?,?,'S08合成文档','txt')",base,actor.userId());
         String text="S08缓存权限证据";
@@ -248,7 +248,7 @@ public final class S08NativeValidation {
         return HttpClient.newHttpClient().send(request.GET().build(),HttpResponse.BodyHandlers.ofString());
     }
     /** 只清自己的明确主键；不按前缀模糊删除现有资料，不关闭约束。 */
-    private static void cleanup(SqlSupport sql,List<UserContext> actors,List<Fixture> fixtures) {
+    private static void cleanup(ValidationSql sql,List<UserContext> actors,List<Fixture> fixtures) {
         var jdbc=sql.jdbc; jdbc.queryForObject("SELECT id FROM system_control WHERE id=1 FOR UPDATE",Integer.class);
         for(var actor:actors) {
             jdbc.update("DELETE a FROM fee_attempts a JOIN fee_scopes f ON f.scope_id=a.scope_id WHERE f.actor_user_id=?",actor.userId());

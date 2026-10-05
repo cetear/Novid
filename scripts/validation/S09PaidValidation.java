@@ -45,7 +45,7 @@ public final class S09PaidValidation {
         String hash=provider.configurationHash(stage.startsWith("image")?"IMAGE_GENERATION":"VIDEO_GENERATION");
         var app=new SpringApplication(LabApplication.class);app.setDefaultProperties(defaults);
         try(var context=app.run("--server.port=0","--server.address=127.0.0.1","--lab.bootstrap.enabled=false","--lab.task.worker-enabled=false","--lab.media.worker-enabled=false","--lab.ingestion.worker-enabled=false","--lab.governance.cleanup-enabled=false","--lab.observability.export-enabled=false","--lab.model.mode=mock","--lab.search.enabled=false","--spring.main.banner-mode=off","--logging.level.root=OFF")){
-            var sql=context.getBean(SqlSupport.class);var tasks=context.getBean(TaskStorePort.class);var media=context.getBean(MediaStorePort.class);
+            var sql=ValidationSql.from(context);var tasks=context.getBean(TaskStorePort.class);var media=context.getBean(MediaStorePort.class);
             var tx=new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
             // 固定身份及幂等键只属于此批准批次。原三份上限19.5元，另经本人明确批准的新图最多0.5元，总计20元。
             long actorId=tx.execute(s->{var ids=sql.jdbc.queryForList("SELECT id FROM users WHERE username=? FOR UPDATE",Long.class,BATCH);return ids.isEmpty()?sql.insert("INSERT INTO users(username,password_hash,role,password_change_required) VALUES(?,'disabled-validation-login','USER',FALSE)",BATCH):ids.get(0);});
@@ -116,12 +116,12 @@ public final class S09PaidValidation {
         }
     }
     /** 不领取正式队列；只为固定批准任务续租，并递增围栏。 */
-    private static TaskLease lease(SqlSupport sql,TaskStorePort tasks,UserContext actor,TaskRequest request,long id){
+    private static TaskLease lease(ValidationSql sql,TaskStorePort tasks,UserContext actor,TaskRequest request,long id){
         sql.jdbc.update("UPDATE ai_tasks SET status='RUNNING',worker_id='s09-paid-validation',fencing_token=fencing_token+1,claimed_at=CURRENT_TIMESTAMP(6),lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND) WHERE id=? AND requester_user_id=?",id,actor.userId());
         long fence=sql.jdbc.queryForObject("SELECT fencing_token FROM ai_tasks WHERE id=?",Long.class,id);return new TaskLease(tasks.read(actor,id),request,actor,"s09-paid-validation",fence);
     }
     /** 证据保留原ID和SQL状态，不保存签名下载URL或认证信息。 */
-    private static void evidence(SqlSupport sql,MediaStorePort media,UserContext actor,long id,String stage,String status)throws Exception{
+    private static void evidence(ValidationSql sql,MediaStorePort media,UserContext actor,long id,String stage,String status)throws Exception{
         var value=new LinkedHashMap<String,Object>();value.put("taskId",id);value.put("stage",stage);value.put("status",status);value.put("batchMaximumCny",20);value.put("operations",media.operations(actor,id));value.put("shots",media.shots(actor,id));value.put("fees",sql.jdbc.queryForList("SELECT f.operation_id,f.state,f.reserved_units,f.used_units FROM fee_attempts f JOIN media_operations m ON m.operation_id=f.operation_id WHERE m.task_id=?",id));
         value.put("artifacts",sql.jdbc.queryForList("SELECT id,kind,filename,storage_key,byte_size,checksum,published FROM artifacts WHERE task_id=?",id));
         value.put("humanReviews",sql.jdbc.queryForList("SELECT preview_version,accepted,note FROM media_human_reviews WHERE task_id=?",id));

@@ -20,7 +20,7 @@ public final class VideoApi {
     public record Selection(Capability capability,String resolution,String audioMode,int seconds,String reason) {
         /** 批准的具体路由；整个快照进入摘要，后台不能悄悄换成新配置。 */
         public Selection {
-            if(capability==null||!capability.resolutions().contains(resolution)||!capability.audioModes().contains(audioMode)
+            if(capability==null||resolution==null||audioMode==null||!capability.resolutions().contains(resolution)||!capability.audioModes().contains(audioMode)
                     ||!capability.durations().contains(seconds)||reason==null||reason.isBlank()||reason.length()>1000)
                 throw new IllegalArgumentException("视频选择不符合登记能力");
         }

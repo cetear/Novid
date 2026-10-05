@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.ailab.data.persistence.mapper.ApprovalMapper">
+    <insert id="prepareApprovalsWrite">
+        INSERT INTO approvals(approval_id,operation_id,actor_user_id,knowledge_base_id,target_version,title,content,parameters_hash,source_json,expires_at) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]},#{args[8]},DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 30 MINUTE))
+    </insert>
+
+    <update id="decideApprovalsWrite">
+        UPDATE approvals SET status='REJECTED',decided_at=CURRENT_TIMESTAMP(6) WHERE approval_id=#{args[0]}
+    </update>
+
+    <select id="decideApprovalsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT parameters_hash FROM approvals WHERE approval_id=#{args[0]}
+    </select>
+
+    <insert id="decideSourceDependenciesWrite">
+        INSERT INTO source_dependencies(document_id,document_version,source_base_id,source_document_id,source_document_version) VALUES(#{args[0]},1,#{args[1]},#{args[2]},#{args[3]})
+    </insert>
+
+    <insert id="decideOperationsWrite">
+        INSERT INTO operations(operation_id,actor_user_id,parameters_hash,document_id) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]})
+    </insert>
+
+    <update id="decideApprovalsWrite2">
+        UPDATE approvals SET status='APPROVED',document_id=#{args[0]},decided_at=CURRENT_TIMESTAMP(6) WHERE approval_id=#{args[1]} AND status='WAITING'
+    </update>
+
+    <select id="loadApprovalsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM approvals WHERE approval_id=#{args[0]} AND actor_user_id=#{args[1]}<if test="lock"> FOR UPDATE</if>
+    </select>
+</mapper>

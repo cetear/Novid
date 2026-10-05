@@ -211,7 +211,7 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
         compatible(vector, version);
         var filters = filters(scope);
         if (scope.mode() == ScopeRequest.Mode.SELECTED && scope.knowledgeBaseIds().isEmpty()) return List.of();
-        var parameters = new org.springframework.jdbc.core.namedparam.MapSqlParameterSource();
+        var parameters = new com.example.ailab.data.persistence.po.SqlParameters();
         sql.scope(scope, parameters);
         long epoch = sql.knowledgeEpoch();
         var key = new QueryCandidateCache.Key(scope.actor().userId(), scope.actor().role().name(),

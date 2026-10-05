@@ -162,7 +162,7 @@ public final class StructureNativeValidation {
             });
             check("http_failed_latest_intent_keeps_old_active_revision",()->{
                 new TransactionTemplate(context.getBean(org.springframework.transaction.PlatformTransactionManager.class)).executeWithoutResult(status->{
-                    context.getBean(SqlSupport.class).actor(owner,true);
+                    ValidationSql.from(context).actor(owner,true);
                     jdbc.update("INSERT INTO document_ingestions(document_id,document_version,processing_revision,actor_user_id,status,attempt,error_code) VALUES(?,1,2,?,'FAILED',3,'DOCUMENT_PARSE_FAILED')",longId,owner.userId());
                 });
                 var data=expect(200,request("GET","/documents/"+longId+"/ingestion",ownerToken,null,null));
@@ -195,7 +195,7 @@ public final class StructureNativeValidation {
     /** 创建可控 PROCESSING 批次并显式执行自己的入库，不用扫描领取生产队列。 */
     private static long ingest(String text,String title) {
         long[] values=new long[2];var transaction=new TransactionTemplate(context.getBean(org.springframework.transaction.PlatformTransactionManager.class));
-        transaction.executeWithoutResult(status->{var sql=context.getBean(SqlSupport.class);sql.actor(owner,true);
+        transaction.executeWithoutResult(status->{var sql=ValidationSql.from(context);sql.actor(owner,true);
             values[0]=sql.insert("INSERT INTO documents(knowledge_base_id,owner_user_id,title,format) VALUES(?,?,?,'md')",baseId,owner.userId(),title);DOCUMENTS.add(values[0]);
             jdbc.update("INSERT INTO document_versions(document_id,document_version,raw_text,checksum) VALUES(?,1,?,?)",values[0],text,SqlSupport.hash(text));
             values[1]=sql.insert("INSERT INTO document_ingestions(document_id,document_version,processing_revision,actor_user_id,status,attempt,worker_id,fencing_token,lease_until) VALUES(?,1,1,?,'PROCESSING',1,'s02-explicit',1,DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND))",values[0],owner.userId());
@@ -222,11 +222,11 @@ public final class StructureNativeValidation {
     }
     /** 同一真实 SQL 数据集用不同窄参数，核对父段／种子上限确实影响扩展。 */
     private static void expansionParameters() {
-        var sql=context.getBean(SqlSupport.class);var docs=context.getBean(DocumentSqlRepository.class);var all=chunks(longId);
+        var sql=ValidationSql.from(context);var docs=context.getBean(DocumentSqlRepository.class);var all=chunks(longId);
         var candidate=all.stream().filter(c->c.rawText().contains("中文与表情")).findFirst().orElseThrow();
         var hits=List.of(new ChunkCandidate(longId,1,1,candidate.chunkId(),1),new ChunkCandidate(shortId,1,1,chunks(shortId).get(0).chunkId(),0.5));
         var expanded=context.getBean(DocumentContextRepository.class).expand(scope(),hits,4000);
-        var reduced=new DocumentContextRepository(sql,docs,new ContextPolicy(3,1,1,100,0,1000)).expand(scope(),hits,1000);
+        var reduced=new DocumentContextRepository(sql.support(),docs,new ContextPolicy(3,1,1,100,0,1000)).expand(scope(),hits,1000);
         require(expanded.size()==2&&reduced.size()==1,"seed/final parameter not effective");require(expanded.get(0).text().length()>reduced.get(0).text().length(),"parent limit not effective");
         require(reduced.stream().mapToInt(e->TextWindow.count(e.text())+TextWindow.count(e.headingPath())+64).sum()<=1000,"reduced evidence exceeded bound");
     }
@@ -348,7 +348,7 @@ public final class StructureNativeValidation {
 
     /** 构造唯一本次账户，不调用空库 bootstrap，不读取或修改已有管理员。 */
     private static void createAccounts() throws Exception {
-        SqlSupport sql = context.getBean(SqlSupport.class);
+        ValidationSql sql = ValidationSql.from(context);
         String hash = new BCryptPasswordEncoder(12).encode(PASSWORD);
         for (String role : List.of("USER", "USER", "ADMIN", "ADMIN")) {
             String name = "s02_" + SUFFIX + "_" + FIXTURE_USERS.size();

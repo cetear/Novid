@@ -30,7 +30,7 @@ final class DeadlineHttpClient implements dev.langchain4j.http.client.HttpClient
         request.headers().forEach((name, values) -> values.forEach(value -> builder.header(name, value)));
         builder.method(request.method().name(), java.net.http.HttpRequest.BodyPublishers.ofString(request.body()));
         try {
-            var response = client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+            var response = com.example.ailab.contract.http.HttpRequests.send(client, builder.build(), HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300)
                 throw new Failure(response.statusCode(), retryAfter(response.headers().firstValue("Retry-After").orElse(null)));
             scope.budget().check();

@@ -53,7 +53,7 @@ public class MediaApplicationService {
     /** 本人可改Planner建议，所有选项重新登记核验并生成新批准。 */
     public Media.Preview videoSelection(UserContext actor,long id,int version,List<VideoApi.Recommendation> recommendations){
         actor=policy.current(actor);var p=store.preview(actor,id).orElseThrow(LabException::denied);
-        if(p.storyboard()==null||recommendations==null||!recommendations.stream().map(VideoApi.Recommendation::shotId).toList().equals(p.units().stream().map(Media.Unit::unitId).toList()))throw LabException.invalid("路由选择必须覆盖原镜头顺序");
+        if(p.storyboard()==null||recommendations==null||recommendations.stream().anyMatch(Objects::isNull)||!recommendations.stream().map(VideoApi.Recommendation::shotId).toList().equals(p.units().stream().map(Media.Unit::unitId).toList()))throw LabException.invalid("路由选择必须覆盖原镜头顺序");
         var selections=recommendations.stream().map(r->provider.selectVideo(r,p.catalogs())).toList();
         return store.edit(actor,id,version,p.units(),configurationHash("NOTES_VIDEO"),selections);
     }
@@ -71,6 +71,7 @@ public class MediaApplicationService {
         var refs=p.sourceDependencies().stream().map(s->"D"+s.documentId()+"v"+s.documentVersion()).collect(java.util.stream.Collectors.toSet());
         var ids=new HashSet<String>();
         for(var u:units){
+            if(u==null||u.unitId()==null||u.layout()==null||u.imageMode()==null)throw LabException.invalid("编辑单位及ID、版式、配图方式不能为空");
             var old=p.units().stream().filter(x->x.unitId().equals(u.unitId())).findFirst().orElseThrow(()->LabException.invalid("编辑单位ID不合法"));
             if(!ids.add(u.unitId())||u.title()==null||u.title().isBlank()||u.title().length()>200||u.text()==null||(!video&&u.text().isBlank())||u.text().length()>3000||u.notes()==null||u.notes().length()>1500
                     ||!Set.of("TITLE","TEXT","TWO_COLUMN","IMAGE_TEXT","SCENE").contains(u.layout())||u.references().isEmpty()||!refs.containsAll(u.references())

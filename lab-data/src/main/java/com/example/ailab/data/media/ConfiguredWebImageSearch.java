@@ -26,17 +26,15 @@ public class ConfiguredWebImageSearch implements WebImageSearchPort {
         files.validateUrl(endpoint);
         try {
             var request=HttpRequest.newBuilder(URI.create(endpoint+"?q="+URLEncoder.encode(query,java.nio.charset.StandardCharsets.UTF_8)+"&count=5")).timeout(Duration.ofSeconds(5)).GET().build();
-            var response=client.send(request,HttpResponse.BodyHandlers.ofInputStream());
-            try(var in=response.body()){
-                byte[] bytes=in.readNBytes(32769);if(response.statusCode()!=200||bytes.length>32768)throw new LabException("SEARCH_UNAVAILABLE","搜索响应不可用或超限");
-                var root=new ObjectMapper().readTree(bytes);var values=new ArrayList<Media.ImageSource>();
-                if(!root.path("candidates").isArray()||root.path("candidates").size()>5)throw new LabException("SEARCH_UNAVAILABLE","搜索候选协议不匹配");
-                for(var c:root.path("candidates")){
-                    for(String key:List.of("sourcePageUrl","imageUrl","title","license","objectAndPeriod"))if(!c.path(key).isTextual()||c.path(key).asText().isBlank()||c.path(key).asText().length()>4096)throw new LabException("SEARCH_UNAVAILABLE","搜索候选缺出处或使用信息");
-                    files.validateUrl(c.path("imageUrl").asText());files.validateUrl(c.path("sourcePageUrl").asText());
-                    values.add(new Media.ImageSource(UUID.randomUUID().toString(),query,c.path("sourcePageUrl").asText(),c.path("imageUrl").asText(),c.path("title").asText(),c.path("author").asText("UNKNOWN"),c.path("license").asText(),c.path("objectAndPeriod").asText(),Instant.now()));
-                }return List.copyOf(values);
-            }
+            var response=com.example.ailab.contract.http.HttpRequests.send(client,request,com.example.ailab.contract.http.HttpRequests.boundedBytes(32768));
+            byte[] bytes=response.body();if(response.statusCode()!=200)throw new LabException("SEARCH_UNAVAILABLE","搜索响应不可用或超限");
+            var root=new ObjectMapper().readTree(bytes);var values=new ArrayList<Media.ImageSource>();
+            if(!root.path("candidates").isArray()||root.path("candidates").size()>5)throw new LabException("SEARCH_UNAVAILABLE","搜索候选协议不匹配");
+            for(var c:root.path("candidates")){
+                for(String key:List.of("sourcePageUrl","imageUrl","title","license","objectAndPeriod"))if(!c.path(key).isTextual()||c.path(key).asText().isBlank()||c.path(key).asText().length()>4096)throw new LabException("SEARCH_UNAVAILABLE","搜索候选缺出处或使用信息");
+                files.validateUrl(c.path("imageUrl").asText());files.validateUrl(c.path("sourcePageUrl").asText());
+                values.add(new Media.ImageSource(UUID.randomUUID().toString(),query,c.path("sourcePageUrl").asText(),c.path("imageUrl").asText(),c.path("title").asText(),c.path("author").asText("UNKNOWN"),c.path("license").asText(),c.path("objectAndPeriod").asText(),Instant.now()));
+            }return List.copyOf(values);
         }catch(LabException e){throw e;}catch(InterruptedException e){Thread.currentThread().interrupt();throw new LabException("SEARCH_UNAVAILABLE","搜索中断");}catch(Exception e){throw new LabException("SEARCH_UNAVAILABLE","搜索失败");}
     }
 }

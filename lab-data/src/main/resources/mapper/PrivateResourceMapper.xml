@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.ailab.data.persistence.mapper.PrivateResourceMapper">
+    <select id="listProfileMemoriesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM profile_memories WHERE user_id=#{args[0]} AND deleted=FALSE ORDER BY id
+    </select>
+
+    <select id="createProfileMemoriesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) FROM profile_memories WHERE user_id=#{args[0]} AND deleted=FALSE
+    </select>
+
+    <insert id="createProfileMemoriesInsert" useGeneratedKeys="true" keyProperty="insert.id" keyColumn="id">
+        INSERT INTO profile_memories(user_id,content) VALUES(#{insert.args[0]},#{insert.args[1]})
+    </insert>
+
+    <update id="updateProfileMemoriesWrite">
+        UPDATE profile_memories SET content=#{args[0]},version=version+1 WHERE id=#{args[1]} AND user_id=#{args[2]} AND version=#{args[3]} AND deleted=FALSE
+    </update>
+
+    <update id="deleteProfileMemoriesWrite">
+        UPDATE profile_memories SET deleted=TRUE,version=version+1 WHERE id=#{args[0]} AND user_id=#{args[1]} AND version=#{args[2]} AND deleted=FALSE
+    </update>
+
+    <update id="resetSessionContextsSessionsWrite">
+        UPDATE sessions SET context_floor_seq=next_seq-1,summary_content=NULL,summary_covered_through_seq=NULL,summary_source_json=NULL,version=version+1,execution_id=NULL,lease_until=NULL WHERE user_id=#{args[0]} AND deleted=FALSE
+    </update>
+
+    <insert id="recordAiRunsWrite">
+        INSERT INTO ai_runs(trace_id,actor_user_id,status,model_id,attempts,mock,created_at,ended_at,session_id,task_id,ingestion_id,previous_trace_id,incomplete,telemetry_dropped,node_count) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]},#{args[8]},#{args[9]},#{args[10]},#{args[11]},#{args[12]},#{args[13]},#{args[14]}) ON DUPLICATE KEY UPDATE status=VALUES(status),model_id=VALUES(model_id),attempts=VALUES(attempts),mock=VALUES(mock),ended_at=VALUES(ended_at),incomplete=VALUES(incomplete),telemetry_dropped=VALUES(telemetry_dropped),node_count=VALUES(node_count)
+    </insert>
+
+    <insert id="recordGraphAiSpansWrite">
+        INSERT INTO ai_spans(trace_id,span_id,parent_span_id,sequence_no,node_type,status,started_at,ended_at,node_json) VALUES <foreach collection="rows" item="row" separator=",">(#{row[0]},#{row[1]},#{row[2]},#{row[3]},#{row[4]},#{row[5]},#{row[6]},#{row[7]},#{row[8]})</foreach> ON DUPLICATE KEY UPDATE span_id=span_id
+    </insert>
+
+    <select id="graphAiSpansSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT s.node_json FROM ai_spans s JOIN ai_runs r ON r.trace_id=s.trace_id WHERE s.trace_id=#{args[0]} AND r.actor_user_id=#{args[1]} ORDER BY s.sequence_no LIMIT 2000
+    </select>
+
+    <select id="previousAiRunsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT trace_id FROM ai_runs WHERE actor_user_id=#{args[0]} AND <choose><when test="task">task_id=#{args[1]}</when><otherwise>ingestion_id=#{args[1]}</otherwise></choose> ORDER BY created_at DESC,trace_id DESC LIMIT 1
+    </select>
+
+    <delete id="purgeAiRunsWrite">
+        DELETE FROM ai_runs WHERE created_at&lt;#{args[0]} ORDER BY created_at LIMIT #{args[1]}
+    </delete>
+
+    <update id="deliveredAiRunsWrite">
+        UPDATE ai_runs SET first_deliverable_at=COALESCE(first_deliverable_at,#{args[0]}) WHERE trace_id=#{args[1]} AND actor_user_id=#{args[2]}
+    </update>
+
+    <select id="listAiRunsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM ai_runs WHERE actor_user_id=#{args[0]} ORDER BY created_at DESC LIMIT #{args[1]} OFFSET #{args[2]}
+    </select>
+
+    <select id="readAiRunsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM ai_runs WHERE actor_user_id=#{args[0]} AND trace_id=#{args[1]}
+    </select>
+</mapper>

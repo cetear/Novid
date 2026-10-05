@@ -24,7 +24,7 @@ try {
     }
 } finally { $archive.Dispose() }
 $classpath = "$runtimeRoot/classes;$runtimeRoot/*"
-& javac -encoding UTF-8 -cp $classpath -d $runtimeRoot (Join-Path $PSScriptRoot 'validation/IngestionNativeValidation.java')
+& javac -encoding UTF-8 -cp $classpath -d $runtimeRoot (Join-Path $PSScriptRoot 'validation/IngestionNativeValidation.java') (Join-Path $PSScriptRoot 'validation/ValidationSql.java')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # 新随机库优先；没有建库权限时只精确清理自身夹具，所有自动扫描关闭。
 & java '-Dfile.encoding=UTF-8' "-Dvalidation.application-jar-sha256=$applicationHash" -cp "$classpath;$runtimeRoot" com.example.ailab.app.IngestionNativeValidation $EnvFile

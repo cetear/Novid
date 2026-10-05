@@ -1,5 +1,7 @@
 package com.example.ailab.data.repository;
 
+import com.example.ailab.data.persistence.mapper.DocumentContextMapper;
+import com.example.ailab.data.persistence.po.SqlRow;
 import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.port.DocumentContextPort;
 import com.example.ailab.contract.error.LabException;
@@ -7,12 +9,13 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
-import java.sql.*;
+import java.sql.Timestamp;
 import java.util.*;
 
 /** 原文／结构只从 MySQL 授权读取；ES 的父段或邻接信息不能决定关系。 */
 @Repository
 public class DocumentContextRepository implements DocumentContextPort {
+    private final DocumentContextMapper mapper;
     private final SqlSupport sql;
     private final DocumentSqlRepository docs;
     private final ContextPolicy policy;
@@ -24,7 +27,7 @@ public class DocumentContextRepository implements DocumentContextPort {
     /** 数据模块只接框架无关参数，不依赖 AI 模块。 */
     @org.springframework.beans.factory.annotation.Autowired
     public DocumentContextRepository(SqlSupport sql, DocumentSqlRepository docs, ContextPolicy policy) {
-        this.sql = sql; this.docs = docs; this.policy = policy;
+        this.sql = sql; this.mapper = sql.mapper(DocumentContextMapper.class); this.docs = docs; this.policy = policy;
     }
     /** 搜索与扩展共用应用装配的参数，不能在 ES 适配器另写候选默认值。 */
     public ContextPolicy contextPolicy() { return policy; }
@@ -33,13 +36,13 @@ public class DocumentContextRepository implements DocumentContextPort {
     public List<SectionSnapshot> sections(AuthorizedKnowledgeScope scope, long id, int offset, int limit) {
         sql.actor(scope.actor(), true); var d = docs.read(scope, id).document();
         ready(d);
-        return sql.jdbc.query("SELECT * FROM document_sections WHERE document_id=? AND document_version=? AND processing_revision=? ORDER BY ordinal LIMIT ? OFFSET ?", this::section, id, d.documentVersion(), d.activeProcessingRevision(), limit, offset);
+        return sql.project(mapper.sectionsDocumentSectionsSelect(new Object[]{id, d.documentVersion(), d.activeProcessingRevision(), limit, offset}), this::section);
     }
     /** 小片只返回当前版本，与原文位置一起交付；旧批次无映射仍保持 LEGACY。 */
     @Transactional
     public List<ChunkSnapshot> chunks(AuthorizedKnowledgeScope scope, long id, int offset, int limit) {
         sql.actor(scope.actor(), true); var d = docs.read(scope, id).document(); ready(d);
-        return sql.jdbc.query("SELECT * FROM chunks WHERE document_id=? AND document_version=? AND processing_revision=? ORDER BY start_offset LIMIT ? OFFSET ?", DocumentContextRepository::chunk, id, d.documentVersion(), d.activeProcessingRevision(), limit, offset);
+        return sql.project(mapper.chunksChunksSelect(new Object[]{id, d.documentVersion(), d.activeProcessingRevision(), limit, offset}), DocumentContextRepository::chunk);
     }
     /** 分页游标绑定显式版本／代次，父章节含全部子标题；每页硬限制不超过 4000 保守词元。 */
     @Transactional
@@ -47,9 +50,9 @@ public class DocumentContextRepository implements DocumentContextPort {
         if (id <= 0 || version <= 0 || revision <= 0 || maxTokens < 4 || maxTokens > policy.maxEvidenceTokens()) throw LabException.invalid("章节分页参数超限");
         sql.actor(scope.actor(), true); var content = docs.read(scope, id); var d = content.document(); ready(d);
         if (d.documentVersion() != version || d.activeProcessingRevision() != revision) throw new LabException("CONTEXT_VERSION_CONFLICT", "文档版本或处理代次已变化，请重新加载目录");
-        String query = "SELECT * FROM document_sections WHERE document_id=? AND document_version=? AND processing_revision=? AND " + (sectionId == null ? "ordinal=0" : "section_id=?");
-        var params = new ArrayList<Object>(List.of(id,version,revision)); if (sectionId != null) params.add(sectionId);
-        var s = sql.jdbc.query(query, this::section, params.toArray()).stream().findFirst().orElseThrow(() -> new LabException("CONTEXT_MAPPING_INVALID", "章节不属于指定版本和代次"));
+
+
+        var s = sql.project(mapper.sectionPageDocumentSectionsSelect(new Object[]{id, version, revision}, sectionId), this::section).stream().findFirst().orElseThrow(() -> new LabException("CONTEXT_MAPPING_INVALID", "章节不属于指定版本和代次"));
         int start = after == null ? s.startOffset() : after;
         if (s.startOffset() < 0 || s.endOffset() > content.text().length() || !TextWindow.boundary(content.text(), s.startOffset()) || !TextWindow.boundary(content.text(), s.endOffset())) throw mappingInvalid();
         if (start < s.startOffset() || start > s.endOffset() || !TextWindow.boundary(content.text(), start)) throw LabException.invalid("章节游标不合法");
@@ -64,25 +67,25 @@ public class DocumentContextRepository implements DocumentContextPort {
         sql.actor(scope.actor(), true); var d = docs.read(scope, id).document();
         // 累计执行事实属于本人管理状态，管理员跨库正文读取权不扩大到这些记录。
         if(d.ownerUserId()!=scope.actor().userId()) throw LabException.denied();
-        return sql.jdbc.query("SELECT * FROM document_ingestions WHERE document_id=? AND document_version=? ORDER BY processing_revision DESC LIMIT 1", (r,n) ->
-                new IngestionMetadata(id,d.documentVersion(),d.activeProcessingRevision(),r.getLong("id"),r.getLong("processing_revision"),r.getString("status"),r.getString("error_code"),r.getInt("expected_chunk_count"),r.getString("config_hash"),r.getString("parser_version"),r.getString("split_policy_version"),r.getString("mapping_version"),r.getString("tokenizer_ref"),r.getString("count_source"),progress(r)),id,d.documentVersion()).stream().findFirst().orElseThrow(() -> new LabException("INDEX_NOT_READY", "没有入库意图"));
+        return sql.project(mapper.ingestionDocumentIngestionsSelect(new Object[]{id, d.documentVersion()}), (r,n) ->
+                new IngestionMetadata(id,d.documentVersion(),d.activeProcessingRevision(),r.longValue("id"),r.longValue("processing_revision"),r.string("status"),r.string("error_code"),r.intValue("expected_chunk_count"),r.string("config_hash"),r.string("parser_version"),r.string("split_policy_version"),r.string("mapping_version"),r.string("tokenizer_ref"),r.string("count_source"),progress(r))).stream().findFirst().orElseThrow(() -> new LabException("INDEX_NOT_READY", "没有入库意图"));
     }
     /** 有界聚合只返回计数，旧批次没有事实时保留零计数与空期限。 */
-    private IngestionProgress progress(java.sql.ResultSet r) throws java.sql.SQLException {
-        long id=r.getLong("id");
-        var counts=sql.jdbc.queryForMap("SELECT COUNT(*) planned,COALESCE(SUM(state IN ('EMBEDDED','INDEXED')),0) embedded,COALESCE(SUM(state='INDEXED'),0) indexed,COALESCE(SUM(state IN ('SENDING','UNKNOWN')),0) unknown_count FROM ingestion_batches WHERE ingestion_id=?",id);
-        var deadline=r.getTimestamp("execution_deadline");var next=r.getTimestamp("next_attempt_at");
-        boolean retry="FAILED".equals(r.getString("status")) && r.getBoolean("retryable") && r.getInt("attempt")<3
+    private IngestionProgress progress(SqlRow r) {
+        long id=r.longValue("id");
+        var counts=sql.one(mapper.progressIngestionBatchesSelect(new Object[]{id}));
+        var deadline=r.timestamp("execution_deadline");var next=r.timestamp("next_attempt_at");
+        boolean retry="FAILED".equals(r.string("status")) && r.booleanValue("retryable") && r.intValue("attempt")<3
                 && deadline!=null && deadline.toInstant().isAfter(java.time.Instant.now()) && ((Number)counts.get("unknown_count")).intValue()==0;
-        return new IngestionProgress(deadline==null && "READY".equals(r.getString("status"))?"LEGACY":r.getString("phase"),r.getString("failure_stage"),r.getInt("attempt"),r.getInt("model_attempts"),r.getLong("reserved_input_tokens"),r.getLong("actual_input_tokens"),r.getInt("unknown_usage_attempts"),deadline==null?null:deadline.toInstant(),next==null?null:next.toInstant(),retry,
-                ((Number)counts.get("planned")).intValue(),((Number)counts.get("embedded")).intValue(),((Number)counts.get("indexed")).intValue(),((Number)counts.get("unknown_count")).intValue(),r.getInt("peak_vector_items"));
+        return new IngestionProgress(deadline==null && "READY".equals(r.string("status"))?"LEGACY":r.string("phase"),r.string("failure_stage"),r.intValue("attempt"),r.intValue("model_attempts"),r.longValue("reserved_input_tokens"),r.longValue("actual_input_tokens"),r.intValue("unknown_usage_attempts"),deadline==null?null:deadline.toInstant(),next==null?null:next.toInstant(),retry,
+                ((Number)counts.get("planned")).intValue(),((Number)counts.get("embedded")).intValue(),((Number)counts.get("indexed")).intValue(),((Number)counts.get("unknown_count")).intValue(),r.intValue("peak_vector_items"));
     }
     /** 覆盖读取每次在下一个目录标题处截页；绝对游标单调推进，根与子章节不会重复读。 */
     @Transactional
     public SectionPage documentPage(AuthorizedKnowledgeScope scope,long id,int version,long revision,int after,int maxTokens) {
         var page = sectionPage(scope,id,version,revision,null,after,maxTokens);
-        var owner = sql.jdbc.query("SELECT * FROM document_sections WHERE document_id=? AND document_version=? AND processing_revision=? AND start_offset<=? ORDER BY ordinal DESC LIMIT 1",this::section,id,version,revision,after).stream().findFirst().orElseThrow(this::mappingInvalid);
-        Integer nextHeading = sql.jdbc.queryForObject("SELECT MIN(start_offset) FROM document_sections WHERE document_id=? AND document_version=? AND processing_revision=? AND ordinal>?",Integer.class,id,version,revision,owner.ordinal());
+        var owner = sql.project(mapper.documentPageDocumentSectionsSelect(new Object[]{id, version, revision, after}), this::section).stream().findFirst().orElseThrow(this::mappingInvalid);
+        Integer nextHeading = sql.scalar(mapper.documentPageDocumentSectionsSelect2(new Object[]{id, version, revision, owner.ordinal()}), Integer.class);
         int ownEnd = nextHeading == null ? page.sectionEndOffset() : nextHeading;
         int end = Math.min(page.endOffset(),ownEnd); String text = page.text().substring(0,end-after);
         boolean complete = end == page.remainingEndOffset();
@@ -101,14 +104,11 @@ public class DocumentContextRepository implements DocumentContextPort {
             catch (LabException e) { if (e.code().equals("ACCESS_DENIED")) continue; throw e; }
             var d = content.document();
             if (d.documentVersion() != candidate.documentVersion() || !Objects.equals(d.activeProcessingRevision(),candidate.processingRevision())) continue;
-            var seeds = sql.jdbc.query("SELECT * FROM chunks WHERE chunk_id=? AND document_id=? AND document_version=? AND processing_revision=?", DocumentContextRepository::chunk,
-                    candidate.chunkId(),candidate.documentId(),candidate.documentVersion(),candidate.processingRevision());
+            var seeds = sql.project(mapper.expandChunksSelect(new Object[]{candidate.chunkId(), candidate.documentId(), candidate.documentVersion(), candidate.processingRevision()}), DocumentContextRepository::chunk);
             if (seeds.isEmpty()) continue;
             var seed = seeds.get(0); validChunk(content.text(),seed);
-            var section = sql.jdbc.query("SELECT * FROM document_sections WHERE section_id=? AND document_id=? AND document_version=? AND processing_revision=?", this::section,
-                    seed.sectionId(),d.id(),d.documentVersion(),candidate.processingRevision()).stream().findFirst().orElseThrow(this::mappingInvalid);
-            var parent = sql.jdbc.query("SELECT * FROM context_parents WHERE parent_id=? AND section_id=? AND document_id=? AND document_version=? AND processing_revision=?", (r,n) -> new ParentSnapshot(r.getString("parent_id"),r.getString("section_id"),r.getInt("ordinal"),r.getInt("start_offset"),r.getInt("end_offset")),
-                    seed.contextParentId(),seed.sectionId(),d.id(),d.documentVersion(),candidate.processingRevision()).stream().findFirst().orElseThrow(this::mappingInvalid);
+            var section = sql.project(mapper.expandDocumentSectionsSelect(new Object[]{seed.sectionId(), d.id(), d.documentVersion(), candidate.processingRevision()}), this::section).stream().findFirst().orElseThrow(this::mappingInvalid);
+            var parent = sql.project(mapper.expandContextParentsSelect(new Object[]{seed.contextParentId(), seed.sectionId(), d.id(), d.documentVersion(), candidate.processingRevision()}), (r,n) -> new ParentSnapshot(r.string("parent_id"),r.string("section_id"),r.intValue("ordinal"),r.intValue("start_offset"),r.intValue("end_offset"))).stream().findFirst().orElseThrow(this::mappingInvalid);
             if (seed.startOffset() < parent.startOffset() || seed.endOffset() > parent.endOffset() || parent.startOffset() < section.startOffset() || parent.endOffset() > section.endOffset()) throw mappingInvalid();
             if (validSeeds++ >= policy.candidateChunks()) break;
             String key = seed.contextParentId();
@@ -118,13 +118,11 @@ public class DocumentContextRepository implements DocumentContextPort {
                 grouped.put(key,new EvidenceBundle(old.evidenceId(),d,candidate.processingRevision(),old.sectionId(),old.headingPath(),matches,old.includedChunkIds(),old.startOffset(),old.endOffset(),old.text())); continue;
             }
             if (grouped.size() >= policy.finalEvidence()) continue;
-            var included = sql.jdbc.query("SELECT * FROM chunks WHERE parent_id=? AND section_id=? AND document_id=? AND document_version=? AND processing_revision=? ORDER BY index_in_parent", DocumentContextRepository::chunk,
-                    seed.contextParentId(),seed.sectionId(),d.id(),d.documentVersion(),candidate.processingRevision());
+            var included = sql.project(mapper.expandChunksSelect2(new Object[]{seed.contextParentId(), seed.sectionId(), d.id(), d.documentVersion(), candidate.processingRevision()}), DocumentContextRepository::chunk);
             int start = parent.startOffset(), end = parent.endOffset();
             int size = evidenceSize(section.headingPath(),content.text(),start,end);
             if (size > policy.parentMaxTokens() || used+size > budget) {
-                included = sql.jdbc.query("SELECT * FROM chunks WHERE section_id=? AND document_id=? AND document_version=? AND processing_revision=? AND index_in_section BETWEEN ? AND ? ORDER BY index_in_section", DocumentContextRepository::chunk,
-                        seed.sectionId(),d.id(),d.documentVersion(),candidate.processingRevision(),Math.max(0,seed.chunkIndexInSection()-policy.neighborWindow()),seed.chunkIndexInSection()+policy.neighborWindow());
+                included = sql.project(mapper.expandChunksSelect3(new Object[]{seed.sectionId(), d.id(), d.documentVersion(), candidate.processingRevision(), Math.max(0,seed.chunkIndexInSection()-policy.neighborWindow()), seed.chunkIndexInSection()+policy.neighborWindow()}), DocumentContextRepository::chunk);
                 start = included.stream().mapToInt(ChunkSnapshot::startOffset).min().orElse(seed.startOffset()); end = included.stream().mapToInt(ChunkSnapshot::endOffset).max().orElse(seed.endOffset());
                 size = evidenceSize(section.headingPath(),content.text(),start,end);
                 if (used+size > budget) { included = List.of(seed); start = seed.startOffset(); end = seed.endOffset(); size = evidenceSize(section.headingPath(),content.text(),start,end); }
@@ -136,8 +134,7 @@ public class DocumentContextRepository implements DocumentContextPort {
                 if(!map.repeatedHeader() || map.sourceStartOffset()>=start && map.sourceEndOffset()<=end) continue;
                 String headerKey="header:"+map.blockId();
                 if(headers.containsKey(headerKey) || grouped.values().stream().anyMatch(e -> e.document().id()==d.id() && e.startOffset()<=map.sourceStartOffset() && e.endOffset()>=map.sourceEndOffset())) continue;
-                var headerChunks=sql.jdbc.query("SELECT * FROM chunks WHERE document_id=? AND document_version=? AND processing_revision=? AND section_id=? AND start_offset<? AND end_offset>? ORDER BY index_in_section",DocumentContextRepository::chunk,
-                        d.id(),d.documentVersion(),candidate.processingRevision(),seed.sectionId(),map.sourceEndOffset(),map.sourceStartOffset());
+                var headerChunks=sql.project(mapper.expandChunksSelect4(new Object[]{d.id(), d.documentVersion(), candidate.processingRevision(), seed.sectionId(), map.sourceEndOffset(), map.sourceStartOffset()}), DocumentContextRepository::chunk);
                 if(headerChunks.isEmpty()) throw mappingInvalid();
                 headerChunks.forEach(c -> validChunk(content.text(),c));
                 headerCost+=evidenceSize(section.headingPath(),content.text(),map.sourceStartOffset(),map.sourceEndOffset());
@@ -187,14 +184,14 @@ public class DocumentContextRepository implements DocumentContextPort {
     /** 返回稳定错误，不泄露损坏的数据行或内部查询。 */
     private LabException mappingInvalid() { return new LabException("CONTEXT_MAPPING_INVALID","原文或结构关系损坏"); }
     /** 章节祖先只解码固定字符串列表。 */
-    private SectionSnapshot section(ResultSet r,int n) throws SQLException {
-        return new SectionSnapshot(r.getString("section_id"),r.getString("parent_section_id"),decode(r.getString("ancestor_json"),new TypeReference<List<String>>(){}),r.getString("heading_path"),r.getInt("ordinal"),r.getInt("start_offset"),r.getInt("end_offset"));
+    private SectionSnapshot section(SqlRow r,int n) {
+        return new SectionSnapshot(r.string("section_id"),r.string("parent_section_id"),decode(r.string("ancestor_json"),new TypeReference<List<String>>(){}),r.string("heading_path"),r.intValue("ordinal"),r.intValue("start_offset"),r.intValue("end_offset"));
     }
     /** V6 空字段视为旧处理批次，无重新解析事实不补假映射。 */
-    public static ChunkSnapshot chunk(ResultSet r,int n) throws SQLException {
-        String embedding = r.getString("embedding_text"), sourceMap = r.getString("source_map");
-        return new ChunkSnapshot(r.getString("chunk_id"),r.getString("section_id"),r.getString("parent_id"),r.getInt("index_in_section"),r.getInt("index_in_parent"),r.getInt("start_offset"),r.getInt("end_offset"),r.getString("raw_text"),embedding,r.getString("chunk_hash"),r.getString("block_type"),r.getString("block_id"),r.getInt("part_index"),
-                sourceMap == null ? List.of() : decode(sourceMap,new TypeReference<List<TextMapping>>(){}),r.getObject("token_count") == null ? TextWindow.count(embedding) : r.getInt("token_count"),r.getString("count_source") == null ? TextWindow.COUNT_SOURCE : r.getString("count_source"));
+    public static ChunkSnapshot chunk(SqlRow r,int n) {
+        String embedding = r.string("embedding_text"), sourceMap = r.string("source_map");
+        return new ChunkSnapshot(r.string("chunk_id"),r.string("section_id"),r.string("parent_id"),r.intValue("index_in_section"),r.intValue("index_in_parent"),r.intValue("start_offset"),r.intValue("end_offset"),r.string("raw_text"),embedding,r.string("chunk_hash"),r.string("block_type"),r.string("block_id"),r.intValue("part_index"),
+                sourceMap == null ? List.of() : decode(sourceMap,new TypeReference<List<TextMapping>>(){}),r.value("token_count") == null ? TextWindow.count(embedding) : r.intValue("token_count"),r.string("count_source") == null ? TextWindow.COUNT_SOURCE : r.string("count_source"));
     }
     /** 固定 DTO JSON，不启用多态 Java 类型。 */
     private static <T> T decode(String value,TypeReference<T> type) {

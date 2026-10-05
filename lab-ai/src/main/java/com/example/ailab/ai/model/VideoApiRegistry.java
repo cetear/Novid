@@ -37,6 +37,8 @@ public final class VideoApiRegistry {
     public List<VideoApi.Capability> capabilities(){return profiles.values().stream().filter(VideoApiProperties.Profile::enabled).filter(p->p.audioModes().stream().anyMatch(m->Set.of("NATIVE","NONE").contains(m))).map(this::capability).toList();}
     /** 选择时补入服务端能力事实，拒绝模型编造目标、档位或价格。 */
     public VideoApi.Selection select(VideoApi.Recommendation r){
+        if(r==null||r.profileId()==null||r.profileId().isBlank()||r.resolution()==null||r.audioMode()==null||r.reason()==null)
+            throw LabException.invalid("视频选择缺少目标、分辨率、音频模式或说明");
         if(!Set.of("NATIVE","NONE").contains(r.audioMode()))throw new LabException("MEDIA_TTS_DISABLED","独立配音合轨功能已移除");
         var c=capabilities().stream().filter(x->x.id().equals(r.profileId())).findFirst().orElseThrow(VideoApiRegistry::unavailable);
         try{return new VideoApi.Selection(c,r.resolution(),r.audioMode(),r.seconds(),r.reason());}catch(IllegalArgumentException e){throw unavailable();}
@@ -89,7 +91,7 @@ public final class VideoApiRegistry {
         try{
             var b=HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofMillis(millis)).header(p.authHeader(),p.authPrefix()+key);
             if(method.equals("POST")){p.headers().forEach(b::header);b.header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(body)));}else b.GET();
-            var r=http.send(b.build(),info->new LimitedBodySubscriber(65536));
+            var r=com.example.ailab.contract.http.HttpRequests.send(http,b.build(),info->new LimitedBodySubscriber(65536));
             if(r.statusCode()==401||r.statusCode()==403)throw new LabException("MEDIA_AUTH_FAILED","视频提供方鉴权失败");
             if(r.statusCode()==400||r.statusCode()==404||r.statusCode()==422)throw new LabException("MEDIA_PARAMETERS_REJECTED","视频目标或请求参数被提供方拒绝");
             if(r.statusCode()<200||r.statusCode()>=300)throw new LabException("MEDIA_REMOTE_UNAVAILABLE","视频调用未取得有效结果");

@@ -160,7 +160,7 @@ public class MediaModelGateway implements MediaProviderPort {
             if (method.equals("GET")) builder.GET();
             else builder.header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(body)));
             // 自定义订阅器在收取阶段限制字节，而非读完无界响应后才检查。
-            var response = http.send(builder.build(), info -> new LimitedBodySubscriber(65536));
+            var response = com.example.ailab.contract.http.HttpRequests.send(http, builder.build(), info -> new LimitedBodySubscriber(65536));
             int status = response.statusCode();
             if (status == 401 || status == 403) throw new LabException("MEDIA_AUTH_FAILED", "媒体提供方鉴权失败");
             if (status == 400 || status == 422) throw new LabException("MEDIA_PARAMETERS_REJECTED", "媒体提供方参数拒绝");

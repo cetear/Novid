@@ -1,14 +1,14 @@
 package com.example.ailab.data.repository;
 
+import com.example.ailab.data.persistence.mapper.SqlSupportMapper;
+import com.example.ailab.data.persistence.po.SqlRow;
+import com.example.ailab.data.persistence.po.SqlParameters;
 import com.example.ailab.contract.context.UserContext;
 import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.error.LabException;
-import org.springframework.jdbc.core.*;
-import org.springframework.jdbc.core.namedparam.*;
-import org.springframework.jdbc.support.*;
 import org.springframework.stereotype.Component;
 
-import java.sql.*;
+import java.sql.Timestamp;
 import java.time.*;
 import java.util.*;
 import java.nio.charset.StandardCharsets;
@@ -19,25 +19,22 @@ import java.security.*;
  */
 @Component
 public class SqlSupport {
-    public final JdbcTemplate jdbc;
-    public final NamedParameterJdbcTemplate named;
-
-    /**
-     * 使用同一 DataSource，事务不会覆盖远程调用。
-     */
-    public SqlSupport(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
-        named = new NamedParameterJdbcTemplate(jdbc);
+    private final SqlSupportMapper mapper;
+    private final org.mybatis.spring.SqlSessionTemplate session;
+    public SqlSupport(org.mybatis.spring.SqlSessionTemplate session) {
+        this.session = session;
+        this.mapper = session.getMapper(SqlSupportMapper.class);
     }
+    public <T> T mapper(Class<T> type) { return session.getMapper(type); }
 
     /**
      * user 行锁与权限版本核验，写入以数据库当前事实为准。
      */
     public void actor(UserContext actor, boolean lock) {
-        if (lock) jdbc.queryForObject("SELECT id FROM system_control WHERE id=1 FOR UPDATE", Integer.class);
-        var rows = jdbc.query("SELECT * FROM users WHERE id=?" + (lock ? " FOR UPDATE" : ""), SqlSupport::user, actor.userId());
-        if (rows.isEmpty()) throw LabException.denied();
-        var u = rows.get(0);
+        if (lock) scalar(mapper.actorSystemControlSelect(new Object[]{}), Integer.class);
+        var row = mapper(com.example.ailab.data.persistence.mapper.UserMapper.class).selectCurrent(actor.userId(), lock);
+        if (row == null) throw LabException.denied();
+        var u = row.snapshot();
         if (!u.enabled() || u.role() != actor.role() || u.permissionVersion() != actor.permissionVersion() || u.passwordChangeRequired())
             throw LabException.denied();
     }
@@ -47,9 +44,9 @@ public class SqlSupport {
      */
     public KnowledgeBaseSnapshot owner(UserContext actor, long id, boolean enabled) {
         actor(actor, true);
-        var rows = jdbc.query("SELECT * FROM knowledge_bases WHERE id=? FOR UPDATE", SqlSupport::base, id);
-        if (rows.isEmpty()) throw LabException.denied();
-        var k = rows.get(0);
+        var row = mapper(com.example.ailab.data.persistence.mapper.KnowledgeBaseMapper.class).selectLocked(id);
+        if (row == null) throw LabException.denied();
+        var k = row.snapshot();
         if (k.deleted() || k.ownerUserId() != actor.userId() || enabled && !k.enabled()) throw LabException.denied();
         return k;
     }
@@ -57,42 +54,56 @@ public class SqlSupport {
     /**
      * 构建启用／删除／本人／选择范围条件；空列表永远不是 ALL。
      */
-    public String scope(AuthorizedKnowledgeScope scope, MapSqlParameterSource p) {
+    public void scope(AuthorizedKnowledgeScope scope, SqlParameters p) {
         actor(scope.actor(), false);
         p.addValue("actor", scope.actor().userId());
         if (scope.actor().role() != UserContext.Role.ADMIN && scope.mode() == ScopeRequest.Mode.ALL)
             throw LabException.denied();
-        String filter = "k.enabled=TRUE AND k.deleted=FALSE";
-        if (scope.actor().role() != UserContext.Role.ADMIN || scope.mode() == ScopeRequest.Mode.SELF)
-            filter += " AND k.owner_user_id=:actor";
-        if (scope.mode() == ScopeRequest.Mode.SELECTED) {
-            if (scope.knowledgeBaseIds().isEmpty()) filter += " AND 1=0";
-            else {
-                p.addValue("ids", scope.knowledgeBaseIds());
-                filter += " AND k.id IN (:ids)";
-            }
-        }
+        p.addValue("selfOnly", scope.actor().role() != UserContext.Role.ADMIN || scope.mode() == ScopeRequest.Mode.SELF);
+        p.addValue("selected", scope.mode() == ScopeRequest.Mode.SELECTED);
+        p.addValue("ids", scope.knowledgeBaseIds());
+        p.addValue("regularUser", scope.actor().role() != UserContext.Role.ADMIN);
+        p.addValue("owner", scope.ownerUserId());
         if (scope.ownerUserId() != null) {
             if (scope.actor().role() != UserContext.Role.ADMIN && scope.ownerUserId() != scope.actor().userId())
                 throw LabException.denied();
-            p.addValue("owner", scope.ownerUserId());
-            filter += " AND k.owner_user_id=:owner";
         }
-        return filter;
     }
 
-    /**
-     * 获取自增主键，不依赖 LAST_INSERT_ID 的连接外调用。
-     */
-    public long insert(String sql, Object... args) {
-        var key = new GeneratedKeyHolder();
-        jdbc.update(connection -> {
-            var statement = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
-            for (int i = 0; i < args.length; i++) statement.setObject(i + 1, args[i]);
-            return statement;
-        }, key);
-        return Objects.requireNonNull(key.getKey()).longValue();
+    @FunctionalInterface
+    public interface Projection<T> { T map(SqlRow row, int index); }
+
+    public <T> List<T> project(List<SqlRow> rows, Projection<T> projection) {
+        var result = new ArrayList<T>(rows.size());
+        for (int i = 0; i < rows.size(); i++) result.add(projection.map(rows.get(i), i));
+        return result;
     }
+
+    public <T> T one(List<T> rows) {
+        if (rows.size() != 1) throw new org.springframework.dao.IncorrectResultSizeDataAccessException(1, rows.size());
+        return rows.get(0);
+    }
+
+    public <T> T scalar(List<SqlRow> rows, Class<T> type) { return scalarValue(one(rows).value(1), type); }
+    public <T> List<T> scalars(List<SqlRow> rows, Class<T> type) {
+        return project(rows, (row, index) -> scalarValue(row.value(1), type));
+    }
+    private <T> T scalarValue(Object value, Class<T> type) {
+        if (value == null) return null;
+        if (type == Long.class && value instanceof Number number) return type.cast(number.longValue());
+        if (type == Integer.class && value instanceof Number number) return type.cast(number.intValue());
+        if (type == String.class) return type.cast(value.toString());
+        if (type == Timestamp.class && value instanceof LocalDateTime time) return type.cast(Timestamp.valueOf(time));
+        return type.cast(value);
+    }
+
+    public long insert(java.util.function.ToIntFunction<com.example.ailab.data.persistence.po.InsertCommand> statement, Object... args) {
+        var command = new com.example.ailab.data.persistence.po.InsertCommand(args);
+        if (statement.applyAsInt(command) != 1 || command.getId() == null)
+            throw new IllegalStateException("数据库未返回新增记录的主键");
+        return command.getId();
+    }
+
 
     /**
      * 规范化哈希输入，写操作不接受客户端提供的哈希作为事实。
@@ -106,45 +117,30 @@ public class SqlSupport {
     }
 
     /**
-     * data 内部行映射，返回契约而不是 PO。
-     */
-    public static UserSnapshot user(ResultSet r, int n) throws SQLException {
-        return new UserSnapshot(r.getLong("id"), r.getString("username"), UserContext.Role.valueOf(r.getString("role")), r.getBoolean("enabled"), r.getLong("permission_version"), r.getBoolean("password_change_required"));
-    }
-
-    /**
-     * 知识库快照转换。
-     */
-    public static KnowledgeBaseSnapshot base(ResultSet r, int n) throws SQLException {
-        return new KnowledgeBaseSnapshot(r.getLong("id"), r.getLong("owner_user_id"), r.getString("name"), r.getString("description"), r.getBoolean("enabled"), r.getBoolean("deleted"), r.getLong("version"));
-    }
-
-    /**
      * 原文元数据转换，不泄露路径或内部账号凭证。
      */
-    public static DocumentSnapshot document(ResultSet r, int n) throws SQLException {
-        return new DocumentSnapshot(r.getLong("id"), r.getLong("knowledge_base_id"), r.getLong("owner_user_id"), r.getString("title"), r.getString("format"), r.getInt("current_version"), r.getString("ingestion_status"), (Long) r.getObject("active_processing_revision"));
+    public static DocumentSnapshot document(SqlRow r, int n) {
+        return new DocumentSnapshot(r.longValue("id"), r.longValue("knowledge_base_id"), r.longValue("owner_user_id"), r.string("title"), r.string("format"), r.intValue("current_version"), r.string("ingestion_status"), (Long) r.value("active_processing_revision"));
     }
 
     /**
      * Outbox 与权威业务记录处于同一事务。
      */
     public void event(String type, long id, long version) {
-        jdbc.update("INSERT INTO outbox_events(event_type,resource_id,resource_version) VALUES(?,?,?)", type, id, version);
+        mapper.eventOutboxEventsWrite(new Object[]{type, id, version});
     }
 
     /** 全局知识纪元覆盖库／内容更新与处理激活；缓存不自行相信TTL。 */
     public long knowledgeEpoch() {
-        return jdbc.queryForObject("SELECT knowledge_epoch FROM system_control WHERE id=1", Long.class);
+        return scalar(mapper.knowledgeEpochSystemControlSelect(new Object[]{}), Long.class);
     }
 
     /** SELF／SELECTED至多一百库的版本摘要；ALL使用全局纪元，避免枚举无限范围。 */
     public String cacheScopeState(AuthorizedKnowledgeScope scope) {
-        var parameters = new MapSqlParameterSource();
-        String filter = scope(scope, parameters);
+        var parameters = new SqlParameters();
+        scope(scope, parameters);
         if (scope.mode() == ScopeRequest.Mode.ALL) return "ALL_EPOCH";
-        var versions = named.query("SELECT k.id,k.version FROM knowledge_bases k WHERE " + filter + " ORDER BY k.id LIMIT 101",
-                parameters, (r, n) -> r.getLong(1) + ":" + r.getLong(2));
+        var versions = project(mapper.cacheScopeStateKnowledgeBasesSelect(parameters), (r, n) -> r.longValue(1) + ":" + r.longValue(2));
         if (versions.size() > 100) throw LabException.invalid("缓存知识范围超限");
         return hash(versions.toString());
     }
@@ -164,9 +160,7 @@ public class SqlSupport {
         String selection = "{\"knowledgeBaseIds\":" + scope.knowledgeBaseIds()
                 + ",\"ownerUserId\":" + scope.ownerUserId() + "}";
         try {
-            jdbc.update("INSERT INTO knowledge_access_audit(actor_user_id,action,resource_id,scope_mode,permission_version,knowledge_epoch,result_count,outcome,scope_json,resource_ids_json) VALUES(?,?,?,?,?,?,?,'DELIVERABLE',?,?)",
-                    scope.actor().userId(), action, id, scope.mode().name(), scope.actor().permissionVersion(), knowledgeEpoch(), count,
-                    selection, resourceIds.stream().distinct().sorted().toList().toString());
+            mapper.auditKnowledgeAccessAuditWrite(new Object[]{scope.actor().userId(), action, id, scope.mode().name(), scope.actor().permissionVersion(), knowledgeEpoch(), count, selection, resourceIds.stream().distinct().sorted().toList().toString()});
         } catch (org.springframework.dao.DataAccessException unavailable) {
             throw new LabException("ACCESS_AUDIT_UNAVAILABLE", "访问审计暂不可用，结果未交付");
         }
@@ -176,6 +170,6 @@ public class SqlSupport {
      * 资料更新使 ALL 缓存 epoch 单调增加，检索候选缓存按新纪元失效，正文仍实时复核。
      */
     public void changed() {
-        jdbc.update("UPDATE system_control SET knowledge_epoch=knowledge_epoch+1 WHERE id=1");
+        mapper.changedSystemControlWrite(new Object[]{});
     }
 }

@@ -7,6 +7,10 @@ import com.baomidou.mybatisplus.annotation.*;
  */
 @TableName("users")
 public class UserPo {
+    public com.example.ailab.contract.dto.UserSnapshot snapshot() {
+        return new com.example.ailab.contract.dto.UserSnapshot(id, username,
+                com.example.ailab.contract.context.UserContext.Role.valueOf(role), enabled, permissionVersion, passwordChangeRequired);
+    }
     @TableId(type = IdType.AUTO)
     public Long id;
     public String username;

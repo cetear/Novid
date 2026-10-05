@@ -24,7 +24,7 @@ public final class S09NativeValidation {
         TimeZone.setDefault(TimeZone.getTimeZone("UTC"));var app=new SpringApplication(LabApplication.class);LocalEnvironmentLoader.initialize(app,Path.of(".env"));
         try(var context=app.run("--server.port=0","--server.address=127.0.0.1","--lab.bootstrap.enabled=false","--lab.task.worker-enabled=false","--lab.media.worker-enabled=false",
                 "--lab.ingestion.worker-enabled=false","--lab.governance.cleanup-enabled=false","--lab.observability.export-enabled=false","--lab.model.mode=mock","--lab.search.enabled=false","--spring.main.banner-mode=off","--logging.level.root=OFF")){
-            var sql=context.getBean(SqlSupport.class);var tasks=context.getBean(TaskStorePort.class);var media=context.getBean(MediaStorePort.class);var tx=new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
+            var sql=ValidationSql.from(context);var tasks=context.getBean(TaskStorePort.class);var media=context.getBean(MediaStorePort.class);var tx=new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
             var users=sql.jdbc.queryForList("SELECT id FROM users ORDER BY id",Long.class);var taskIds=sql.jdbc.queryForList("SELECT id FROM ai_tasks ORDER BY id",Long.class);
             for(int scenario=0;scenario<6;scenario++){
                 final int test=scenario;tx.executeWithoutResult(status->{try{
@@ -72,13 +72,13 @@ public final class S09NativeValidation {
         }
     }
     /** 不调用claim，显式执行权只属于当前事务新建的任务。 */
-    private static TaskLease lease(SqlSupport sql,TaskStorePort tasks,Fixture f,int fence){sql.jdbc.update("UPDATE ai_tasks SET status='RUNNING',worker_id='s09-fixture',fencing_token=?,claimed_at=CURRENT_TIMESTAMP(6),lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND) WHERE id=?",fence,f.id());return new TaskLease(tasks.read(f.actor(),f.id()),f.request(),f.actor(),"s09-fixture",fence);}
+    private static TaskLease lease(ValidationSql sql,TaskStorePort tasks,Fixture f,int fence){sql.jdbc.update("UPDATE ai_tasks SET status='RUNNING',worker_id='s09-fixture',fencing_token=?,claimed_at=CURRENT_TIMESTAMP(6),lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND) WHERE id=?",fence,f.id());return new TaskLease(tasks.read(f.actor(),f.id()),f.request(),f.actor(),"s09-fixture",fence);}
     /** 所有来源及脚本为SQL层合成夹具，故不宣称业务层真实资料规划已验。 */
-    private static Fixture fixture(SqlSupport sql,TaskStorePort tasks,MediaStorePort media,int count){
+    private static Fixture fixture(ValidationSql sql,TaskStorePort tasks,MediaStorePort media,int count){
         return fixture(sql,tasks,media,count,false);
     }
     /** 无声场景台词为空，验证新增数据库约束与正式审批链。 */
-    private static Fixture fixture(SqlSupport sql,TaskStorePort tasks,MediaStorePort media,int count,boolean silent){
+    private static Fixture fixture(ValidationSql sql,TaskStorePort tasks,MediaStorePort media,int count,boolean silent){
         long actorId=sql.insert("INSERT INTO users(username,password_hash,role,password_change_required) VALUES(?,'unused-fixture','USER',FALSE)","s09_"+UUID.randomUUID().toString().replace("-",""));var actor=new UserContext(actorId,UserContext.Role.USER,true,1,false);
         var request=new TaskRequest("NOTES_VIDEO","SQL合成镜头",new ScopeRequest(ScopeRequest.Mode.SELF,List.of(),null),List.of(),UUID.randomUUID().toString(),"PLANNED",null,new Media.VideoOptions("c","v","s",count*5,new BigDecimal("30"),count));
         var task=tasks.create(actor,request);var units=new ArrayList<Media.Unit>();var choices=new ArrayList<VideoApi.Selection>();

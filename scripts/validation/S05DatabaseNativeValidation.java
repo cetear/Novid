@@ -31,7 +31,7 @@ public final class S05DatabaseNativeValidation {
                 "--lab.search.enabled=false","--lab.bootstrap.enabled=false","--lab.task.worker-enabled=false",
                 "--lab.ingestion.worker-enabled=false","--lab.model.mode=mock",
                 "--spring.main.web-application-type=none","--spring.main.banner-mode=off","--logging.level.root=OFF")) {
-            var jdbc = context.getBean(JdbcTemplate.class); var sql = context.getBean(SqlSupport.class);
+            var jdbc = context.getBean(JdbcTemplate.class); var sql = ValidationSql.from(context);
             var before = counts(jdbc);
             var transaction = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
             transaction.executeWithoutResult(status -> {
@@ -100,7 +100,7 @@ public final class S05DatabaseNativeValidation {
         System.out.println(new ObjectMapper().writeValueAsString(evidence));
     }
     /** 新建合成管理员并认证，不读取任何已有账户。 */
-    private static UserContext actor(AccountApplicationService accounts,SqlSupport sql) {
+    private static UserContext actor(AccountApplicationService accounts,ValidationSql sql) {
         String name="s05-test-"+UUID.randomUUID().toString().substring(0,12);
         sql.insert("INSERT INTO users(username,password_hash,role,password_change_required) VALUES(?,?,'ADMIN',FALSE)",name,new BCryptPasswordEncoder(12).encode(PASSWORD));
         return accounts.authenticate(accounts.login(name,PASSWORD).token());

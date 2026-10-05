@@ -30,7 +30,7 @@ try {
 $classpath = "$runtimeRoot/classes;$runtimeRoot/*"
 # 正式包之外仅编译本专项入口；不会扫描或领取已有业务队列。
 $entryClass = 'S10NativeValidation'
-& javac -encoding UTF-8 -cp $classpath -d $runtimeRoot (Join-Path $PSScriptRoot ('validation/' + $entryClass + '.java'))
+& javac -encoding UTF-8 -cp $classpath -d $runtimeRoot (Join-Path $PSScriptRoot ('validation/' + $entryClass + '.java')) (Join-Path $PSScriptRoot 'validation/ValidationSql.java')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # 入口没有购买参数；媒体／报告／入库扫描全部关闭。
 if($Phase -eq 'all'){

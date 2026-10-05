@@ -24,7 +24,7 @@ try {
     }
 } finally { $archive.Dispose() }
 $classpath = "$runtimeRoot/classes;$runtimeRoot/*"
-& javac -encoding UTF-8 -cp $classpath -d $runtimeRoot (Join-Path $PSScriptRoot 'validation/SessionNativeValidation.java')
+& javac -encoding UTF-8 -cp $classpath -d $runtimeRoot (Join-Path $PSScriptRoot 'validation/SessionNativeValidation.java') (Join-Path $PSScriptRoot 'validation/ValidationSql.java')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # 新随机库优先；无建库权限时仅清本次生成的确定 ID；不领取已有入库、任务或清理队列。
 if ($Focused) {

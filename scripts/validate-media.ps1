@@ -26,7 +26,7 @@ try {
 $classpath = "$runtimeRoot/classes;$runtimeRoot/*"
 # 正式包之外仅编译本专项入口；不会扫描或领取已有业务队列。
 $entryClass = if ($PaidStage) { 'S09PaidValidation' } else { 'S09NativeValidation' }
-& javac -encoding UTF-8 -cp $classpath -d $runtimeRoot (Join-Path $PSScriptRoot ('validation/' + $entryClass + '.java'))
+& javac -encoding UTF-8 -cp $classpath -d $runtimeRoot (Join-Path $PSScriptRoot ('validation/' + $entryClass + '.java')) (Join-Path $PSScriptRoot 'validation/ValidationSql.java')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $reviewArgument = if ($AcceptSingle) { 'accept-single' } else { 'no-review' }
 

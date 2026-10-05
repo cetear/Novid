@@ -28,7 +28,7 @@ try {
         }
     } finally { $archive.Dispose() }
     $classpath = "$runtime/classes;$runtime/*;$runtime"
-    $sources = @('S11Inventory','S07NativeValidation','TaskProgressRollbackValidation','S08NativeValidation','S09NativeValidation','S10NativeValidation','BackendValidation') | ForEach-Object { Join-Path $PSScriptRoot "validation/$_.java" }
+    $sources = @('ValidationSql','S11Inventory','S07NativeValidation','TaskProgressRollbackValidation','S08NativeValidation','S09NativeValidation','S10NativeValidation','BackendValidation') | ForEach-Object { Join-Path $PSScriptRoot "validation/$_.java" }
     & javac -encoding UTF-8 -cp $classpath -d $runtime @sources
     if ($LASTEXITCODE -ne 0) { throw '专项编译失败' }
     & (Join-Path $PSScriptRoot 'start-api.ps1') -LoadEnvironmentOnly

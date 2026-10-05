@@ -179,7 +179,7 @@ public final class SessionNativeValidation {
 
     /** 构造唯一本次账户，不调用空库 bootstrap，不读取或修改已有管理员。 */
     private static void createAccounts() throws Exception {
-        SqlSupport sql = context.getBean(SqlSupport.class);
+        ValidationSql sql = ValidationSql.from(context);
         String hash = new BCryptPasswordEncoder(12).encode(PASSWORD);
         for (String role : List.of("USER", "USER", "ADMIN", "ADMIN")) {
             String name = "s01_" + SUFFIX + "_" + FIXTURE_USERS.size();
@@ -203,7 +203,7 @@ public final class SessionNativeValidation {
         long[] values = new long[2];
         var transaction = new TransactionTemplate(context.getBean(org.springframework.transaction.PlatformTransactionManager.class));
         transaction.executeWithoutResult(status -> {
-            SqlSupport sql = context.getBean(SqlSupport.class);
+            ValidationSql sql = ValidationSql.from(context);
             values[0] = sql.insert("INSERT INTO documents(knowledge_base_id,owner_user_id,title,format) VALUES(?,?,?,'md')", baseId, owner.userId(), "s01.md");
             jdbc.update("INSERT INTO document_versions(document_id,document_version,raw_text,checksum) VALUES(?,1,?,?)", values[0], FIXTURE_TEXT, SqlSupport.hash(FIXTURE_TEXT));
             values[1] = sql.insert("INSERT INTO document_ingestions(document_id,document_version,processing_revision,actor_user_id,status,attempt,worker_id,fencing_token,lease_until) VALUES(?,1,1,?,'PROCESSING',1,'s01-explicit-fixture',1,DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND))", values[0], owner.userId());

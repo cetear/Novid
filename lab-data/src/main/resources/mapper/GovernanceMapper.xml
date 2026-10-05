@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.ailab.data.persistence.mapper.GovernanceMapper">
+    <select id="auditsKnowledgeAccessAuditSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM knowledge_access_audit WHERE id&gt;#{args[0]} ORDER BY id LIMIT #{args[1]}
+    </select>
+
+    <select id="metricsAiRunsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) total,COALESCE(SUM(status NOT IN ('SUCCESS','RUNNING')),0) failed,COALESCE(SUM(incomplete),0) incomplete FROM ai_runs WHERE created_at&gt;=#{args[0]}
+    </select>
+
+    <select id="metricsKnowledgeAccessAuditSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) FROM knowledge_access_audit WHERE created_at&gt;=#{args[0]}
+    </select>
+
+    <select id="purgeSystemControlSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT id FROM system_control WHERE id=1 FOR UPDATE
+    </select>
+
+    <delete id="purgeAuthTokensWrite">
+        DELETE FROM auth_tokens WHERE expires_at&lt;#{args[0]} ORDER BY expires_at LIMIT #{args[1]}
+    </delete>
+
+    <select id="purgeRequestDeduplicationsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT actor_user_id,namespace,request_key FROM request_deduplications r WHERE expires_at&lt;#{args[0]} AND (namespace IN ('DOCUMENT_CREATE','SESSION_CREATE') OR namespace='TASK_CREATE' AND EXISTS (SELECT 1 FROM ai_tasks t WHERE t.id=r.resource_id AND t.requester_user_id=r.actor_user_id AND t.status IN ('SUCCEEDED','PARTIAL','FAILED','CANCELLED'))) ORDER BY expires_at LIMIT #{args[1]}
+    </select>
+
+    <delete id="purgeRequestDeduplicationsWrite">
+        DELETE FROM request_deduplications WHERE actor_user_id=#{args[0]} AND namespace=#{args[1]} AND request_key=#{args[2]}
+    </delete>
+
+    <delete id="purgeKnowledgeAccessAuditWrite">
+        DELETE FROM knowledge_access_audit WHERE created_at&lt;#{args[0]} ORDER BY created_at,id LIMIT #{args[1]}
+    </delete>
+
+    <select id="pruneStructureDocumentIngestionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT i.document_id,i.document_version,i.processing_revision FROM document_ingestions i JOIN documents d ON d.id=i.document_id JOIN document_versions v ON v.document_id=i.document_id AND v.document_version=i.document_version WHERE i.status='READY' AND i.created_at&lt;#{args[0]} AND (d.current_version&lt;&gt;i.document_version OR v.active_processing_revision IS NULL OR v.active_processing_revision&lt;&gt;i.processing_revision)<include refid="com.example.ailab.data.persistence.mapper.SqlSupportMapper.unreferencedStructure"/> AND EXISTS(SELECT 1 FROM document_sections s WHERE s.document_id=i.document_id AND s.document_version=i.document_version AND s.processing_revision=i.processing_revision) ORDER BY i.created_at,i.id LIMIT 1
+    </select>
+
+    <delete id="pruneStructureChunksWrite">
+        DELETE FROM chunks WHERE document_id=#{args[0]} AND document_version=#{args[1]} AND processing_revision=#{args[2]} LIMIT #{args[3]}
+    </delete>
+
+    <delete id="pruneStructureContextParentsWrite">
+        DELETE FROM context_parents WHERE document_id=#{args[0]} AND document_version=#{args[1]} AND processing_revision=#{args[2]} AND NOT EXISTS(SELECT 1 FROM chunks c WHERE c.parent_id=context_parents.parent_id) LIMIT #{args[3]}
+    </delete>
+
+    <delete id="pruneStructureDocumentSectionsWrite">
+        DELETE FROM document_sections WHERE document_id=#{args[0]} AND document_version=#{args[1]} AND processing_revision=#{args[2]} AND NOT EXISTS(SELECT 1 FROM context_parents p WHERE p.section_id=document_sections.section_id) LIMIT #{args[3]}
+    </delete>
+
+    <select id="queuedTaskCount" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT COUNT(*) FROM ai_tasks WHERE status='QUEUED'</select>
+    <select id="pendingEventCount" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT COUNT(*) FROM outbox_events WHERE status IN ('PENDING','PROCESSING')</select>
+</mapper>

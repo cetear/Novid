@@ -1,0 +1,62 @@
+package com.example.ailab.data.persistence.mapper;
+
+import com.example.ailab.data.persistence.po.*;
+import org.apache.ibatis.annotations.Param;
+import java.util.List;
+
+/** 自定义 SQL 由 MyBatis 执行，参数绑定与事务使用统一数据源。 */
+public interface TaskMapper {
+    List<SqlRow> createRequestDeduplicationsSelect(@Param("args") Object[] args);
+    List<SqlRow> createAiTasksSelect(@Param("args") Object[] args);
+    int createAiTasksInsert(@Param("insert") InsertCommand insert);
+    int createTaskStepProgressWrite(@Param("args") Object[] args);
+    int createRequestDeduplicationsWrite(@Param("args") Object[] args);
+    List<SqlRow> readAiTasksSelect(@Param("args") Object[] args);
+    List<SqlRow> actionMediaOperationsSelect(@Param("args") Object[] args);
+    int actionMediaOperationsWrite(@Param("args") Object[] args);
+    int actionAiTasksWrite(@Param("args") Object[] args);
+    int actionTaskStepProgressWrite(@Param("args") Object[] args);
+    int actionTaskStepProgressWrite2(@Param("args") Object[] args);
+    int actionTaskStepProgressWrite3(@Param("args") Object[] args);
+    List<SqlRow> claimInternalSystemControlSelect(@Param("args") Object[] args);
+    int claimInternalAiTasksWrite(@Param("args") Object[] args);
+    int claimInternalTaskStepProgressWrite(@Param("args") Object[] args);
+    int claimInternalAiTasksWrite2(@Param("args") Object[] args);
+    int claimInternalTaskStepProgressWrite2(@Param("args") Object[] args);
+    List<SqlRow> claimInternalAiTasksSelect(@Param("args") Object[] args, @Param("mediaQueue") boolean mediaQueue);
+    int claimInternalAiTasksWrite3(@Param("args") Object[] args);
+    int claimInternalTaskStepProgressWrite3(@Param("args") Object[] args);
+    List<SqlRow> claimInternalAiTasksSelect2(@Param("args") Object[] args);
+    int renewAiTasksWrite(@Param("args") Object[] args);
+    int beginStepTaskStepProgressWrite(@Param("args") Object[] args);
+    int completePreparationTaskStepProgressWrite(@Param("args") Object[] args);
+    int progressChangedAiTasksWrite(@Param("args") Object[] args);
+    int reserveModelAttemptAiTasksWrite(@Param("args") Object[] args);
+    int reserveModelTurnAiTasksWrite(@Param("args") Object[] args);
+    List<SqlRow> checkpointTaskStepsSelect(@Param("args") Object[] args);
+    int checkpointTaskStepsWrite(@Param("args") Object[] args);
+    int checkpointTaskStepProgressWrite(@Param("args") Object[] args);
+    int checkpointAiTasksWrite(@Param("args") Object[] args);
+    List<SqlRow> checkpointsTaskStepsSelect(@Param("args") Object[] args);
+    List<SqlRow> initializeCoverageDocumentSectionsSelect(@Param("args") Object[] args);
+    int initializeCoverageTaskDocumentCoverageWrite(@Param("args") Object[] args);
+    List<SqlRow> checkpointPageTaskDocumentPagesSelect(@Param("args") Object[] args);
+    int checkpointPageTaskDocumentCoverageWrite(@Param("args") Object[] args);
+    int checkpointPageTaskDocumentPagesWrite(@Param("args") Object[] args);
+    List<SqlRow> pagesTaskDocumentPagesSelect(@Param("args") Object[] args);
+    List<SqlRow> remainingModelTurnsAiTasksSelect(@Param("args") Object[] args);
+    List<SqlRow> readPlanTaskPlansSelect(@Param("args") Object[] args);
+    int savePlanTaskPlansWrite(@Param("args") Object[] args);
+    int reserveToolCallAiTasksWrite(@Param("args") Object[] args);
+    int reserveModelRepairAiTasksWrite(@Param("args") Object[] args);
+    List<SqlRow> validatePageDocumentSectionsSelect(@Param("args") Object[] args);
+    List<SqlRow> coverageTaskDocumentCoverageSelect(@Param("args") Object[] args);
+    int publishArtifactsInsert(@Param("insert") InsertCommand insert);
+    int publishTaskStepProgressWrite(@Param("args") Object[] args);
+    int publishAiTasksWrite(@Param("args") Object[] args);
+    int failAiTasksWrite(@Param("args") Object[] args);
+    int failTaskStepProgressWrite(@Param("args") Object[] args);
+    List<SqlRow> artifactArtifactsSelect(@Param("args") Object[] args);
+    List<SqlRow> validAiTasksSelect(@Param("args") Object[] args);
+    List<SqlRow> taskTaskStepProgressSelect(@Param("args") Object[] args);
+}

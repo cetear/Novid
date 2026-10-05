@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.ailab.data.persistence.mapper.SessionMapper">
+    <select id="createRequestDeduplicationsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT request_hash,resource_id FROM request_deduplications WHERE actor_user_id=#{args[0]} AND namespace='SESSION_CREATE' AND request_key=#{args[1]}
+    </select>
+
+    <select id="createSessionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) FROM sessions WHERE user_id=#{args[0]} AND deleted=FALSE
+    </select>
+
+    <insert id="createSessionsInsert" useGeneratedKeys="true" keyProperty="insert.id" keyColumn="id">
+        INSERT INTO sessions(user_id,title,scope_json) VALUES(#{insert.args[0]},#{insert.args[1]},#{insert.args[2]})
+    </insert>
+
+    <insert id="createRequestDeduplicationsWrite">
+        INSERT INTO request_deduplications(actor_user_id,namespace,request_key,request_hash,resource_id,expires_at) VALUES(#{args[0]},'SESSION_CREATE',#{args[1]},#{args[2]},#{args[3]},DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 7 DAY))
+    </insert>
+
+    <select id="listSessionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT id,title,version,scope_json,created_at,updated_at FROM sessions WHERE user_id=#{args[0]} AND deleted=FALSE ORDER BY id DESC LIMIT #{args[1]} OFFSET #{args[2]}
+    </select>
+
+    <select id="readSessionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT id,title,version,scope_json,created_at,updated_at FROM sessions WHERE id=#{args[0]} AND user_id=#{args[1]} AND deleted=FALSE
+    </select>
+
+    <select id="deleteSessionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT version FROM sessions WHERE id=#{args[0]} AND user_id=#{args[1]} AND deleted=FALSE FOR UPDATE
+    </select>
+
+    <delete id="deleteMessagesWrite">
+        DELETE FROM messages WHERE session_id=#{args[0]} AND user_id=#{args[1]}
+    </delete>
+
+    <update id="deleteSessionsWrite">
+        UPDATE sessions SET deleted=TRUE,title='',version=version+1,scope_json=#{args[0]},context_floor_seq=next_seq-1,execution_id=NULL,lease_until=NULL,summary_content=NULL,summary_covered_through_seq=NULL,summary_source_json=NULL WHERE id=#{args[1]} AND user_id=#{args[2]}
+    </update>
+
+    <update id="beginSessionsWrite">
+        UPDATE sessions SET scope_json=#{args[0]},context_floor_seq=next_seq-1,summary_content=NULL,summary_covered_through_seq=NULL,summary_source_json=NULL WHERE id=#{args[1]}
+    </update>
+
+    <update id="beginSessionsWrite2">
+        UPDATE sessions SET execution_id=#{args[0]},lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 75 SECOND) WHERE id=#{args[1]} AND user_id=#{args[2]} AND version=#{args[3]} AND (lease_until IS NULL OR lease_until&lt;=CURRENT_TIMESTAMP(6)) AND deleted=FALSE
+    </update>
+
+    <insert id="completeMessagesWrite">
+        INSERT INTO messages(session_id,user_id,seq,role,status,content,source_json,source_reference_json,scope_json,tool_call_id,tool_name) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]},#{args[8]},#{args[9]},#{args[10]})
+    </insert>
+
+    <update id="completeSessionsWrite">
+        UPDATE sessions SET summary_content=#{args[0]},summary_covered_through_seq=#{args[1]},summary_source_json=#{args[2]} WHERE id=#{args[3]}
+    </update>
+
+    <update id="completeSessionsWrite2">
+        UPDATE sessions SET summary_content=NULL,summary_covered_through_seq=NULL,summary_source_json=NULL WHERE id=#{args[0]}
+    </update>
+
+    <update id="completeSessionsWrite3">
+        UPDATE sessions SET next_seq=next_seq+#{args[0]},version=version+1,execution_id=NULL,lease_until=NULL WHERE id=#{args[1]} AND user_id=#{args[2]} AND version=#{args[3]} AND execution_id=#{args[4]} AND lease_until&gt;CURRENT_TIMESTAMP(6) AND CURRENT_TIMESTAMP(6)&lt;#{args[5]} AND deleted=FALSE
+    </update>
+
+    <select id="completeRowsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT CURRENT_TIMESTAMP(6)
+    </select>
+
+    <select id="verifyDeliveryMessagesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM messages WHERE session_id=#{args[0]} AND user_id=#{args[1]} AND role='ASSISTANT' ORDER BY seq DESC LIMIT 1
+    </select>
+
+    <select id="verifyHistoryDeliveryMessagesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM messages WHERE session_id=#{args[0]} AND user_id=#{args[1]} AND seq=#{args[2]}
+    </select>
+
+    <select id="abortSessionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT id FROM sessions WHERE id=#{args[0]} AND user_id=#{args[1]} FOR UPDATE
+    </select>
+
+    <update id="abortSessionsWrite">
+        UPDATE sessions SET execution_id=NULL,lease_until=NULL,version=version+1 WHERE id=#{args[0]} AND user_id=#{args[1]} AND version=#{args[2]} AND execution_id=#{args[3]} AND deleted=FALSE
+    </update>
+
+    <select id="loadSessionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT s.*,CURRENT_TIMESTAMP(6) AS server_now FROM sessions s WHERE id=#{args[0]} AND user_id=#{args[1]} AND deleted=FALSE<if test="lock"> FOR UPDATE</if>
+    </select>
+
+    <select id="queryMessagesMessagesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM messages WHERE session_id=#{args[0]} AND user_id=#{args[1]} AND seq&gt;#{args[2]} ORDER BY seq <choose><when test="reverse">DESC</when><otherwise>ASC</otherwise></choose> LIMIT #{args[3]}
+    </select>
+
+    <insert id="insertMessageMessagesWrite">
+        INSERT INTO messages(session_id,user_id,seq,role,status,content,source_json,source_reference_json,scope_json) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]},#{args[8]})
+    </insert>
+
+    <select id="walkSourcesDocumentsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) FROM documents d JOIN knowledge_bases k ON k.id=d.knowledge_base_id WHERE d.id=#{params.document} AND d.knowledge_base_id=#{params.base} AND d.current_version=#{params.version} AND d.deleted=FALSE AND <include refid="com.example.ailab.data.persistence.mapper.SqlSupportMapper.knowledgeScope"/>
+    </select>
+
+    <select id="validateScopeKnowledgeBasesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) FROM knowledge_bases k WHERE <include refid="com.example.ailab.data.persistence.mapper.SqlSupportMapper.knowledgeScope"/>
+    </select>
+
+    <select id="verifyReferenceDocumentsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT v.raw_text,v.active_processing_revision FROM documents d JOIN document_versions v ON v.document_id=d.id AND v.document_version=d.current_version WHERE d.id=#{args[0]} AND d.knowledge_base_id=#{args[1]} AND d.current_version=#{args[2]} AND d.deleted=FALSE
+    </select>
+
+    <select id="verifyReferenceDocumentSectionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) FROM document_sections WHERE section_id=#{args[0]} AND document_id=#{args[1]} AND document_version=#{args[2]} AND processing_revision=#{args[3]}
+    </select>
+</mapper>

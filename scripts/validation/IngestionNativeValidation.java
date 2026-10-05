@@ -101,7 +101,7 @@ public final class IngestionNativeValidation {
     private static IngestionLease fixture(String text) {
         long[] ids=new long[2];
         new TransactionTemplate(context.getBean(org.springframework.transaction.PlatformTransactionManager.class)).executeWithoutResult(status->{
-            var sql=context.getBean(SqlSupport.class);sql.actor(owner,true);
+            var sql=ValidationSql.from(context);sql.actor(owner,true);
             ids[0]=sql.insert("INSERT INTO documents(knowledge_base_id,owner_user_id,title,format) VALUES(?,?,?,'txt')",baseId,owner.userId(),"S03 synthetic");DOCUMENTS.add(ids[0]);
             jdbc.update("INSERT INTO document_versions(document_id,document_version,raw_text,checksum) VALUES(?,1,?,?)",ids[0],text,SqlSupport.hash(text));
             ids[1]=sql.insert("INSERT INTO document_ingestions(document_id,document_version,processing_revision,actor_user_id,status,attempt,worker_id,fencing_token,lease_until,execution_deadline) VALUES(?,1,1,?,'PROCESSING',1,'s03-explicit',1,DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND),DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 600 SECOND))",ids[0],owner.userId());
@@ -335,7 +335,7 @@ public final class IngestionNativeValidation {
 
     /** 构造唯一本次账户，不调用空库 bootstrap，不读取或修改已有管理员。 */
     private static void createAccounts() throws Exception {
-        SqlSupport sql = context.getBean(SqlSupport.class);
+        ValidationSql sql = ValidationSql.from(context);
         String hash = new BCryptPasswordEncoder(12).encode(PASSWORD);
         for (String role : List.of("USER", "USER", "ADMIN", "ADMIN")) {
             String name = "s03_" + SUFFIX + "_" + FIXTURE_USERS.size();

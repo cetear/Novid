@@ -8,6 +8,7 @@ import java.sql.SQLException;
 
 /**
  * 架构限定 MySQL 8.4；迁移前检查实际服务，避免在不兼容数据库上写入半套表结构。
+ * 数据库产品／版本元信息使用 JDBC DatabaseMetaData；业务 SQL 统一由 Mapper 执行。
  */
 @Component
 public class VersionedDatabaseMigration implements FlywayMigrationStrategy {

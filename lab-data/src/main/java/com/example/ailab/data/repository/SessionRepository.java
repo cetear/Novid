@@ -1,18 +1,18 @@
 package com.example.ailab.data.repository;
 
+import com.example.ailab.data.persistence.mapper.SessionMapper;
+import com.example.ailab.data.persistence.po.SqlRow;
 import com.example.ailab.contract.context.UserContext;
 import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.error.LabException;
 import com.example.ailab.contract.port.SessionStorePort;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import com.example.ailab.data.persistence.po.SqlParameters;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.*;
@@ -20,13 +20,14 @@ import java.util.*;
 /** 私有完整会话存储；执行租约跨远程调用，数据库锁只存在于短写事务。 */
 @Repository
 public class SessionRepository implements SessionStorePort {
+    private final SessionMapper mapper;
     private final SqlSupport sql;
     private final DocumentSqlRepository documents;
     private final ObjectMapper json = new ObjectMapper();
 
     /** 使用数据模块内部组件，其他模块仅依赖框架无关的窄端口。 */
     public SessionRepository(SqlSupport sql, DocumentSqlRepository documents) {
-        this.sql = sql;
+        this.sql = sql; this.mapper = sql.mapper(SessionMapper.class);
         this.documents = documents;
     }
 
@@ -37,17 +38,15 @@ public class SessionRepository implements SessionStorePort {
         validateCreate(title, idempotencyKey);
         sql.actor(actor, true);
         String hash = SqlSupport.hash(title.length() + ":" + title);
-        var existing = sql.jdbc.query("SELECT request_hash,resource_id FROM request_deduplications WHERE actor_user_id=? AND namespace='SESSION_CREATE' AND request_key=?",
-                (r, n) -> Map.entry(r.getString(1), r.getLong(2)), actor.userId(), idempotencyKey);
+        var existing = sql.project(mapper.createRequestDeduplicationsSelect(new Object[]{actor.userId(), idempotencyKey}), (r, n) -> Map.entry(r.string(1), r.longValue(2)));
         if (!existing.isEmpty()) {
             if (!existing.get(0).getKey().equals(hash)) throw new LabException("OPERATION_CONFLICT", "相同会话去重键的参数不同");
             return load(actor, existing.get(0).getValue(), false).snapshot();
         }
-        long count = sql.jdbc.queryForObject("SELECT COUNT(*) FROM sessions WHERE user_id=? AND deleted=FALSE", Long.class, actor.userId());
+        long count = sql.scalar(mapper.createSessionsSelect(new Object[]{actor.userId()}), Long.class);
         if (count >= 100) throw new LabException("RATE_LIMITED", "每人最多 100 个未删除会话");
-        long id = sql.insert("INSERT INTO sessions(user_id,title,scope_json) VALUES(?,?,?)", actor.userId(), title, encode(ScopeRequest.self()));
-        sql.jdbc.update("INSERT INTO request_deduplications(actor_user_id,namespace,request_key,request_hash,resource_id,expires_at) VALUES(?,'SESSION_CREATE',?,?,?,DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 7 DAY))",
-                actor.userId(), idempotencyKey, hash, id);
+        long id = sql.insert(command -> mapper.createSessionsInsert(command), actor.userId(), title, encode(ScopeRequest.self()));
+        mapper.createRequestDeduplicationsWrite(new Object[]{actor.userId(), idempotencyKey, hash, id});
         return load(actor, id, false).snapshot();
     }
 
@@ -56,16 +55,14 @@ public class SessionRepository implements SessionStorePort {
     public List<SessionSnapshot> list(UserContext actor, int offset, int limit) {
         page(offset, limit);
         sql.actor(actor, false);
-        return sql.jdbc.query("SELECT id,title,version,scope_json,created_at,updated_at FROM sessions WHERE user_id=? AND deleted=FALSE ORDER BY id DESC LIMIT ? OFFSET ?",
-                this::snapshot, actor.userId(), limit, offset);
+        return sql.project(mapper.listSessionsSelect(new Object[]{actor.userId(), limit, offset}), this::snapshot);
     }
 
     /** 直接 ID 读取也要求当前身份及本人归属。 */
     @Override
     public SessionSnapshot read(UserContext actor, long id) {
         sql.actor(actor, false);
-        return sql.jdbc.query("SELECT id,title,version,scope_json,created_at,updated_at FROM sessions WHERE id=? AND user_id=? AND deleted=FALSE",
-                this::snapshot, id, actor.userId()).stream().findFirst().orElseThrow(LabException::denied);
+        return sql.project(mapper.readSessionsSelect(new Object[]{id, actor.userId()}), this::snapshot).stream().findFirst().orElseThrow(LabException::denied);
     }
 
     /** 返回完整原始历史；business 交付正文前再按该事件范围及来源过滤。 */
@@ -82,13 +79,12 @@ public class SessionRepository implements SessionStorePort {
     @Transactional
     public void delete(UserContext actor, long id, long version) {
         sql.actor(actor, true);
-        var versions = sql.jdbc.query("SELECT version FROM sessions WHERE id=? AND user_id=? AND deleted=FALSE FOR UPDATE", (r, n) -> r.getLong(1), id, actor.userId());
+        var versions = sql.project(mapper.deleteSessionsSelect(new Object[]{id, actor.userId()}), (r, n) -> r.longValue(1));
         if (versions.isEmpty()) throw LabException.denied();
         if (version < 1 || versions.get(0) != version) throw conflict("会话版本已变化");
-        sql.jdbc.update("DELETE FROM messages WHERE session_id=? AND user_id=?", id, actor.userId());
+        mapper.deleteMessagesWrite(new Object[]{id, actor.userId()});
         // 不删 sessions 和 request_deduplications，七天去重事实不能复活已删内容。
-        sql.jdbc.update("UPDATE sessions SET deleted=TRUE,title='',version=version+1,scope_json=?,context_floor_seq=next_seq-1,execution_id=NULL,lease_until=NULL,summary_content=NULL,summary_covered_through_seq=NULL,summary_source_json=NULL WHERE id=? AND user_id=?",
-                encode(ScopeRequest.self()), id, actor.userId());
+        mapper.deleteSessionsWrite(new Object[]{encode(ScopeRequest.self()), id, actor.userId()});
     }
 
     /** 领取 UUID 执行权，版本只在成功／失败释放时递增，远程期间不持任何行锁。 */
@@ -104,11 +100,9 @@ public class SessionRepository implements SessionStorePort {
         String execution = UUID.randomUUID().toString();
         if (!row.snapshot().scope().equals(scope)) {
             // 无来源的统计也可能含旧范围信息，范围改变时保守舍弃整个派生窗口。
-            sql.jdbc.update("UPDATE sessions SET scope_json=?,context_floor_seq=next_seq-1,summary_content=NULL,summary_covered_through_seq=NULL,summary_source_json=NULL WHERE id=?",
-                    encode(scope), id);
+            mapper.beginSessionsWrite(new Object[]{encode(scope), id});
         }
-        int changed = sql.jdbc.update("UPDATE sessions SET execution_id=?,lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 75 SECOND) WHERE id=? AND user_id=? AND version=? AND (lease_until IS NULL OR lease_until<=CURRENT_TIMESTAMP(6)) AND deleted=FALSE",
-                execution, id, actor.userId(), version);
+        int changed = mapper.beginSessionsWrite2(new Object[]{execution, id, actor.userId(), version});
         if (changed != 1) throw conflict("会话执行权已变化");
         var claimed = load(actor, id, false);
         return new SessionLease(id, execution, version, claimed.leaseUntil(), scope, claimed.contextFloorSeq());
@@ -218,25 +212,21 @@ public class SessionRepository implements SessionStorePort {
         long seq = row.nextSeq() + 1;
         for (var event : exchanges) {
             for (String role : List.of("TOOL_REQUEST", "TOOL_RESULT")) {
-                sql.jdbc.update("INSERT INTO messages(session_id,user_id,seq,role,status,content,source_json,source_reference_json,scope_json,tool_call_id,tool_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                        lease.sessionId(), actor.userId(), seq++, role, result.status(), role.equals("TOOL_REQUEST") ? event.arguments() : event.result(),
-                        sourceJson, referenceJson, scopeJson, event.toolCallId(), event.toolName());
+                mapper.completeMessagesWrite(new Object[]{lease.sessionId(), actor.userId(), seq++, role, result.status(), role.equals("TOOL_REQUEST") ? event.arguments() : event.result(), sourceJson, referenceJson, scopeJson, event.toolCallId(), event.toolName()});
             }
         }
         insertMessage(actor, lease, seq, "ASSISTANT", result.status(), result.answer(), sourceJson, referenceJson, scopeJson);
         if (summary != null) {
             var summarySources = verifySources(actor, lease.scope(), summary.sourceDependencies());
-            sql.jdbc.update("UPDATE sessions SET summary_content=?,summary_covered_through_seq=?,summary_source_json=? WHERE id=?",
-                    summary.content(), summary.coveredThroughSeq(), encode(summarySources), lease.sessionId());
+            mapper.completeSessionsWrite(new Object[]{summary.content(), summary.coveredThroughSeq(), encode(summarySources), lease.sessionId()});
         } else {
             // AI 已过滤失效旧摘要或暂无摘要，彻底清除旧派生内容，下一轮不能反复复用。
-            sql.jdbc.update("UPDATE sessions SET summary_content=NULL,summary_covered_through_seq=NULL,summary_source_json=NULL WHERE id=?", lease.sessionId());
+            mapper.completeSessionsWrite2(new Object[]{lease.sessionId()});
         }
-        int changed = sql.jdbc.update("UPDATE sessions SET next_seq=next_seq+?,version=version+1,execution_id=NULL,lease_until=NULL WHERE id=? AND user_id=? AND version=? AND execution_id=? AND lease_until>CURRENT_TIMESTAMP(6) AND CURRENT_TIMESTAMP(6)<? AND deleted=FALSE",
-                2 + exchanges.size() * 2, lease.sessionId(), actor.userId(), lease.version(), lease.executionId(), Timestamp.from(requestDeadline));
+        int changed = mapper.completeSessionsWrite3(new Object[]{2 + exchanges.size() * 2, lease.sessionId(), actor.userId(), lease.version(), lease.executionId(), Timestamp.from(requestDeadline)});
         if (changed != 1) {
             // 后续来源查询／消息写入也可能耗时；最终 CAS 失败会回滚已插入的整对事件。
-            Instant serverNow = sql.jdbc.queryForObject("SELECT CURRENT_TIMESTAMP(6)", Timestamp.class).toInstant();
+            Instant serverNow = sql.scalar(mapper.completeRowsSelect(new Object[]{}), Timestamp.class).toInstant();
             if (!serverNow.isBefore(requestDeadline)) throw deadlineExceeded();
             throw stale();
         }
@@ -251,8 +241,7 @@ public class SessionRepository implements SessionStorePort {
         var row = load(actor, id, true);
         version(row, version);
         validateScope(actor, normalize(actor, row.snapshot().scope()));
-        var last = sql.jdbc.query("SELECT * FROM messages WHERE session_id=? AND user_id=? AND role='ASSISTANT' ORDER BY seq DESC LIMIT 1",
-                this::message, id, actor.userId()).stream().findFirst().orElseThrow(() -> conflict("会话尚无可交付答案"));
+        var last = sql.project(mapper.verifyDeliveryMessagesSelect(new Object[]{id, actor.userId()}), this::message).stream().findFirst().orElseThrow(() -> conflict("会话尚无可交付答案"));
         if (!last.scope().equals(row.snapshot().scope())) throw conflict("会话范围已变化");
         verifySources(actor, row.snapshot().scope(), last.sourceDependencies());
         for (var reference : last.sourceReferences()) verifyReference(reference, null);
@@ -274,8 +263,7 @@ public class SessionRepository implements SessionStorePort {
             if (visible == null || visible.seq() <= 0) throw LabException.invalid("历史交付序号无效");
             if ("RESTRICTED".equals(visible.status())) continue;
             // 可见集合由 business 过滤，但来源仍从 SQL 重读，不能相信转交对象已经携带完整依赖。
-            var message = sql.jdbc.query("SELECT * FROM messages WHERE session_id=? AND user_id=? AND seq=?", this::message,
-                    id, actor.userId(), visible.seq()).stream().findFirst().orElseThrow(LabException::denied);
+            var message = sql.project(mapper.verifyHistoryDeliveryMessagesSelect(new Object[]{id, actor.userId(), visible.seq()}), this::message).stream().findFirst().orElseThrow(LabException::denied);
             validateScope(actor, normalize(actor, message.scope()));
             verifySources(actor, currentScope, message.sourceDependencies());
             for (var reference : message.sourceReferences()) verifyReference(reference, null);
@@ -288,11 +276,10 @@ public class SessionRepository implements SessionStorePort {
     public void abort(UserContext actor, SessionLease lease) {
         sql.actor(actor, true);
         // 外人即使掌握完整租约对象也必须统一拒绝，旧本人执行者只会零行释放。
-        var owners = sql.jdbc.query("SELECT id FROM sessions WHERE id=? AND user_id=? FOR UPDATE", (r, n) -> r.getLong(1), lease.sessionId(), actor.userId());
+        var owners = sql.project(mapper.abortSessionsSelect(new Object[]{lease.sessionId(), actor.userId()}), (r, n) -> r.longValue(1));
         if (owners.isEmpty()) throw LabException.denied();
         // 到期也可清理自己的 UUID；一旦新请求取得 UUID，此条件就不会再匹配。
-        sql.jdbc.update("UPDATE sessions SET execution_id=NULL,lease_until=NULL,version=version+1 WHERE id=? AND user_id=? AND version=? AND execution_id=? AND deleted=FALSE",
-                lease.sessionId(), actor.userId(), lease.version(), lease.executionId());
+        mapper.abortSessionsWrite(new Object[]{lease.sessionId(), actor.userId(), lease.version(), lease.executionId()});
     }
 
     /** 固定全局／用户／会话锁顺序，并以数据库时间验证执行权，拒绝过期结果。 */
@@ -309,21 +296,18 @@ public class SessionRepository implements SessionStorePort {
 
     /** 本人过滤写在 SQL 里，知道 ID 也不能推断他人的会话是否存在。 */
     private SessionRow load(UserContext actor, long id, boolean lock) {
-        return sql.jdbc.query("SELECT s.*,CURRENT_TIMESTAMP(6) AS server_now FROM sessions s WHERE id=? AND user_id=? AND deleted=FALSE" + (lock ? " FOR UPDATE" : ""),
-                this::row, id, actor.userId()).stream().findFirst().orElseThrow(LabException::denied);
+        return sql.project(mapper.loadSessionsSelect(new Object[]{id, actor.userId()}, lock), this::row).stream().findFirst().orElseThrow(LabException::denied);
     }
 
     /** 窗口查询始终带本人字段与序号下界，倒序读取由 recent 恢复自然顺序。 */
     private List<SessionMessage> queryMessages(UserContext actor, long id, long afterSeq, int limit, boolean reverse) {
-        return sql.jdbc.query("SELECT * FROM messages WHERE session_id=? AND user_id=? AND seq>? ORDER BY seq " + (reverse ? "DESC" : "ASC") + " LIMIT ?",
-                this::message, id, actor.userId(), afterSeq, limit);
+        return sql.project(mapper.queryMessagesMessagesSelect(new Object[]{id, actor.userId(), afterSeq, limit}, reverse), this::message);
     }
 
     /** 每条事件写入服务器来源、原始范围及确定成功状态，工具字段只预留。 */
     private void insertMessage(UserContext actor, SessionLease lease, long seq, String role, String status, String content,
                                String sources, String references, String scope) {
-        sql.jdbc.update("INSERT INTO messages(session_id,user_id,seq,role,status,content,source_json,source_reference_json,scope_json) VALUES(?,?,?,?,?,?,?,?,?)",
-                lease.sessionId(), actor.userId(), seq, role, status, content, sources, references, scope);
+        mapper.insertMessageMessagesWrite(new Object[]{lease.sessionId(), actor.userId(), seq, role, status, content, sources, references, scope});
     }
 
     /** 来源递归去重、当前内容版本与当前范围都由权威 SQL 重核，global 锁阻止并发撤销。 */
@@ -344,12 +328,11 @@ public class SessionRepository implements SessionStorePort {
             if (path.contains(key)) throw mapping("来源依赖环");
             if (flattened.contains(source)) continue;
             if (flattened.size() >= 32) throw mapping("来源总数超过 32 项");
-            var parameters = new MapSqlParameterSource().addValue("document", source.documentId())
+            var parameters = new SqlParameters().addValue("document", source.documentId())
                     .addValue("base", source.knowledgeBaseId()).addValue("version", source.documentVersion());
             var authorized = new AuthorizedKnowledgeScope(actor, scope.mode(), scope.knowledgeBaseIds(), scope.ownerUserId(), Instant.now());
-            String filter = sql.scope(authorized, parameters);
-            int count = sql.named.queryForObject("SELECT COUNT(*) FROM documents d JOIN knowledge_bases k ON k.id=d.knowledge_base_id WHERE d.id=:document AND d.knowledge_base_id=:base AND d.current_version=:version AND d.deleted=FALSE AND " + filter,
-                    parameters, Integer.class);
+            sql.scope(authorized, parameters);
+            int count = sql.scalar(mapper.walkSourcesDocumentsSelect(parameters), Integer.class);
             if (count != 1) throw LabException.denied();
             flattened.add(source);
             path.add(key);
@@ -372,18 +355,16 @@ public class SessionRepository implements SessionStorePort {
     /** 即使无来源的统计／澄清结果也要重核当前完整 SELECTED；禁用其中任一库则整体拒绝。 */
     private void validateScope(UserContext actor, ScopeRequest scope) {
         if (scope.mode() != ScopeRequest.Mode.SELECTED || scope.knowledgeBaseIds().isEmpty()) return;
-        var parameters = new MapSqlParameterSource();
-        String filter = sql.scope(new AuthorizedKnowledgeScope(actor, scope.mode(), scope.knowledgeBaseIds(), scope.ownerUserId(), Instant.now()), parameters);
-        int count = sql.named.queryForObject("SELECT COUNT(*) FROM knowledge_bases k WHERE " + filter, parameters, Integer.class);
+        var parameters = new SqlParameters();
+        sql.scope(new AuthorizedKnowledgeScope(actor, scope.mode(), scope.knowledgeBaseIds(), scope.ownerUserId(), Instant.now()), parameters);
+        int count = sql.scalar(mapper.validateScopeKnowledgeBasesSelect(parameters), Integer.class);
         if (count != scope.knowledgeBaseIds().size()) throw LabException.denied();
     }
 
     /** 原文版本、激活代次、章节归属和 UTF-16 范围事务内复核，拒绝处理重启后的迟到证据。 */
     private void verifyReference(SessionSource reference, String expectedText) {
         var dependency = reference.dependency();
-        var versions = sql.jdbc.query("SELECT v.raw_text,v.active_processing_revision FROM documents d JOIN document_versions v ON v.document_id=d.id AND v.document_version=d.current_version WHERE d.id=? AND d.knowledge_base_id=? AND d.current_version=? AND d.deleted=FALSE",
-                (r, n) -> new CurrentDocument(r.getString("raw_text"), (Long) r.getObject("active_processing_revision")),
-                dependency.documentId(), dependency.knowledgeBaseId(), dependency.documentVersion());
+        var versions = sql.project(mapper.verifyReferenceDocumentsSelect(new Object[]{dependency.documentId(), dependency.knowledgeBaseId(), dependency.documentVersion()}), (r, n) -> new CurrentDocument(r.string("raw_text"), (Long) r.value("active_processing_revision")));
         if (versions.isEmpty()) throw LabException.denied();
         var current = versions.get(0);
         if (reference.processingRevision() != null && (reference.processingRevision() < 1
@@ -397,8 +378,7 @@ public class SessionRepository implements SessionStorePort {
         } else if (expectedText != null) throw mapping("引用正文缺少原文位置");
         if (reference.sectionId() != null) {
             if (reference.processingRevision() == null) throw mapping("引用章节缺少处理代次");
-            int sections = sql.jdbc.queryForObject("SELECT COUNT(*) FROM document_sections WHERE section_id=? AND document_id=? AND document_version=? AND processing_revision=?",
-                    Integer.class, reference.sectionId(), dependency.documentId(), dependency.documentVersion(), reference.processingRevision());
+            int sections = sql.scalar(mapper.verifyReferenceDocumentSectionsSelect(new Object[]{reference.sectionId(), dependency.documentId(), dependency.documentVersion(), reference.processingRevision()}), Integer.class);
             if (sections != 1) throw mapping("引用章节不属于当前资料");
         }
     }
@@ -416,32 +396,32 @@ public class SessionRepository implements SessionStorePort {
     }
 
     /** 会话行只在 data 内保留租约与序号，快照交付时不泄露执行 UUID。 */
-    private SessionRow row(ResultSet r, int n) throws SQLException {
+    private SessionRow row(SqlRow r, int n) {
         var snapshot = snapshot(r, n);
-        String summaryContent = r.getString("summary_content");
-        var summary = summaryContent == null ? null : new SessionSummary(summaryContent, r.getLong("summary_covered_through_seq"),
-                decode(r.getString("summary_source_json"), new TypeReference<List<SourceDependency>>() {}));
-        return new SessionRow(snapshot, r.getLong("next_seq"), r.getLong("context_floor_seq"), r.getString("execution_id"),
+        String summaryContent = r.string("summary_content");
+        var summary = summaryContent == null ? null : new SessionSummary(summaryContent, r.longValue("summary_covered_through_seq"),
+                decode(r.string("summary_source_json"), new TypeReference<List<SourceDependency>>() {}));
+        return new SessionRow(snapshot, r.longValue("next_seq"), r.longValue("context_floor_seq"), r.string("execution_id"),
                 instant(r, "lease_until"), instant(r, "server_now"), summary);
     }
 
     /** 元数据映射不读取任何消息或摘要正文，列表和直接读取只返回本人会话信息。 */
-    private SessionSnapshot snapshot(ResultSet r, int n) throws SQLException {
-        return new SessionSnapshot(r.getLong("id"), r.getString("title"), r.getLong("version"),
-                decode(r.getString("scope_json"), ScopeRequest.class), instant(r, "created_at"), instant(r, "updated_at"));
+    private SessionSnapshot snapshot(SqlRow r, int n) {
+        return new SessionSnapshot(r.longValue("id"), r.string("title"), r.longValue("version"),
+                decode(r.string("scope_json"), ScopeRequest.class), instant(r, "created_at"), instant(r, "updated_at"));
     }
 
     /** 固定消息类型解析，不允许任意 JSON 多态或执行客户端内容。 */
-    private SessionMessage message(ResultSet r, int n) throws SQLException {
-        return new SessionMessage(r.getLong("seq"), r.getString("role"), r.getString("status"), r.getString("content"),
-                decode(r.getString("source_json"), new TypeReference<List<SourceDependency>>() {}),
-                decode(r.getString("source_reference_json"), new TypeReference<List<SessionSource>>() {}),
-                r.getString("tool_call_id"), r.getString("tool_name"), instant(r, "created_at"), decode(r.getString("scope_json"), ScopeRequest.class));
+    private SessionMessage message(SqlRow r, int n) {
+        return new SessionMessage(r.longValue("seq"), r.string("role"), r.string("status"), r.string("content"),
+                decode(r.string("source_json"), new TypeReference<List<SourceDependency>>() {}),
+                decode(r.string("source_reference_json"), new TypeReference<List<SessionSource>>() {}),
+                r.string("tool_call_id"), r.string("tool_name"), instant(r, "created_at"), decode(r.string("scope_json"), ScopeRequest.class));
     }
 
     /** UTC JDBC 时间映射保留可空租约，不依赖应用机器时钟判断执行权。 */
-    private Instant instant(ResultSet r, String column) throws SQLException {
-        Timestamp value = r.getTimestamp(column);
+    private Instant instant(SqlRow r, String column) {
+        Timestamp value = r.timestamp(column);
         return value == null ? null : value.toInstant();
     }
 

@@ -37,7 +37,7 @@ public final class S10NativeValidation {
         try(var context=app.run("--server.port=0","--server.address=127.0.0.1","--lab.bootstrap.enabled=false","--lab.task.worker-enabled=false","--lab.media.worker-enabled=false",
                 "--lab.ingestion.worker-enabled=false","--lab.governance.cleanup-enabled=false","--lab.observability.export-enabled=false","--lab.model.mode=mock","--lab.search.enabled=false",
                 "--lab.media.storage-root="+EVIDENCE.resolve("files"),"--spring.main.banner-mode=off","--logging.level.root=OFF")){
-            var sql=context.getBean(SqlSupport.class);var tasks=context.getBean(TaskStorePort.class);var media=context.getBean(MediaStorePort.class);var files=context.getBean(MediaFilePort.class);var artifacts=context.getBean(ArtifactStorePort.class);
+            var sql=ValidationSql.from(context);var tasks=context.getBean(TaskStorePort.class);var media=context.getBean(MediaStorePort.class);var files=context.getBean(MediaFilePort.class);var artifacts=context.getBean(ArtifactStorePort.class);
             var exporter=context.getBean(PresentationPort.class);var tx=new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
             // 两个独立JVM通过真实SQL和文件恢复；不领取任何正式队列，也不运行Provider。
             if(args.length==1&&args[0].startsWith("restart-")){restart(args[0],sql,tasks,media,files,exporter,tx);return;}
@@ -125,9 +125,9 @@ public final class S10NativeValidation {
         }
     }
     /** 新建当前专项用户，不修改已有账号密码。 */
-    private static UserContext actor(SqlSupport sql,String role){long id=sql.insert("INSERT INTO users(username,password_hash,role,password_change_required) VALUES(?,'unused-s10',?,FALSE)","s10_"+UUID.randomUUID().toString().replace("-",""),role);return new UserContext(id,UserContext.Role.valueOf(role),true,1,false);}
+    private static UserContext actor(ValidationSql sql,String role){long id=sql.insert("INSERT INTO users(username,password_hash,role,password_change_required) VALUES(?,'unused-s10',?,FALSE)","s10_"+UUID.randomUUID().toString().replace("-",""),role);return new UserContext(id,UserContext.Role.valueOf(role),true,1,false);}
     /** 来源与图片都是明确合成夹具，正规持久端口保存审批／操作／费用。 */
-    private static Fixture fixture(SqlSupport sql,TaskStorePort tasks,MediaStorePort media,MediaFilePort files){
+    private static Fixture fixture(ValidationSql sql,TaskStorePort tasks,MediaStorePort media,MediaFilePort files){
         var actor=actor(sql,"USER");long base=sql.insert("INSERT INTO knowledge_bases(owner_user_id,name) VALUES(?,'S10合成资料')",actor.userId());
         long doc=sql.insert("INSERT INTO documents(knowledge_base_id,owner_user_id,title,format) VALUES(?,?,'水循环合成说明','txt')",base,actor.userId());String raw="水受热形成水汽，水汽遇冷凝成水滴。";
         sql.jdbc.update("INSERT INTO document_versions(document_id,document_version,raw_text,checksum,ingestion_status) VALUES(?,1,?,?,'READY')",doc,raw,SqlSupport.hash(raw));
@@ -143,7 +143,7 @@ public final class S10NativeValidation {
         media.publishAsset(l,op.operationId(),new Media.Asset(op.operationId(),"slide-1","GENERATED",op.operationId(),files.writePagePreview(UUID.randomUUID().toString(),png),null,null));return f;
     }
     /** 只有本次明确ID获得测试租约，不调用全队列claim。 */
-    private static TaskLease lease(SqlSupport sql,TaskStorePort tasks,Fixture f,int fence){sql.jdbc.update("UPDATE ai_tasks SET status='RUNNING',worker_id='s10-fixture',fencing_token=?,claimed_at=CURRENT_TIMESTAMP(6),lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND) WHERE id=?",fence,f.id());return new TaskLease(tasks.read(f.actor(),f.id()),f.request(),f.actor(),"s10-fixture",fence);}
+    private static TaskLease lease(ValidationSql sql,TaskStorePort tasks,Fixture f,int fence){sql.jdbc.update("UPDATE ai_tasks SET status='RUNNING',worker_id='s10-fixture',fencing_token=?,claimed_at=CURRENT_TIMESTAMP(6),lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND) WHERE id=?",fence,f.id());return new TaskLease(tasks.read(f.actor(),f.id()),f.request(),f.actor(),"s10-fixture",fence);}
     /** 直接调用正式本地执行器，绝无Provider注入或调用。 */
     private static void execute(MediaStorePort media,PresentationPort exporter,TaskLease l,Media.Preview p){new PresentationExecution(media,exporter).execute(l,p);}
     /** 构造未登记候选供取消／旧批准失败路径，仍先持久消费本地额度。 */
@@ -155,7 +155,7 @@ public final class S10NativeValidation {
     /** 夹具也使用真实类型JSON摘要，不能绕过持久计划校验。 */
     private static String encode(Object value){try{return JSON.writeValueAsString(value);}catch(Exception e){throw new IllegalStateException("夹具序列化失败",e);}}
     /** 进程一保存正式导出事实并退出；进程二从原批准／原ID恢复损坏文件后精确清理。 */
-    private static void restart(String mode,SqlSupport sql,TaskStorePort tasks,MediaStorePort media,MediaFilePort files,PresentationPort exporter,TransactionTemplate tx)throws Exception{
+    private static void restart(String mode,ValidationSql sql,TaskStorePort tasks,MediaStorePort media,MediaFilePort files,PresentationPort exporter,TransactionTemplate tx)throws Exception{
         Path statePath=EVIDENCE.resolve("restart-state.json");
         if(mode.equals("restart-write")||mode.equals("restart-crash-wait")){
             if(Files.exists(statePath))throw new IllegalStateException("已有恢复夹具，先执行restart-read清理，不能再创建");
@@ -192,13 +192,13 @@ public final class S10NativeValidation {
         }else throw new IllegalArgumentException("未知恢复阶段");
     }
     /** 原可靠账本字段摘要，不包含凭证或模型正文。 */
-    private static String feeHash(SqlSupport sql,Fixture f){return SqlSupport.hash(encode(sql.jdbc.queryForList("SELECT operation_id,state,reserved_amount,estimated_amount,used_units FROM fee_attempts WHERE scope_id IN (SELECT scope_id FROM fee_scopes WHERE actor_user_id=?) ORDER BY operation_id",f.actor().userId())));}
+    private static String feeHash(ValidationSql sql,Fixture f){return SqlSupport.hash(encode(sql.jdbc.queryForList("SELECT operation_id,state,reserved_amount,estimated_amount,used_units FROM fee_attempts WHERE scope_id IN (SELECT scope_id FROM fee_scopes WHERE actor_user_id=?) ORDER BY operation_id",f.actor().userId())));}
     /** 测试Bearer只存哈希与内存，不输出或写入证据。 */
     private static String token(org.springframework.context.ApplicationContext context,UserContext actor){String raw=UUID.randomUUID().toString()+UUID.randomUUID();context.getBean(AuthTokenStorePort.class).issue(context.getBean(UserStorePort.class).user(actor.userId()).orElseThrow(),AccountApplicationService.digest(raw),Instant.now().plusSeconds(300));return raw;}
     /** 真网络请求保持二进制，不将PPTX转UTF-8。 */
     private static HttpResponse<byte[]> http(int port,String path,String token)throws Exception{var r=HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+port+"/api/v1"+path)).timeout(Duration.ofSeconds(10));if(token!=null)r.header("Authorization","Bearer "+token);return HttpClient.newHttpClient().send(r.GET().build(),HttpResponse.BodyHandlers.ofByteArray());}
     /** 仅删除这次提交的精确夹具ID，外部费用／原用户／正式队列不触碰。 */
-    private static void cleanup(SqlSupport sql,Fixture f,List<UserContext> others){
+    private static void cleanup(ValidationSql sql,Fixture f,List<UserContext> others){
         for(String table:List.of("presentation_exports","media_human_reviews","media_preview_operations","media_attempts","media_assets")){
             if(table.equals("media_attempts"))sql.jdbc.update("DELETE FROM media_attempts WHERE operation_id IN (SELECT operation_id FROM media_operations WHERE task_id=?)",f.id());else sql.jdbc.update("DELETE FROM "+table+" WHERE task_id=?",f.id());
         }

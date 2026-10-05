@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.ailab.data.persistence.mapper.DocumentSqlMapper">
+    <select id="createRequestDeduplicationsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT request_hash,resource_id FROM request_deduplications WHERE actor_user_id=#{args[0]} AND namespace='DOCUMENT_CREATE' AND request_key=#{args[1]}
+    </select>
+
+    <select id="createDocumentsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) FROM documents WHERE owner_user_id=#{args[0]} AND deleted=FALSE
+    </select>
+
+    <insert id="createRequestDeduplicationsWrite">
+        INSERT INTO request_deduplications(actor_user_id,namespace,request_key,request_hash,resource_id,expires_at) VALUES(#{args[0]},'DOCUMENT_CREATE',#{args[1]},#{args[2]},#{args[3]},DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 7 DAY))
+    </insert>
+
+    <insert id="insertDocumentsInsert" useGeneratedKeys="true" keyProperty="insert.id" keyColumn="id">
+        INSERT INTO documents(knowledge_base_id,owner_user_id,title,format,`generated`) VALUES(#{insert.args[0]},#{insert.args[1]},#{insert.args[2]},#{insert.args[3]},#{insert.args[4]})
+    </insert>
+
+    <insert id="insertDocumentVersionsWrite">
+        INSERT INTO document_versions(document_id,document_version,raw_text,checksum) VALUES(#{args[0]},1,#{args[1]},#{args[2]})
+    </insert>
+
+    <insert id="insertDocumentIngestionsWrite">
+        INSERT INTO document_ingestions(document_id,document_version,processing_revision,actor_user_id) VALUES(#{args[0]},1,1,#{args[1]})
+    </insert>
+
+    <select id="metadataRowsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT d.*,v.ingestion_status,v.active_processing_revision FROM documents d JOIN knowledge_bases k ON k.id=d.knowledge_base_id JOIN document_versions v ON v.document_id=d.id AND v.document_version=d.current_version WHERE d.id=#{args[0]}
+    </select>
+
+    <select id="listRowsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT d.*,v.ingestion_status,v.active_processing_revision FROM documents d JOIN knowledge_bases k ON k.id=d.knowledge_base_id JOIN document_versions v ON v.document_id=d.id AND v.document_version=d.current_version WHERE d.deleted=FALSE AND <include refid="com.example.ailab.data.persistence.mapper.SqlSupportMapper.knowledgeScope"/> ORDER BY d.id LIMIT #{params.limit} OFFSET #{params.offset}
+    </select>
+
+    <select id="readRowsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT d.*,v.ingestion_status,v.active_processing_revision FROM documents d JOIN knowledge_bases k ON k.id=d.knowledge_base_id JOIN document_versions v ON v.document_id=d.id AND v.document_version=d.current_version WHERE d.id=#{params.id} AND d.deleted=FALSE AND <include refid="com.example.ailab.data.persistence.mapper.SqlSupportMapper.knowledgeScope"/>
+    </select>
+
+    <select id="readDocumentVersionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT raw_text FROM document_versions WHERE document_id=#{args[0]} AND document_version=#{args[1]}
+    </select>
+
+    <update id="reviseDocumentsWrite">
+        UPDATE documents SET title=#{args[0]},current_version=current_version+1 WHERE id=#{args[1]} AND current_version=#{args[2]} AND deleted=FALSE
+    </update>
+
+    <insert id="reviseDocumentVersionsWrite">
+        INSERT INTO document_versions(document_id,document_version,raw_text,checksum) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]})
+    </insert>
+
+    <insert id="reviseSourceDependenciesWrite">
+        INSERT INTO source_dependencies(document_id,document_version,source_base_id,source_document_id,source_document_version) SELECT document_id,#{args[0]},source_base_id,source_document_id,source_document_version FROM source_dependencies WHERE document_id=#{args[1]} AND document_version=#{args[2]}
+    </insert>
+
+    <insert id="reviseDocumentIngestionsWrite">
+        INSERT INTO document_ingestions(document_id,document_version,processing_revision,actor_user_id) VALUES(#{args[0]},#{args[1]},1,#{args[2]})
+    </insert>
+
+    <update id="deleteDocumentsWrite">
+        UPDATE documents SET deleted=TRUE WHERE id=#{args[0]} AND current_version=#{args[1]} AND deleted=FALSE
+    </update>
+
+    <select id="statisticsRowsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) total,COALESCE(SUM(v.ingestion_status='RECEIVED'),0) received,COALESCE(SUM(v.ingestion_status='READY'),0) ready FROM documents d JOIN knowledge_bases k ON k.id=d.knowledge_base_id JOIN document_versions v ON v.document_id=d.id AND v.document_version=d.current_version WHERE d.deleted=FALSE AND <include refid="com.example.ailab.data.persistence.mapper.SqlSupportMapper.knowledgeScope"/> AND <include refid="com.example.ailab.data.persistence.mapper.SqlSupportMapper.sourceVisibility"/>
+    </select>
+
+    <select id="walkDocumentVersionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT d.id FROM documents d JOIN knowledge_bases k ON k.id=d.knowledge_base_id JOIN document_versions v ON v.document_id=d.id AND v.document_version=d.current_version WHERE d.id=#{args[0]} AND d.knowledge_base_id=#{args[1]} AND d.deleted=FALSE AND k.enabled=TRUE AND k.deleted=FALSE AND EXISTS(SELECT 1 FROM document_versions history WHERE history.document_id=d.id AND history.document_version=#{args[2]})<if test="regularUser"> AND k.owner_user_id=#{args[3]}</if>
+    </select>
+
+    <select id="dependenciesSourceDependenciesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT source_base_id,source_document_id,source_document_version FROM source_dependencies WHERE document_id=#{args[0]} AND document_version=#{args[1]} ORDER BY source_document_id,source_document_version
+    </select>
+</mapper>

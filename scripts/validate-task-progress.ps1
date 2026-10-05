@@ -23,7 +23,7 @@ try {
     }
 } finally { $archive.Dispose() }
 $classpath = "$runtimeRoot/classes;$runtimeRoot/*"
-& javac -encoding UTF-8 -cp $classpath -d $runtimeRoot (Join-Path $PSScriptRoot 'validation/TaskProgressRollbackValidation.java')
+& javac -encoding UTF-8 -cp $classpath -d $runtimeRoot (Join-Path $PSScriptRoot 'validation/TaskProgressRollbackValidation.java') (Join-Path $PSScriptRoot 'validation/ValidationSql.java')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # 正式 V4 迁移正常执行；合成数据全部回滚，租约只针对合成任务模拟。
 & java '-Dfile.encoding=UTF-8' -cp "$classpath;$runtimeRoot" TaskProgressRollbackValidation

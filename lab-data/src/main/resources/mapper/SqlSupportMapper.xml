@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.ailab.data.persistence.mapper.SqlSupportMapper">
+    <select id="actorSystemControlSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT id FROM system_control WHERE id=1 FOR UPDATE
+    </select>
+
+    <insert id="eventOutboxEventsWrite">
+        INSERT INTO outbox_events(event_type,resource_id,resource_version) VALUES(#{args[0]},#{args[1]},#{args[2]})
+    </insert>
+
+    <select id="knowledgeEpochSystemControlSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT knowledge_epoch FROM system_control WHERE id=1
+    </select>
+
+    <select id="cacheScopeStateKnowledgeBasesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT k.id,k.version FROM knowledge_bases k WHERE <include refid="com.example.ailab.data.persistence.mapper.SqlSupportMapper.knowledgeScope"/> ORDER BY k.id LIMIT 101
+    </select>
+
+    <insert id="auditKnowledgeAccessAuditWrite">
+        INSERT INTO knowledge_access_audit(actor_user_id,action,resource_id,scope_mode,permission_version,knowledge_epoch,result_count,outcome,scope_json,resource_ids_json) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},'DELIVERABLE',#{args[7]},#{args[8]})
+    </insert>
+
+    <update id="changedSystemControlWrite">
+        UPDATE system_control SET knowledge_epoch=knowledge_epoch+1 WHERE id=1
+    </update>
+    <sql id="knowledgeScope">
+        k.enabled=TRUE AND k.deleted=FALSE
+        <if test="params.selfOnly">AND k.owner_user_id=#{params.actor}</if>
+        <if test="params.selected">
+            <choose><when test="params.ids.isEmpty()">AND 1=0</when><otherwise>
+                AND k.id IN <foreach collection="params.ids" item="id" open="(" close=")" separator=",">#{id}</foreach>
+            </otherwise></choose>
+        </if>
+        <if test="params.owner != null">AND k.owner_user_id=#{params.owner}</if>
+    </sql>
+    <sql id="sourceVisibility">
+        NOT EXISTS (SELECT 1 FROM source_dependencies s JOIN documents sd ON sd.id=s.source_document_id JOIN knowledge_bases sk ON sk.id=s.source_base_id
+            WHERE s.document_id=d.id AND s.document_version=d.current_version AND (sd.deleted=TRUE OR sk.deleted=TRUE OR sk.enabled=FALSE
+            <if test="params.regularUser">OR sk.owner_user_id&lt;&gt;#{params.actor}</if>))
+    </sql>
+    <sql id="unreferencedStructure">
+        AND NOT EXISTS(SELECT 1 FROM source_dependencies s WHERE s.source_document_id=i.document_id)
+        AND NOT EXISTS(SELECT 1 FROM task_document_coverage c WHERE c.document_id=i.document_id)
+        AND NOT EXISTS(SELECT 1 FROM ai_tasks t WHERE JSON_CONTAINS(t.request_json,CAST(i.document_id AS JSON),'$.documentIds'))
+        AND NOT EXISTS(SELECT 1 FROM messages ref WHERE JSON_CONTAINS(ref.source_json,JSON_OBJECT('documentId',i.document_id)))
+        AND NOT EXISTS(SELECT 1 FROM sessions ref WHERE JSON_CONTAINS(ref.summary_source_json,JSON_OBJECT('documentId',i.document_id)))
+        AND NOT EXISTS(SELECT 1 FROM approvals ref WHERE JSON_CONTAINS(ref.source_json,JSON_OBJECT('documentId',i.document_id)))
+        AND NOT EXISTS(SELECT 1 FROM task_steps ref WHERE JSON_CONTAINS(ref.source_json,JSON_OBJECT('documentId',i.document_id)))
+        AND NOT EXISTS(SELECT 1 FROM artifacts ref WHERE JSON_CONTAINS(ref.source_json,JSON_OBJECT('documentId',i.document_id)))
+        AND NOT EXISTS(SELECT 1 FROM task_document_pages ref WHERE JSON_CONTAINS(ref.source_json,JSON_OBJECT('documentId',i.document_id)))
+    </sql>
+</mapper>

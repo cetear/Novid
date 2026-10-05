@@ -25,7 +25,7 @@ try {
     }
 } finally { $archive.Dispose() }
 $classpath = "$runtimeRoot/classes;$runtimeRoot/*"
-& javac -encoding UTF-8 -cp $classpath -d $runtimeRoot (Join-Path $PSScriptRoot 'validation/S05ModelNativeValidation.java') (Join-Path $PSScriptRoot 'validation/S05DatabaseNativeValidation.java')
+& javac -encoding UTF-8 -cp $classpath -d $runtimeRoot (Join-Path $PSScriptRoot 'validation/S05ModelNativeValidation.java') (Join-Path $PSScriptRoot 'validation/S05DatabaseNativeValidation.java') (Join-Path $PSScriptRoot 'validation/ValidationSql.java')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if (-not $DatabaseOnly) {
     & java '-Dfile.encoding=UTF-8' "-Dvalidation.application-jar-sha256=$applicationHash" -cp "$classpath;$runtimeRoot" com.example.ailab.app.S05ModelNativeValidation $EnvFile

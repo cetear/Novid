@@ -1,10 +1,12 @@
 package com.example.ailab.data.repository;
 
+import com.example.ailab.data.persistence.mapper.DocumentSqlMapper;
+import com.example.ailab.data.persistence.po.SqlRow;
 import com.example.ailab.contract.context.UserContext;
 import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.port.DocumentStorePort;
 import com.example.ailab.contract.error.LabException;
-import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import com.example.ailab.data.persistence.po.SqlParameters;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -15,6 +17,7 @@ import java.util.*;
  */
 @Repository
 public class DocumentSqlRepository implements DocumentStorePort {
+    private final DocumentSqlMapper mapper;
     private final SqlSupport sql;
     public static final String JOIN = " FROM documents d JOIN knowledge_bases k ON k.id=d.knowledge_base_id JOIN document_versions v ON v.document_id=d.id AND v.document_version=d.current_version ";
 
@@ -22,7 +25,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
      * 装配同一数据源。
      */
     public DocumentSqlRepository(SqlSupport sql) {
-        this.sql = sql;
+        this.sql = sql; this.mapper = sql.mapper(DocumentSqlMapper.class);
     }
 
     /**
@@ -32,15 +35,15 @@ public class DocumentSqlRepository implements DocumentStorePort {
     public DocumentSnapshot create(UserContext actor, UploadCommand c) {
         sql.owner(actor, c.knowledgeBaseId(), true);
         String hash = SqlSupport.hash(c.knowledgeBaseId() + "\n" + c.title().length() + ":" + c.title() + "\n" + c.format() + "\n" + c.text());
-        var old = sql.jdbc.query("SELECT request_hash,resource_id FROM request_deduplications WHERE actor_user_id=? AND namespace='DOCUMENT_CREATE' AND request_key=?", (r, n) -> Map.entry(r.getString(1), r.getLong(2)), actor.userId(), c.idempotencyKey());
+        var old = sql.project(mapper.createRequestDeduplicationsSelect(new Object[]{actor.userId(), c.idempotencyKey()}), (r, n) -> Map.entry(r.string(1), r.longValue(2)));
         if (!old.isEmpty()) {
             if (!old.get(0).getKey().equals(hash)) throw new LabException("OPERATION_CONFLICT", "相同去重键的参数不同");
             return metadata(old.get(0).getValue());
         }
-        if (sql.jdbc.queryForObject("SELECT COUNT(*) FROM documents WHERE owner_user_id=? AND deleted=FALSE", Long.class, actor.userId()) >= 10000)
+        if (sql.scalar(mapper.createDocumentsSelect(new Object[]{actor.userId()}), Long.class) >= 10000)
             throw new LabException("DOCUMENT_LIMIT_EXCEEDED", "文档数量超过用户配额");
         long id = insert(actor, c.knowledgeBaseId(), c.title(), c.format(), c.text(), false);
-        sql.jdbc.update("INSERT INTO request_deduplications(actor_user_id,namespace,request_key,request_hash,resource_id,expires_at) VALUES(?,'DOCUMENT_CREATE',?,?,?,DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 7 DAY))", actor.userId(), c.idempotencyKey(), hash, id);
+        mapper.createRequestDeduplicationsWrite(new Object[]{actor.userId(), c.idempotencyKey(), hash, id});
         return metadata(id);
     }
 
@@ -48,9 +51,9 @@ public class DocumentSqlRepository implements DocumentStorePort {
      * data 内部新文档事实，调用者必须已经取得 owner 行锁。
      */
     public long insert(UserContext actor, long base, String title, String format, String text, boolean generated) {
-        long id = sql.insert("INSERT INTO documents(knowledge_base_id,owner_user_id,title,format,`generated`) VALUES(?,?,?,?,?)", base, actor.userId(), title, format, generated);
-        sql.jdbc.update("INSERT INTO document_versions(document_id,document_version,raw_text,checksum) VALUES(?,1,?,?)", id, text, SqlSupport.hash(text));
-        sql.jdbc.update("INSERT INTO document_ingestions(document_id,document_version,processing_revision,actor_user_id) VALUES(?,1,1,?)", id, actor.userId());
+        long id = sql.insert(command -> mapper.insertDocumentsInsert(command), base, actor.userId(), title, format, generated);
+        mapper.insertDocumentVersionsWrite(new Object[]{id, text, SqlSupport.hash(text)});
+        mapper.insertDocumentIngestionsWrite(new Object[]{id, actor.userId()});
         sql.event("INGEST_DOCUMENT", id, 1);
         sql.changed();
         return id;
@@ -60,7 +63,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
      * 内部无范围读取只供已经授权的事务结果使用。
      */
     public DocumentSnapshot metadata(long id) {
-        return sql.jdbc.query("SELECT d.*,v.ingestion_status,v.active_processing_revision" + JOIN + "WHERE d.id=?", SqlSupport::document, id).stream().findFirst().orElseThrow(LabException::denied);
+        return sql.project(mapper.metadataRowsSelect(new Object[]{id}), SqlSupport::document).stream().findFirst().orElseThrow(LabException::denied);
     }
 
     /**
@@ -69,9 +72,9 @@ public class DocumentSqlRepository implements DocumentStorePort {
     @Transactional
     public List<DocumentSnapshot> list(AuthorizedKnowledgeScope scope, int offset, int limit) {
         sql.actor(scope.actor(), true);
-        var p = new MapSqlParameterSource().addValue("limit", limit).addValue("offset", offset);
-        String filter = sql.scope(scope, p);
-        var rows = sql.named.query("SELECT d.*,v.ingestion_status,v.active_processing_revision" + JOIN + "WHERE d.deleted=FALSE AND " + filter + " ORDER BY d.id LIMIT :limit OFFSET :offset", p, SqlSupport::document);
+        var p = new SqlParameters().addValue("limit", limit).addValue("offset", offset);
+        sql.scope(scope, p);
+        var rows = sql.project(mapper.listRowsSelect(p), SqlSupport::document);
         // 受限结果被过滤，因此页内可能少于 limit；不能为了补足无界循环查询。
         var result = rows.stream().filter(d -> allowedSources(scope, d.id(), d.documentVersion())).toList();
         sql.audit(scope, "LIST_DOCUMENTS", null, result.size(), result.stream().map(DocumentSnapshot::id).toList());
@@ -85,14 +88,14 @@ public class DocumentSqlRepository implements DocumentStorePort {
     @Transactional(noRollbackFor = LabException.class)
     public DocumentContent read(AuthorizedKnowledgeScope scope, long id) {
         sql.actor(scope.actor(), true);
-        var p = new MapSqlParameterSource().addValue("id", id);
-        String filter = sql.scope(scope, p);
-        var docs = sql.named.query("SELECT d.*,v.ingestion_status,v.active_processing_revision" + JOIN + "WHERE d.id=:id AND d.deleted=FALSE AND " + filter, p, SqlSupport::document);
+        var p = new SqlParameters().addValue("id", id);
+        sql.scope(scope, p);
+        var docs = sql.project(mapper.readRowsSelect(p), SqlSupport::document);
         if (docs.isEmpty()) throw LabException.denied();
         var doc = docs.get(0);
         var sources = dependencies(id, doc.documentVersion());
         verifySources(scope, sources);
-        String text = sql.jdbc.queryForObject("SELECT raw_text FROM document_versions WHERE document_id=? AND document_version=?", String.class, id, doc.documentVersion());
+        String text = sql.scalar(mapper.readDocumentVersionsSelect(new Object[]{id, doc.documentVersion()}), String.class);
         sql.audit(scope, "READ_DOCUMENT", id, 1);
         return new DocumentContent(doc, text, sources);
     }
@@ -105,11 +108,11 @@ public class DocumentSqlRepository implements DocumentStorePort {
         sql.actor(actor, true);
         var doc = metadata(id);
         sql.owner(actor, doc.knowledgeBaseId(), true);
-        if (sql.jdbc.update("UPDATE documents SET title=?,current_version=current_version+1 WHERE id=? AND current_version=? AND deleted=FALSE", title, id, version) != 1)
+        if (mapper.reviseDocumentsWrite(new Object[]{title, id, version}) != 1)
             throw new LabException("OPERATION_CONFLICT", "文档版本已变化");
-        sql.jdbc.update("INSERT INTO document_versions(document_id,document_version,raw_text,checksum) VALUES(?,?,?,?)", id, version + 1, text, SqlSupport.hash(text));
-        sql.jdbc.update("INSERT INTO source_dependencies(document_id,document_version,source_base_id,source_document_id,source_document_version) SELECT document_id,?,source_base_id,source_document_id,source_document_version FROM source_dependencies WHERE document_id=? AND document_version=?", version + 1, id, version);
-        sql.jdbc.update("INSERT INTO document_ingestions(document_id,document_version,processing_revision,actor_user_id) VALUES(?,?,1,?)", id, version + 1, actor.userId());
+        mapper.reviseDocumentVersionsWrite(new Object[]{id, version + 1, text, SqlSupport.hash(text)});
+        mapper.reviseSourceDependenciesWrite(new Object[]{version + 1, id, version});
+        mapper.reviseDocumentIngestionsWrite(new Object[]{id, version + 1, actor.userId()});
         sql.event("INGEST_DOCUMENT", id, version + 1);
         sql.changed();
         return metadata(id);
@@ -123,7 +126,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
         sql.actor(actor, true);
         var doc = metadata(id);
         sql.owner(actor, doc.knowledgeBaseId(), false);
-        if (sql.jdbc.update("UPDATE documents SET deleted=TRUE WHERE id=? AND current_version=? AND deleted=FALSE", id, version) != 1)
+        if (mapper.deleteDocumentsWrite(new Object[]{id, version}) != 1)
             throw new LabException("OPERATION_CONFLICT", "文档版本已变化");
         sql.event("DELETE_DOCUMENT", id, version);
         sql.changed();
@@ -135,11 +138,11 @@ public class DocumentSqlRepository implements DocumentStorePort {
     @Transactional
     public KnowledgeStatistics statistics(AuthorizedKnowledgeScope scope) {
         sql.actor(scope.actor(), true);
-        var p = new MapSqlParameterSource();
-        String filter = sql.scope(scope, p);
+        var p = new SqlParameters();
+        sql.scope(scope, p);
         // 所有来源在保存时已扁平化，SQL 按当前用户角色／来源库状态复核。
-        String safe = " NOT EXISTS (SELECT 1 FROM source_dependencies s JOIN documents sd ON sd.id=s.source_document_id JOIN knowledge_bases sk ON sk.id=s.source_base_id WHERE s.document_id=d.id AND s.document_version=d.current_version AND (sd.deleted=TRUE OR sk.deleted=TRUE OR sk.enabled=FALSE" + (scope.actor().role() == UserContext.Role.ADMIN ? "" : " OR sk.owner_user_id<>:actor") + "))";
-        var result = sql.named.queryForObject("SELECT COUNT(*) total,COALESCE(SUM(v.ingestion_status='RECEIVED'),0) received,COALESCE(SUM(v.ingestion_status='READY'),0) ready" + JOIN + "WHERE d.deleted=FALSE AND " + filter + " AND " + safe, p, (r, n) -> new KnowledgeStatistics(r.getLong("total"), r.getLong("received"), r.getLong("ready")));
+
+        var result = sql.one(sql.project(mapper.statisticsRowsSelect(p), (r, n) -> new KnowledgeStatistics(r.longValue("total"), r.longValue("received"), r.longValue("ready"))));
         sql.audit(scope, "STATISTICS", null, 1);
         return result;
     }
@@ -162,7 +165,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
             if (path.contains(key)) throw new LabException("CONTEXT_MAPPING_INVALID", "来源依赖环");
             if (visited.contains(key)) continue;
             if (visited.size() >= 32) throw new LabException("CONTEXT_MAPPING_INVALID", "来源过多");
-            var rows = sql.jdbc.query("SELECT d.id" + JOIN + "WHERE d.id=? AND d.knowledge_base_id=? AND d.deleted=FALSE AND k.enabled=TRUE AND k.deleted=FALSE AND EXISTS(SELECT 1 FROM document_versions history WHERE history.document_id=d.id AND history.document_version=?)" + (actor.role() == UserContext.Role.ADMIN ? "" : " AND k.owner_user_id=?"), (r, n) -> r.getLong(1), actor.role() == UserContext.Role.ADMIN ? new Object[]{s.documentId(), s.knowledgeBaseId(), s.documentVersion()} : new Object[]{s.documentId(), s.knowledgeBaseId(), s.documentVersion(), actor.userId()});
+            var rows = sql.project(mapper.walkDocumentVersionsSelect(actor.role() == UserContext.Role.ADMIN ? new Object[]{s.documentId(), s.knowledgeBaseId(), s.documentVersion()} : new Object[]{s.documentId(), s.knowledgeBaseId(), s.documentVersion(), actor.userId()}, actor.role() != UserContext.Role.ADMIN), (r, n) -> r.longValue(1));
             if (rows.isEmpty()) throw LabException.denied();
             path.add(key);
             walk(actor, dependencies(s.documentId(), s.documentVersion()), path, visited, depth + 1);
@@ -175,7 +178,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
      * 获取服务器保存的原始来源，不相信客户端清除标志。
      */
     public List<SourceDependency> dependencies(long id, int version) {
-        return sql.jdbc.query("SELECT source_base_id,source_document_id,source_document_version FROM source_dependencies WHERE document_id=? AND document_version=? ORDER BY source_document_id,source_document_version", (r, n) -> new SourceDependency(r.getLong(1), r.getLong(2), r.getInt(3)), id, version);
+        return sql.project(mapper.dependenciesSourceDependenciesSelect(new Object[]{id, version}), (r, n) -> new SourceDependency(r.longValue(1), r.longValue(2), r.intValue(3)));
     }
 
     /**

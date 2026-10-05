@@ -1,5 +1,7 @@
 package com.example.ailab.data.repository;
 
+import com.example.ailab.data.persistence.mapper.TaskMapper;
+import com.example.ailab.data.persistence.po.SqlRow;
 import com.example.ailab.contract.context.UserContext;
 import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.port.*;
@@ -9,7 +11,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.sql.*;
+import java.sql.Timestamp;
 import java.time.*;
 import java.util.*;
 
@@ -18,6 +20,7 @@ import java.util.*;
  */
 @Repository
 public class TaskRepository implements TaskStorePort, ArtifactStorePort {
+    private final TaskMapper mapper;
     private final SqlSupport sql;
     private final DocumentSqlRepository docs;
     private final ObjectMapper json = new ObjectMapper();
@@ -36,7 +39,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @org.springframework.beans.factory.annotation.Autowired
     public TaskRepository(SqlSupport sql, DocumentSqlRepository docs,
                           @org.springframework.beans.factory.annotation.Value("${lab.task.worker-enabled:false}") boolean workerEnabled) {
-        this.sql = sql;
+        this.sql = sql; this.mapper = sql.mapper(TaskMapper.class);
         this.docs = docs;
         this.workerEnabled = workerEnabled;
     }
@@ -53,18 +56,18 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
         // 老FAQ／报告幂等JSON不因新增媒体可选字段变化。
         if (!media(request.taskType())) ((com.fasterxml.jackson.databind.node.ObjectNode)canonical).remove(java.util.List.of("presentationOptions","videoOptions"));
         String serialized = encode(canonical), hash = SqlSupport.hash(serialized);
-        var old = sql.jdbc.query("SELECT request_hash,resource_id FROM request_deduplications WHERE actor_user_id=? AND namespace='TASK_CREATE' AND request_key=?", (r, n) -> Map.entry(r.getString(1), r.getLong(2)), actor.userId(), request.idempotencyKey());
+        var old = sql.project(mapper.createRequestDeduplicationsSelect(new Object[]{actor.userId(), request.idempotencyKey()}), (r, n) -> Map.entry(r.string(1), r.longValue(2)));
         if (!old.isEmpty()) {
             if (!old.get(0).getKey().equals(hash)) throw new LabException("OPERATION_CONFLICT", "相同任务键参数不同");
             return read(actor, old.get(0).getValue());
         }
-        if (sql.jdbc.queryForObject("SELECT COUNT(*) FROM ai_tasks WHERE requester_user_id=? AND status NOT IN ('SUCCEEDED','PARTIAL','FAILED','CANCELLED')", Long.class, actor.userId()) >= 20)
+        if (sql.scalar(mapper.createAiTasksSelect(new Object[]{actor.userId()}), Long.class) >= 20)
             throw new LabException("RATE_LIMITED", "未完成任务数量超过限额");
-        long id = sql.insert("INSERT INTO ai_tasks(requester_user_id,task_type,request_json,request_hash,tool_calls,model_repairs) VALUES(?,?,?,?,0,0)", actor.userId(), request.taskType(), serialized, hash);
+        long id = sql.insert(command -> mapper.createAiTasksInsert(command), actor.userId(), request.taskType(), serialized, hash);
         // 与任务创建同事务初始化步骤，202 返回时就有完整的待执行列表。
         for (String step : TaskProgress.stepIds())
-            sql.jdbc.update("INSERT INTO task_step_progress(task_id,step_id) VALUES(?,?)", id, step);
-        sql.jdbc.update("INSERT INTO request_deduplications(actor_user_id,namespace,request_key,request_hash,resource_id,expires_at) VALUES(?,'TASK_CREATE',?,?,?,DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 7 DAY))", actor.userId(), request.idempotencyKey(), hash, id);
+            mapper.createTaskStepProgressWrite(new Object[]{id, step});
+        mapper.createRequestDeduplicationsWrite(new Object[]{actor.userId(), request.idempotencyKey(), hash, id});
         return read(actor, id);
     }
 
@@ -74,7 +77,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional(readOnly = true)
     public TaskSnapshot read(UserContext actor, long id) {
         sql.actor(actor, false);
-        return sql.jdbc.query("SELECT t.*,CURRENT_TIMESTAMP(6) AS server_now FROM ai_tasks t WHERE id=? AND requester_user_id=?", this::task, id, actor.userId()).stream().findFirst().orElseThrow(LabException::denied);
+        return sql.project(mapper.readAiTasksSelect(new Object[]{id, actor.userId()}), this::task).stream().findFirst().orElseThrow(LabException::denied);
     }
 
     /**
@@ -92,8 +95,8 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
             }
             case "resume" -> {
                 if (!t.status().equals("PAUSED")&&!(media(t.taskType())&&Set.of("FAILED","NEEDS_RECONCILIATION").contains(t.status()))) throw new LabException("OPERATION_CONFLICT", "当前状态不能恢复");
-                if(media(t.taskType())&&sql.jdbc.queryForObject("SELECT COUNT(*) FROM media_operations WHERE task_id=? AND capability<>'AUDIO_GENERATION' AND state IN ('SENDING','UNKNOWN') AND provider_job_id IS NULL",Integer.class,id)>0)throw new LabException("MEDIA_SUBMISSION_UNKNOWN","无原ID的未知提交禁止自动重购");
-                if(media(t.taskType()))sql.jdbc.update("UPDATE media_operations SET state='WAITING_EXTERNAL',next_poll_at=CURRENT_TIMESTAMP(6) WHERE task_id=? AND state='UNKNOWN' AND provider_job_id IS NOT NULL",id);
+                if(media(t.taskType())&&sql.scalar(mapper.actionMediaOperationsSelect(new Object[]{id}), Integer.class)>0)throw new LabException("MEDIA_SUBMISSION_UNKNOWN","无原ID的未知提交禁止自动重购");
+                if(media(t.taskType()))mapper.actionMediaOperationsWrite(new Object[]{id});
                 yield "QUEUED";
             }
             case "cancel" -> {
@@ -103,13 +106,13 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
             }
             default -> throw LabException.invalid("只支持 pause/resume/cancel");
         };
-        sql.jdbc.update("UPDATE ai_tasks SET status=?,state_version=state_version+1,fencing_token=fencing_token+1,total_execution_seconds=total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6))),claimed_at=NULL,lease_until=NULL,worker_id=NULL WHERE id=?", state, id);
+        mapper.actionAiTasksWrite(new Object[]{state, id});
         if (state.equals("PAUSED"))
-            sql.jdbc.update("UPDATE task_step_progress SET status='PAUSED' WHERE task_id=? AND status='RUNNING'", id);
+            mapper.actionTaskStepProgressWrite(new Object[]{id});
         else if (state.equals("QUEUED"))
-            sql.jdbc.update("UPDATE task_step_progress SET status='PENDING',started_at=NULL,error_code=NULL WHERE task_id=? AND status='PAUSED'", id);
+            mapper.actionTaskStepProgressWrite2(new Object[]{id});
         else
-            sql.jdbc.update("UPDATE task_step_progress SET status='CANCELLED' WHERE task_id=? AND status<>'SUCCEEDED'", id);
+            mapper.actionTaskStepProgressWrite3(new Object[]{id});
         return read(actor, id);
     }
 
@@ -125,20 +128,20 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
 
     /** 同一锁顺序串行状态转换；等待时只挑到期原ID查询，绝不重新生成。 */
     private Optional<TaskLease> claimInternal(String worker,boolean mediaQueue) {
-        sql.jdbc.queryForObject("SELECT id FROM system_control WHERE id=1 FOR UPDATE", Integer.class);
-        sql.jdbc.update("UPDATE ai_tasks t JOIN users u ON u.id=t.requester_user_id SET t.status=\'CANCELLED\',t.state_version=t.state_version+1,t.fencing_token=t.fencing_token+1,t.worker_id=NULL,t.lease_until=NULL WHERE u.enabled=FALSE AND t.status IN (\'QUEUED\',\'RUNNING\',\'PAUSED\')");
+        sql.scalar(mapper.claimInternalSystemControlSelect(new Object[]{}), Integer.class);
+        mapper.claimInternalAiTasksWrite(new Object[]{});
         // 自动撤销与显式取消采用相同步骤状态，不留下误导性的“执行中”标记。
-        sql.jdbc.update("UPDATE task_step_progress p JOIN ai_tasks t ON t.id=p.task_id SET p.status='CANCELLED' WHERE t.status='CANCELLED' AND p.status NOT IN ('SUCCEEDED','CANCELLED')");
+        mapper.claimInternalTaskStepProgressWrite(new Object[]{});
         // 正常暂停不消耗异常租约恢复次数；超限队列明确终止，不能永久停留 QUEUED。
-        sql.jdbc.update("UPDATE ai_tasks SET status='FAILED',error_code='BUDGET_EXCEEDED',fencing_token=fencing_token+1,state_version=state_version+1,worker_id=NULL,lease_until=NULL WHERE status IN ('QUEUED','RUNNING') AND (total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6)))>=1200 OR status='RUNNING' AND attempt>=3 AND lease_until<CURRENT_TIMESTAMP(6) OR task_type NOT IN ('NOTES_PPT','NOTES_VIDEO') AND (model_attempts>=10 OR model_turns>=6) AND completed_steps<3 AND (status='QUEUED' OR lease_until<CURRENT_TIMESTAMP(6)))");
-        sql.jdbc.update("UPDATE task_step_progress p JOIN ai_tasks t ON t.id=p.task_id SET p.status='FAILED',p.error_code=t.error_code WHERE t.status='FAILED' AND p.status IN ('RUNNING','PAUSED')");
-        var ids = sql.jdbc.query("SELECT t.id FROM ai_tasks t JOIN users u ON u.id=t.requester_user_id WHERE u.enabled=TRUE AND u.password_change_required=FALSE AND (t.status='QUEUED' OR t.status='RUNNING' AND t.attempt<3 AND t.lease_until<CURRENT_TIMESTAMP(6) OR t.status='WAITING_EXTERNAL' AND EXISTS(SELECT 1 FROM media_operations m WHERE m.task_id=t.id AND m.state IN ('WAITING_EXTERNAL','SENDING','REMOTE_READY') AND m.next_poll_at<=CURRENT_TIMESTAMP(6))) AND " + (mediaQueue ? "t.task_type IN ('NOTES_PPT','NOTES_VIDEO')" : "t.task_type NOT IN ('NOTES_PPT','NOTES_VIDEO')") + " ORDER BY t.id LIMIT 1 FOR UPDATE SKIP LOCKED", (r, n) -> r.getLong(1));
+        mapper.claimInternalAiTasksWrite2(new Object[]{});
+        mapper.claimInternalTaskStepProgressWrite2(new Object[]{});
+        var ids = sql.project(mapper.claimInternalAiTasksSelect(new Object[]{}, mediaQueue), (r, n) -> r.longValue(1));
         if (ids.isEmpty()) return Optional.empty();
         long id = ids.get(0);
-        sql.jdbc.update("UPDATE ai_tasks SET attempt=attempt+IF(status='RUNNING',1,0),status='RUNNING',state_version=state_version+1,fencing_token=fencing_token+1,worker_id=?,lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND),total_execution_seconds=total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6))),claimed_at=CURRENT_TIMESTAMP(6),started_at=COALESCE(started_at,CURRENT_TIMESTAMP(6)),heartbeat_at=CURRENT_TIMESTAMP(6) WHERE id=?", worker, id);
+        mapper.claimInternalAiTasksWrite3(new Object[]{worker, id});
         // 恢复只清理未成功步骤的执行标记，成功检查点和完成时间保持不变。
-        sql.jdbc.update("UPDATE task_step_progress SET status='PENDING',started_at=NULL,error_code=NULL WHERE task_id=? AND status IN ('RUNNING','PAUSED')", id);
-        return sql.jdbc.query("SELECT t.*,CURRENT_TIMESTAMP(6) AS server_now,u.role,u.permission_version,u.enabled,u.password_change_required FROM ai_tasks t JOIN users u ON u.id=t.requester_user_id WHERE t.id=?", (r, n) -> new TaskLease(task(r, n), decode(r.getString("request_json"), TaskRequest.class), new UserContext(r.getLong("requester_user_id"), UserContext.Role.valueOf(r.getString("role")), r.getBoolean("enabled"), r.getLong("permission_version"), r.getBoolean("password_change_required")), worker, r.getLong("fencing_token")), id).stream().findFirst();
+        mapper.claimInternalTaskStepProgressWrite3(new Object[]{id});
+        return sql.project(mapper.claimInternalAiTasksSelect2(new Object[]{id}), (r, n) -> new TaskLease(task(r, n), decode(r.string("request_json"), TaskRequest.class), new UserContext(r.longValue("requester_user_id"), UserContext.Role.valueOf(r.string("role")), r.booleanValue("enabled"), r.longValue("permission_version"), r.booleanValue("password_change_required")), worker, r.longValue("fencing_token"))).stream().findFirst();
     }
 
     /**
@@ -148,7 +151,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     public boolean renew(TaskLease lease) {
         try {
             valid(lease);
-            sql.jdbc.update("UPDATE ai_tasks SET lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND),heartbeat_at=CURRENT_TIMESTAMP(6) WHERE id=?", lease.task().taskId());
+            mapper.renewAiTasksWrite(new Object[]{lease.task().taskId()});
             return true;
         } catch (LabException e) {
             return false;
@@ -160,7 +163,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     public void beginStep(TaskLease lease, String stepId) {
         valid(lease);
         if (!TaskProgress.stepIds().contains(stepId)) throw LabException.invalid("未知任务步骤");
-        int changed = sql.jdbc.update("UPDATE task_step_progress SET status='RUNNING',started_at=CURRENT_TIMESTAMP(6),completed_at=NULL,error_code=NULL WHERE task_id=? AND step_id=? AND status='PENDING'", lease.task().taskId(), stepId);
+        int changed = mapper.beginStepTaskStepProgressWrite(new Object[]{lease.task().taskId(), stepId});
         if (changed > 0) progressChanged(lease);
     }
 
@@ -168,13 +171,13 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public void completePreparation(TaskLease lease) {
         valid(lease);
-        int changed = sql.jdbc.update("UPDATE task_step_progress SET status='SUCCEEDED',completed_at=CURRENT_TIMESTAMP(6) WHERE task_id=? AND step_id='prepare' AND status='RUNNING'", lease.task().taskId());
+        int changed = mapper.completePreparationTaskStepProgressWrite(new Object[]{lease.task().taskId()});
         if (changed > 0) progressChanged(lease);
     }
 
     /** 调用方处于有效短事务内，进度变化递增版本用于客户端识别新事实。 */
     private void progressChanged(TaskLease lease) {
-        sql.jdbc.update("UPDATE ai_tasks SET state_version=state_version+1 WHERE id=?", lease.task().taskId());
+        mapper.progressChangedAiTasksWrite(new Object[]{lease.task().taskId()});
     }
 
     /**
@@ -183,7 +186,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public void reserveModelAttempt(TaskLease lease) {
         valid(lease);
-        if (sql.jdbc.update("UPDATE ai_tasks SET model_attempts=model_attempts+1 WHERE id=? AND model_attempts<IF(task_type IN ('NOTES_PPT','NOTES_VIDEO'),36,10)", lease.task().taskId()) != 1)
+        if (mapper.reserveModelAttemptAiTasksWrite(new Object[]{lease.task().taskId()}) != 1)
             throw new LabException("BUDGET_EXCEEDED", "持久模型尝试预算耗尽");
     }
 
@@ -193,7 +196,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public void reserveModelTurn(TaskLease lease) {
         valid(lease);
-        if (sql.jdbc.update("UPDATE ai_tasks SET model_turns=model_turns+1 WHERE id=? AND model_turns<IF(task_type IN ('NOTES_PPT','NOTES_VIDEO'),24,6)", lease.task().taskId()) != 1)
+        if (mapper.reserveModelTurnAiTasksWrite(new Object[]{lease.task().taskId()}) != 1)
             throw new LabException("BUDGET_EXCEEDED", "持久模型轮数耗尽");
     }
 
@@ -206,11 +209,11 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
         if (!List.of("research", "analysis", "report").contains(checkpoint.stepId()))
             throw LabException.invalid("未知模型检查点步骤");
         docs.verifySources(all(lease.actor()), checkpoint.sourceDependencies());
-        int count = sql.jdbc.queryForObject("SELECT COUNT(*) FROM task_steps WHERE task_id=? AND step_id=?", Integer.class, lease.task().taskId(), checkpoint.stepId());
+        int count = sql.scalar(mapper.checkpointTaskStepsSelect(new Object[]{lease.task().taskId(), checkpoint.stepId()}), Integer.class);
         if (count > 0) return;
-        sql.jdbc.update("INSERT INTO task_steps(task_id,step_id,content,source_json,partial) VALUES(?,?,?,?,?)", lease.task().taskId(), checkpoint.stepId(), checkpoint.content(), encode(checkpoint.sourceDependencies()), checkpoint.partial());
-        sql.jdbc.update("UPDATE task_step_progress SET status='SUCCEEDED',completed_at=CURRENT_TIMESTAMP(6),error_code=NULL WHERE task_id=? AND step_id=?", lease.task().taskId(), checkpoint.stepId());
-        sql.jdbc.update("UPDATE ai_tasks SET completed_steps=completed_steps+1,state_version=state_version+1 WHERE id=?", lease.task().taskId());
+        mapper.checkpointTaskStepsWrite(new Object[]{lease.task().taskId(), checkpoint.stepId(), checkpoint.content(), encode(checkpoint.sourceDependencies()), checkpoint.partial()});
+        mapper.checkpointTaskStepProgressWrite(new Object[]{lease.task().taskId(), checkpoint.stepId()});
+        mapper.checkpointAiTasksWrite(new Object[]{lease.task().taskId()});
     }
 
     /**
@@ -218,7 +221,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
      */
     public List<TaskCheckpoint> checkpoints(TaskLease lease) {
         sql.actor(lease.actor(), false);
-        var checkpoints = sql.jdbc.query("SELECT * FROM task_steps WHERE task_id=? ORDER BY step_id", (r, n) -> new TaskCheckpoint(r.getString("step_id"), r.getString("content"), sources(r.getString("source_json")), r.getBoolean("partial")), lease.task().taskId());
+        var checkpoints = sql.project(mapper.checkpointsTaskStepsSelect(new Object[]{lease.task().taskId()}), (r, n) -> new TaskCheckpoint(r.string("step_id"), r.string("content"), sources(r.string("source_json")), r.booleanValue("partial")));
         for (var c : checkpoints) docs.verifySources(all(lease.actor()), c.sourceDependencies());
         return checkpoints;
     }
@@ -237,7 +240,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
             if (c.documentVersion() != d.documentVersion() || c.processingRevision() != d.activeProcessingRevision()
                     || c.readStartOffset()!=0 || c.readEndOffset()!=0 || c.remainingStartOffset()!=0 || c.remainingEndOffset()!=content.text().length()
                     || c.completedPages()!=0 || c.complete()) throw new LabException("CONTEXT_MAPPING_INVALID","初始覆盖不是当前全文范围");
-            int root = sql.jdbc.queryForObject("SELECT COUNT(*) FROM document_sections WHERE document_id=? AND document_version=? AND processing_revision=? AND section_id=? AND ordinal=0 AND start_offset=0 AND end_offset=?",Integer.class,d.id(),d.documentVersion(),c.processingRevision(),c.sectionId(),content.text().length());
+            int root = sql.scalar(mapper.initializeCoverageDocumentSectionsSelect(new Object[]{d.id(), d.documentVersion(), c.processingRevision(), c.sectionId(), content.text().length()}), Integer.class);
             if (root != 1) throw new LabException("CONTEXT_MAPPING_INVALID","全文根章节缺失");
             var existing = coverage(lease.task().taskId()).stream().filter(old -> old.documentId()==c.documentId()).findFirst();
             if (existing.isPresent()) {
@@ -246,8 +249,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
                     throw new LabException("CONTEXT_VERSION_CONFLICT","恢复时覆盖版本已变化");
                 continue;
             }
-            sql.jdbc.update("INSERT INTO task_document_coverage(task_id,document_id,document_version,processing_revision,section_id,read_start,read_end,remaining_start,remaining_end,count_source) VALUES(?,?,?,?,?,0,0,0,?,?)",
-                    lease.task().taskId(),c.documentId(),c.documentVersion(),c.processingRevision(),c.sectionId(),c.remainingEndOffset(),TextWindow.COUNT_SOURCE);
+            mapper.initializeCoverageTaskDocumentCoverageWrite(new Object[]{lease.task().taskId(), c.documentId(), c.documentVersion(), c.processingRevision(), c.sectionId(), c.remainingEndOffset(), TextWindow.COUNT_SOURCE});
         }
         progressChanged(lease);
     }
@@ -257,15 +259,14 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     public void checkpointPage(TaskLease lease,TaskPageCheckpoint checkpoint) {
         valid(lease); validatePage(lease,checkpoint);
         var page = checkpoint.page(); long taskId = lease.task().taskId();
-        var previous = sql.jdbc.query("SELECT page_json,summary,source_json FROM task_document_pages WHERE task_id=? AND document_id=? AND page_index=?",(r,n) -> new TaskPageCheckpoint(checkpoint.pageIndex(),decode(r.getString(1),SectionPage.class),r.getString(2),sources(r.getString(3))),taskId,page.documentId(),checkpoint.pageIndex());
+        var previous = sql.project(mapper.checkpointPageTaskDocumentPagesSelect(new Object[]{taskId, page.documentId(), checkpoint.pageIndex()}), (r,n) -> new TaskPageCheckpoint(checkpoint.pageIndex(),decode(r.string(1),SectionPage.class),r.string(2),sources(r.string(3))));
         if (!previous.isEmpty()) {
             if (!previous.get(0).equals(checkpoint)) throw new LabException("OPERATION_CONFLICT","同页次已有不同成功事实");
             return;
         }
-        int changed = sql.jdbc.update("UPDATE task_document_coverage SET completed_pages=completed_pages+1,read_end=?,remaining_start=?,complete=? WHERE task_id=? AND document_id=? AND document_version=? AND processing_revision=? AND completed_pages=? AND read_end=? AND complete=FALSE",
-                page.endOffset(),page.endOffset(),page.complete(),taskId,page.documentId(),page.documentVersion(),page.processingRevision(),checkpoint.pageIndex(),page.startOffset());
+        int changed = mapper.checkpointPageTaskDocumentCoverageWrite(new Object[]{page.endOffset(), page.endOffset(), page.complete(), taskId, page.documentId(), page.documentVersion(), page.processingRevision(), checkpoint.pageIndex(), page.startOffset()});
         if (changed != 1) throw new LabException("CONTEXT_VERSION_CONFLICT","页次或覆盖游标不连续");
-        sql.jdbc.update("INSERT INTO task_document_pages(task_id,document_id,page_index,page_json,summary,source_json) VALUES(?,?,?,?,?,?)",taskId,page.documentId(),checkpoint.pageIndex(),encode(page),checkpoint.summary(),encode(checkpoint.sourceDependencies()));
+        mapper.checkpointPageTaskDocumentPagesWrite(new Object[]{taskId, page.documentId(), checkpoint.pageIndex(), encode(page), checkpoint.summary(), encode(checkpoint.sourceDependencies())});
         progressChanged(lease);
     }
 
@@ -273,7 +274,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public List<TaskPageCheckpoint> pages(TaskLease lease) {
         valid(lease);
-        var pages = sql.jdbc.query("SELECT * FROM task_document_pages WHERE task_id=? ORDER BY document_id,page_index",(r,n) -> new TaskPageCheckpoint(r.getInt("page_index"),decode(r.getString("page_json"),SectionPage.class),r.getString("summary"),sources(r.getString("source_json"))),lease.task().taskId());
+        var pages = sql.project(mapper.pagesTaskDocumentPagesSelect(new Object[]{lease.task().taskId()}), (r,n) -> new TaskPageCheckpoint(r.intValue("page_index"),decode(r.string("page_json"),SectionPage.class),r.string("summary"),sources(r.string("source_json"))));
         for (var page : pages) validatePage(lease,page);
         for (var c : coverage(lease.task().taskId())) {
             // 未读文档也绑定初始化时的版本／代次，不能在恢复途中悄悄换成新版剩余范围。
@@ -295,7 +296,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public int remainingModelTurns(TaskLease lease) {
         valid(lease);
-        return (media(lease.request().taskType())?24:6)-sql.jdbc.queryForObject("SELECT model_turns FROM ai_tasks WHERE id=?",Integer.class,lease.task().taskId());
+        return (media(lease.request().taskType())?24:6)-sql.scalar(mapper.remainingModelTurnsAiTasksSelect(new Object[]{lease.task().taskId()}), Integer.class);
     }
 
     /** 当前租约下恢复唯一计划；已成功节点仍由原检查点复用。 */
@@ -309,12 +310,12 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional(readOnly = true)
     public Optional<TaskPlanSnapshot> readPlan(UserContext actor, long taskId) {
         read(actor, taskId);
-        return sql.jdbc.query("SELECT * FROM task_plans WHERE task_id=?", (r, n) -> {
-            var plan = decode(r.getString("plan_json"), TaskPlan.class);
-            if (!SqlSupport.hash(encode(plan)).equals(r.getString("plan_hash")))
+        return sql.project(mapper.readPlanTaskPlansSelect(new Object[]{taskId}), (r, n) -> {
+            var plan = decode(r.string("plan_json"), TaskPlan.class);
+            if (!SqlSupport.hash(encode(plan)).equals(r.string("plan_hash")))
                 throw new LabException("CONTEXT_MAPPING_INVALID", "计划摘要不匹配");
-            return new TaskPlanSnapshot(plan, r.getString("plan_hash"), r.getString("agent_version"), r.getString("model_id"), r.getString("policy_version"));
-        }, taskId).stream().findFirst();
+            return new TaskPlanSnapshot(plan, r.string("plan_hash"), r.string("agent_version"), r.string("model_id"), r.string("policy_version"));
+        }).stream().findFirst();
     }
 
     /** 已校验计划不可覆盖；fencing／用户锁与任务写事务共用，远程生成在本方法外。 */
@@ -330,8 +331,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
             return;
         }
         String encoded = encode(plan);
-        sql.jdbc.update("INSERT INTO task_plans(task_id,plan_version,plan_hash,plan_json,agent_version,model_id,policy_version) VALUES(?,?,?,?,?,?,?)",
-                lease.task().taskId(), plan.version(), SqlSupport.hash(encoded), encoded, "s05-v1", modelId, policyVersion);
+        mapper.savePlanTaskPlansWrite(new Object[]{lease.task().taskId(), plan.version(), SqlSupport.hash(encoded), encoded, "s05-v1", modelId, policyVersion});
         progressChanged(lease);
     }
 
@@ -339,7 +339,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public void reserveToolCall(TaskLease lease) {
         valid(lease);
-        if (sql.jdbc.update("UPDATE ai_tasks SET tool_calls=tool_calls+1 WHERE id=? AND tool_calls<CASE task_type WHEN 'NOTES_PPT' THEN 40 WHEN 'NOTES_VIDEO' THEN 24 ELSE 8 END", lease.task().taskId()) != 1)
+        if (mapper.reserveToolCallAiTasksWrite(new Object[]{lease.task().taskId()}) != 1)
             throw new LabException("BUDGET_EXCEEDED", "持久工具预算耗尽");
     }
 
@@ -347,7 +347,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public void reserveModelRepair(TaskLease lease) {
         valid(lease);
-        if (sql.jdbc.update("UPDATE ai_tasks SET model_repairs=model_repairs+1 WHERE id=? AND model_repairs<1", lease.task().taskId()) != 1)
+        if (mapper.reserveModelRepairAiTasksWrite(new Object[]{lease.task().taskId()}) != 1)
             throw new LabException("MODEL_REPAIR_EXHAUSTED", "持久结构修复预算耗尽");
     }
 
@@ -363,7 +363,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
                 || p.tokenCount()!=TextWindow.count(p.text()) || !TextWindow.COUNT_SOURCE.equals(p.countSource())
                 || p.remainingStartOffset()!=p.endOffset() || p.remainingEndOffset()!=content.text().length() || p.complete()!=(p.endOffset()==content.text().length())
                 || !Objects.equals(p.nextOffset(),p.complete()?null:p.endOffset())) throw new LabException("CONTEXT_MAPPING_INVALID","分页原文映射不合法");
-        int section=sql.jdbc.queryForObject("SELECT COUNT(*) FROM document_sections WHERE document_id=? AND document_version=? AND processing_revision=? AND section_id=? AND start_offset<=? AND end_offset>=?",Integer.class,p.documentId(),p.documentVersion(),p.processingRevision(),p.sectionId(),p.startOffset(),p.endOffset());
+        int section=sql.scalar(mapper.validatePageDocumentSectionsSelect(new Object[]{p.documentId(), p.documentVersion(), p.processingRevision(), p.sectionId(), p.startOffset(), p.endOffset()}), Integer.class);
         if (section!=1 || !checkpoint.sourceDependencies().contains(new SourceDependency(d.knowledgeBaseId(),d.id(),d.documentVersion()))) throw new LabException("CONTEXT_MAPPING_INVALID","分页章节或来源缺失");
         docs.verifySources(all(lease.actor()),checkpoint.sourceDependencies());
         if (!checkpoint.sourceDependencies().containsAll(content.sourceDependencies())) throw new LabException("CONTEXT_MAPPING_INVALID","分页丢失派生来源约束");
@@ -377,7 +377,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
 
     /** 覆盖只包含位置和计数，不公开摘要草稿／提示词；历史任务为空表示未登记。 */
     private List<DocumentCoverage> coverage(long taskId) {
-        return sql.jdbc.query("SELECT * FROM task_document_coverage WHERE task_id=? ORDER BY document_id",(r,n) -> new DocumentCoverage(r.getLong("document_id"),r.getInt("document_version"),r.getLong("processing_revision"),r.getString("section_id"),r.getInt("completed_pages"),r.getInt("read_start"),r.getInt("read_end"),r.getInt("remaining_start"),r.getInt("remaining_end"),r.getBoolean("complete"),r.getString("count_source")),taskId);
+        return sql.project(mapper.coverageTaskDocumentCoverageSelect(new Object[]{taskId}), (r,n) -> new DocumentCoverage(r.longValue("document_id"),r.intValue("document_version"),r.longValue("processing_revision"),r.string("section_id"),r.intValue("completed_pages"),r.intValue("read_start"),r.intValue("read_end"),r.intValue("remaining_start"),r.intValue("remaining_end"),r.booleanValue("complete"),r.string("count_source")));
     }
 
     /**
@@ -393,10 +393,10 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
         docs.verifySources(all(lease.actor()), report.sourceDependencies());
         if (report.content().getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 1048576)
             throw new LabException("BUDGET_EXCEEDED", "报告超过 1 MB");
-        long id = sql.insert("INSERT INTO artifacts(requester_user_id,task_id,filename,mime,content,source_json,checksum) VALUES(?,?,'report.md','text/markdown',?,?,?)", lease.actor().userId(), lease.task().taskId(), report.content(), encode(report.sourceDependencies()), SqlSupport.hash(report.content()));
+        long id = sql.insert(command -> mapper.publishArtifactsInsert(command), lease.actor().userId(), lease.task().taskId(), report.content(), encode(report.sourceDependencies()), SqlSupport.hash(report.content()));
         // 发布事实与可下载产物同事务提交，避免在报告校验/授权完成之前显示 100%。
-        sql.jdbc.update("UPDATE task_step_progress SET status='SUCCEEDED',completed_at=CURRENT_TIMESTAMP(6),error_code=NULL WHERE task_id=? AND step_id='publish'", lease.task().taskId());
-        sql.jdbc.update("UPDATE ai_tasks SET status=?,artifact_id=?,state_version=state_version+1,lease_until=NULL,worker_id=NULL,total_execution_seconds=total_execution_seconds+TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6)),claimed_at=NULL WHERE id=?", report.partial() ? "PARTIAL" : "SUCCEEDED", id, lease.task().taskId());
+        mapper.publishTaskStepProgressWrite(new Object[]{lease.task().taskId()});
+        mapper.publishAiTasksWrite(new Object[]{report.partial() ? "PARTIAL" : "SUCCEEDED", id, lease.task().taskId()});
     }
 
     /**
@@ -409,8 +409,8 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
         } catch (LabException e) {
             return;
         }
-        sql.jdbc.update("UPDATE ai_tasks SET status='FAILED',error_code=?,state_version=state_version+1,lease_until=NULL,worker_id=NULL,total_execution_seconds=total_execution_seconds+TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6)),claimed_at=NULL WHERE id=?", code, lease.task().taskId());
-        sql.jdbc.update("UPDATE task_step_progress SET status='FAILED',error_code=? WHERE task_id=? AND status='RUNNING'", code, lease.task().taskId());
+        mapper.failAiTasksWrite(new Object[]{code, lease.task().taskId()});
+        mapper.failTaskStepProgressWrite(new Object[]{code, lease.task().taskId()});
     }
 
     /**
@@ -418,7 +418,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
      */
     public ArtifactSnapshot artifact(UserContext actor, long id) {
         sql.actor(actor, false);
-        var result = sql.jdbc.query("SELECT a.* FROM artifacts a JOIN ai_tasks t ON t.id=a.task_id WHERE a.id=? AND a.requester_user_id=? AND a.published=TRUE AND t.status IN ('SUCCEEDED','PARTIAL','MEDIA_READY','WAITING_MEDIA_REVIEW')", (r, n) -> new ArtifactSnapshot(r.getLong("id"), actor.userId(), r.getLong("task_id"), r.getString("filename"), r.getString("mime"), r.getString("content"), sources(r.getString("source_json")),r.getString("kind"),(Long)r.getObject("byte_size"),r.getString("checksum"),r.getString("storage_key"),r.getString("media_operation_id"),r.getInt("revision"),(Integer)r.getObject("preview_version")), id, actor.userId()).stream().findFirst().orElseThrow(LabException::denied);
+        var result = sql.project(mapper.artifactArtifactsSelect(new Object[]{id, actor.userId()}), (r, n) -> new ArtifactSnapshot(r.longValue("id"), actor.userId(), r.longValue("task_id"), r.string("filename"), r.string("mime"), r.string("content"), sources(r.string("source_json")),r.string("kind"),(Long)r.value("byte_size"),r.string("checksum"),r.string("storage_key"),r.string("media_operation_id"),r.intValue("revision"),(Integer)r.value("preview_version"))).stream().findFirst().orElseThrow(LabException::denied);
         docs.verifySources(all(actor), result.sourceDependencies());
         return result;
     }
@@ -443,33 +443,33 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
      */
     void valid(TaskLease lease) {
         sql.actor(lease.actor(), true);
-        int count = sql.jdbc.queryForObject("SELECT COUNT(*) FROM ai_tasks WHERE id=? AND requester_user_id=? AND worker_id=? AND fencing_token=? AND status='RUNNING' AND lease_until>CURRENT_TIMESTAMP(6) AND workflow_version='report-v1' AND total_execution_seconds+TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6))<1200", Integer.class, lease.task().taskId(), lease.actor().userId(), lease.workerId(), lease.fencingToken());
+        int count = sql.scalar(mapper.validAiTasksSelect(new Object[]{lease.task().taskId(), lease.actor().userId(), lease.workerId(), lease.fencingToken()}), Integer.class);
         if (count != 1) throw new LabException("STALE_EXECUTION", "任务执行权或累计期限已失效");
     }
 
     /**
      * 不返回内部 lease/worker/私有文件路径。
      */
-    private TaskSnapshot task(ResultSet r, int n) throws SQLException {
-        long id = r.getLong("id");
-        var steps = sql.jdbc.query("SELECT * FROM task_step_progress WHERE task_id=? ORDER BY FIELD(step_id,'prepare','research','analysis','report','publish')", (step, row) ->
-                new TaskStepSnapshot(step.getString("step_id"), TaskProgress.label(step.getString("step_id")),
-                        step.getString("status"), instant(step, "started_at"), instant(step, "completed_at"), step.getString("error_code")), id);
+    private TaskSnapshot task(SqlRow r, int n) {
+        long id = r.longValue("id");
+        var steps = sql.project(mapper.taskTaskStepProgressSelect(new Object[]{id}), (step, row) ->
+                new TaskStepSnapshot(step.string("step_id"), TaskProgress.label(step.string("step_id")),
+                        step.string("status"), instant(step, "started_at"), instant(step, "completed_at"), step.string("error_code")));
         if (steps.size() != TaskProgress.stepIds().size()) throw new IllegalStateException("任务步骤进度不完整");
         Instant now = instant(r, "server_now"), leaseUntil = instant(r, "lease_until"), claimedAt = instant(r, "claimed_at");
         boolean leaseActive = leaseUntil != null && leaseUntil.isAfter(now);
         // 自动失败/撤销的历史行可能仍有 claimed_at，终止后用更新时间冻结计时。
-        Instant measuredAt = r.getString("status").equals("RUNNING") ? now : instant(r, "updated_at");
-        long elapsed = r.getLong("total_execution_seconds") + (claimedAt == null || measuredAt == null ? 0
+        Instant measuredAt = r.string("status").equals("RUNNING") ? now : instant(r, "updated_at");
+        long elapsed = r.longValue("total_execution_seconds") + (claimedAt == null || measuredAt == null ? 0
                 : Math.max(0, Duration.between(claimedAt, measuredAt).getSeconds()));
-        var progress = media(r.getString("task_type")) ? TaskProgress.media(r.getString("status"), r.getString("media_phase"), mediaWorkerEnabled, leaseActive, steps, instant(r,"started_at"), instant(r,"updated_at"), instant(r,"heartbeat_at"), elapsed) : TaskProgress.from(r.getString("status"), workerEnabled, leaseActive, steps,
+        var progress = media(r.string("task_type")) ? TaskProgress.media(r.string("status"), r.string("media_phase"), mediaWorkerEnabled, leaseActive, steps, instant(r,"started_at"), instant(r,"updated_at"), instant(r,"heartbeat_at"), elapsed) : TaskProgress.from(r.string("status"), workerEnabled, leaseActive, steps,
                 instant(r, "started_at"), instant(r, "updated_at"), instant(r, "heartbeat_at"), elapsed);
-        return new TaskSnapshot(id, r.getLong("requester_user_id"), r.getString("task_type"), r.getString("status"), r.getLong("state_version"), r.getInt("model_attempts"), r.getInt("completed_steps"), r.getString("error_code"), (Long) r.getObject("artifact_id"), progress,coverage(id));
+        return new TaskSnapshot(id, r.longValue("requester_user_id"), r.string("task_type"), r.string("status"), r.longValue("state_version"), r.intValue("model_attempts"), r.intValue("completed_steps"), r.string("error_code"), (Long) r.value("artifact_id"), progress,coverage(id));
     }
 
     /** JDBC 使用 UTC 时区转换 TIMESTAMP，历史缺失时间保持 null。 */
-    private Instant instant(ResultSet row, String column) throws SQLException {
-        Timestamp timestamp = row.getTimestamp(column);
+    private Instant instant(SqlRow row, String column) {
+        Timestamp timestamp = row.timestamp(column);
         return timestamp == null ? null : timestamp.toInstant();
     }
 

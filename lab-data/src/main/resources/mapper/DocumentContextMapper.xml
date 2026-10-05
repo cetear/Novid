@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.ailab.data.persistence.mapper.DocumentContextMapper">
+    <select id="sectionsDocumentSectionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM document_sections WHERE document_id=#{args[0]} AND document_version=#{args[1]} AND processing_revision=#{args[2]} ORDER BY ordinal LIMIT #{args[3]} OFFSET #{args[4]}
+    </select>
+
+    <select id="chunksChunksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM chunks WHERE document_id=#{args[0]} AND document_version=#{args[1]} AND processing_revision=#{args[2]} ORDER BY start_offset LIMIT #{args[3]} OFFSET #{args[4]}
+    </select>
+
+    <select id="sectionPageDocumentSectionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM document_sections WHERE document_id=#{args[0]} AND document_version=#{args[1]} AND processing_revision=#{args[2]} AND <choose><when test="sectionId == null">ordinal=0</when><otherwise>section_id=#{sectionId}</otherwise></choose>
+    </select>
+
+    <select id="ingestionDocumentIngestionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM document_ingestions WHERE document_id=#{args[0]} AND document_version=#{args[1]} ORDER BY processing_revision DESC LIMIT 1
+    </select>
+
+    <select id="progressIngestionBatchesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) planned,COALESCE(SUM(state IN ('EMBEDDED','INDEXED')),0) embedded,COALESCE(SUM(state='INDEXED'),0) indexed,COALESCE(SUM(state IN ('SENDING','UNKNOWN')),0) unknown_count FROM ingestion_batches WHERE ingestion_id=#{args[0]}
+    </select>
+
+    <select id="documentPageDocumentSectionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM document_sections WHERE document_id=#{args[0]} AND document_version=#{args[1]} AND processing_revision=#{args[2]} AND start_offset&lt;=#{args[3]} ORDER BY ordinal DESC LIMIT 1
+    </select>
+
+    <select id="documentPageDocumentSectionsSelect2" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT MIN(start_offset) FROM document_sections WHERE document_id=#{args[0]} AND document_version=#{args[1]} AND processing_revision=#{args[2]} AND ordinal&gt;#{args[3]}
+    </select>
+
+    <select id="expandChunksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM chunks WHERE chunk_id=#{args[0]} AND document_id=#{args[1]} AND document_version=#{args[2]} AND processing_revision=#{args[3]}
+    </select>
+
+    <select id="expandDocumentSectionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM document_sections WHERE section_id=#{args[0]} AND document_id=#{args[1]} AND document_version=#{args[2]} AND processing_revision=#{args[3]}
+    </select>
+
+    <select id="expandContextParentsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM context_parents WHERE parent_id=#{args[0]} AND section_id=#{args[1]} AND document_id=#{args[2]} AND document_version=#{args[3]} AND processing_revision=#{args[4]}
+    </select>
+
+    <select id="expandChunksSelect2" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM chunks WHERE parent_id=#{args[0]} AND section_id=#{args[1]} AND document_id=#{args[2]} AND document_version=#{args[3]} AND processing_revision=#{args[4]} ORDER BY index_in_parent
+    </select>
+
+    <select id="expandChunksSelect3" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM chunks WHERE section_id=#{args[0]} AND document_id=#{args[1]} AND document_version=#{args[2]} AND processing_revision=#{args[3]} AND index_in_section BETWEEN #{args[4]} AND #{args[5]} ORDER BY index_in_section
+    </select>
+
+    <select id="expandChunksSelect4" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM chunks WHERE document_id=#{args[0]} AND document_version=#{args[1]} AND processing_revision=#{args[2]} AND section_id=#{args[3]} AND start_offset&lt;#{args[4]} AND end_offset&gt;#{args[5]} ORDER BY index_in_section
+    </select>
+</mapper>

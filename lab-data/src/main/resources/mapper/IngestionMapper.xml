@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.ailab.data.persistence.mapper.IngestionMapper">
+    <select id="claimSystemControlSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT id FROM system_control WHERE id=1 FOR UPDATE
+    </select>
+
+    <update id="claimDocumentIngestionsWrite">
+        UPDATE document_ingestions i SET i.status='FAILED',i.retryable=FALSE,i.error_code='EMBEDDING_RESULT_UNKNOWN',i.failure_stage='EMBEDDING',i.lease_until=NULL WHERE i.status='PROCESSING' AND i.lease_until&lt;CURRENT_TIMESTAMP(6) AND EXISTS(SELECT 1 FROM ingestion_batches b WHERE b.ingestion_id=i.id AND b.state='SENDING')
+    </update>
+
+    <update id="claimIngestionBatchesWrite">
+        UPDATE ingestion_batches b JOIN document_ingestions i ON i.id=b.ingestion_id SET b.state='UNKNOWN' WHERE b.state='SENDING' AND i.error_code='EMBEDDING_RESULT_UNKNOWN'
+    </update>
+
+    <update id="claimDocumentIngestionsWrite2">
+        UPDATE document_ingestions SET status='FAILED',retryable=FALSE,error_code='INGESTION_BUDGET_EXCEEDED',failure_stage=phase,lease_until=NULL WHERE retryable=TRUE AND status IN ('RECEIVED','FAILED','PROCESSING') AND (execution_deadline&lt;=CURRENT_TIMESTAMP(6) OR attempt&gt;=3 AND (status&lt;&gt;'PROCESSING' OR lease_until&lt;CURRENT_TIMESTAMP(6)))
+    </update>
+
+    <select id="claimDocumentIngestionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT i.id FROM document_ingestions i JOIN documents d ON d.id=i.document_id JOIN users u ON u.id=i.actor_user_id JOIN knowledge_bases k ON k.id=d.knowledge_base_id WHERE d.deleted=FALSE AND k.enabled=TRUE AND k.deleted=FALSE AND u.enabled=TRUE AND u.password_change_required=FALSE AND d.current_version=i.document_version AND i.attempt&lt;3 AND i.retryable=TRUE AND (i.execution_deadline IS NULL OR i.execution_deadline&gt;CURRENT_TIMESTAMP(6)) AND i.processing_revision=(SELECT MAX(newest.processing_revision) FROM document_ingestions newest WHERE newest.document_id=i.document_id AND newest.document_version=i.document_version) AND i.next_attempt_at&lt;=CURRENT_TIMESTAMP(6) AND (i.status='RECEIVED' OR i.status='FAILED' OR i.status='PROCESSING' AND i.lease_until&lt;CURRENT_TIMESTAMP(6)) ORDER BY i.id LIMIT 1 FOR UPDATE SKIP LOCKED
+    </select>
+
+    <update id="claimDocumentIngestionsWrite3">
+        UPDATE document_ingestions SET status='PROCESSING',attempt=attempt+1,worker_id=#{args[0]},fencing_token=fencing_token+1,lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND),execution_deadline=COALESCE(execution_deadline,DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 600 SECOND)) WHERE id=#{args[1]}
+    </update>
+
+    <select id="claimDocumentIngestionsSelect2" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT i.*,d.title,d.format,v.raw_text,u.* FROM document_ingestions i JOIN documents d ON d.id=i.document_id JOIN document_versions v ON v.document_id=i.document_id AND v.document_version=i.document_version JOIN users u ON u.id=i.actor_user_id WHERE i.id=#{args[0]}
+    </select>
+
+    <update id="renewDocumentIngestionsWrite">
+        UPDATE document_ingestions SET lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND) WHERE id=#{args[0]} AND worker_id=#{args[1]} AND fencing_token=#{args[2]}
+    </update>
+
+    <select id="saveStructureDocumentIngestionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT config_hash FROM document_ingestions WHERE id=#{args[0]}
+    </select>
+
+    <select id="saveStructureChunksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT chunk_id,chunk_hash FROM chunks WHERE document_id=#{args[0]} AND document_version=#{args[1]} AND processing_revision=#{args[2]}
+    </select>
+
+    <delete id="saveStructureChunksWrite">
+        DELETE FROM chunks WHERE document_id=#{args[0]} AND document_version=#{args[1]} AND processing_revision=#{args[2]}
+    </delete>
+
+    <delete id="saveStructureContextParentsWrite">
+        DELETE FROM context_parents WHERE document_id=#{args[0]} AND document_version=#{args[1]} AND processing_revision=#{args[2]}
+    </delete>
+
+    <delete id="saveStructureDocumentSectionsWrite">
+        DELETE FROM document_sections WHERE document_id=#{args[0]} AND document_version=#{args[1]} AND processing_revision=#{args[2]}
+    </delete>
+
+    <insert id="saveStructureDocumentSectionsWrite2">
+        INSERT INTO document_sections VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]},#{args[8]},#{args[9]})
+    </insert>
+
+    <insert id="saveStructureContextParentsWrite2">
+        INSERT INTO context_parents VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]})
+    </insert>
+
+    <insert id="saveStructureChunksWrite2">
+        INSERT INTO chunks(chunk_id,document_id,document_version,processing_revision,section_id,parent_id,index_in_section,index_in_parent,start_offset,end_offset,raw_text,embedding_text,chunk_hash,block_type,block_id,part_index,source_map,token_count,count_source) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]},#{args[8]},#{args[9]},#{args[10]},#{args[11]},#{args[12]},#{args[13]},#{args[14]},#{args[15]},#{args[16]},#{args[17]},#{args[18]})
+    </insert>
+
+    <update id="saveStructureDocumentIngestionsWrite">
+        UPDATE document_ingestions SET expected_chunk_count=#{args[0]},config_hash=#{args[1]},parser_version=#{args[2]},split_policy_version=#{args[3]},mapping_version=#{args[4]},tokenizer_ref=#{args[5]},count_source=#{args[6]} WHERE id=#{args[7]}
+    </update>
+
+    <select id="planDocumentIngestionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT expected_chunk_count FROM document_ingestions WHERE id=#{args[0]}
+    </select>
+
+    <select id="planIngestionBatchesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM ingestion_batches WHERE ingestion_id=#{args[0]} ORDER BY ordinal
+    </select>
+
+    <insert id="planIngestionBatchesWrite">
+        INSERT INTO ingestion_batches(ingestion_id,ordinal,start_index,item_count,batch_key,input_hash,input_tokens) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]})
+    </insert>
+
+    <update id="planDocumentIngestionsWrite">
+        UPDATE document_ingestions SET execution_deadline=COALESCE(execution_deadline,DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 600 SECOND)) WHERE id=#{args[0]}
+    </update>
+
+    <select id="batchIngestionBatchesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM ingestion_batches WHERE ingestion_id=#{args[0]} AND ordinal=#{args[1]}
+    </select>
+
+    <select id="budgetDocumentIngestionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT execution_deadline,model_attempts,reserved_input_tokens FROM document_ingestions WHERE id=#{args[0]}
+    </select>
+
+    <select id="beginEmbeddingIngestionBatchesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM ingestion_batches WHERE ingestion_id=#{args[0]} AND ordinal=#{args[1]}
+    </select>
+
+    <update id="beginEmbeddingDocumentIngestionsWrite">
+        UPDATE document_ingestions SET model_attempts=model_attempts+1,reserved_input_tokens=reserved_input_tokens+#{args[0]},unknown_usage_attempts=unknown_usage_attempts+1,phase='EMBEDDING' WHERE id=#{args[1]} AND model_attempts&lt;160 AND reserved_input_tokens+#{args[2]}&lt;=2500000
+    </update>
+
+    <select id="beginEmbeddingDocumentIngestionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT model_attempts FROM document_ingestions WHERE id=#{args[0]}
+    </select>
+
+    <insert id="beginEmbeddingIngestionModelAttemptsWrite">
+        INSERT INTO ingestion_model_attempts(ingestion_id,attempt_no,batch_ordinal,input_tokens) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]})
+    </insert>
+
+    <update id="beginEmbeddingIngestionBatchesWrite">
+        UPDATE ingestion_batches SET state='SENDING' WHERE ingestion_id=#{args[0]} AND ordinal=#{args[1]}
+    </update>
+
+    <update id="completeEmbeddingIngestionModelAttemptsWrite">
+        UPDATE ingestion_model_attempts SET actual_input_tokens=#{args[0]},result='LATE_SUCCEEDED',completed_at=CURRENT_TIMESTAMP(6) WHERE ingestion_id=#{args[1]} AND batch_ordinal=#{args[2]} AND result='UNKNOWN'
+    </update>
+
+    <update id="completeEmbeddingDocumentIngestionsWrite">
+        UPDATE document_ingestions SET actual_input_tokens=actual_input_tokens+#{args[0]},unknown_usage_attempts=unknown_usage_attempts-1 WHERE id=#{args[1]}
+    </update>
+
+    <select id="completeEmbeddingIngestionBatchesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM ingestion_batches WHERE ingestion_id=#{args[0]} AND ordinal=#{args[1]}
+    </select>
+
+    <update id="completeEmbeddingIngestionBatchesWrite">
+        UPDATE ingestion_batches SET state='EMBEDDED',vector_json=#{args[0]},model_version=#{args[1]} WHERE ingestion_id=#{args[2]} AND ordinal=#{args[3]}
+    </update>
+
+    <update id="completeEmbeddingIngestionModelAttemptsWrite2">
+        UPDATE ingestion_model_attempts SET result='SUCCEEDED',actual_input_tokens=#{args[0]},completed_at=CURRENT_TIMESTAMP(6) WHERE ingestion_id=#{args[1]} AND batch_ordinal=#{args[2]} AND result='UNKNOWN'
+    </update>
+
+    <update id="completeEmbeddingDocumentIngestionsWrite2">
+        UPDATE document_ingestions SET actual_input_tokens=actual_input_tokens+#{args[0]},unknown_usage_attempts=unknown_usage_attempts-#{args[1]},peak_vector_items=GREATEST(peak_vector_items,#{args[2]}) WHERE id=#{args[3]}
+    </update>
+
+    <update id="phaseDocumentIngestionsWrite">
+        UPDATE document_ingestions SET phase=#{args[0]} WHERE id=#{args[1]}
+    </update>
+
+    <update id="indexedIngestionBatchesWrite">
+        UPDATE ingestion_batches SET state='INDEXED' WHERE ingestion_id=#{args[0]} AND ordinal=#{args[1]} AND state IN ('EMBEDDED','INDEXED')
+    </update>
+
+    <select id="activateChunksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) FROM chunks WHERE document_id=#{args[0]} AND document_version=#{args[1]} AND processing_revision=#{args[2]}
+    </select>
+
+    <select id="activateIngestionBatchesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COALESCE(SUM(item_count),0) FROM ingestion_batches WHERE ingestion_id=#{args[0]} AND state='INDEXED'
+    </select>
+
+    <update id="activateDocumentVersionsWrite">
+        UPDATE document_versions SET active_processing_revision=#{args[0]},ingestion_status='READY' WHERE document_id=#{args[1]} AND document_version=#{args[2]}
+    </update>
+
+    <update id="activateDocumentIngestionsWrite">
+        UPDATE document_ingestions SET status='READY',phase='READY',lease_until=NULL,error_code=NULL,failure_stage=NULL,retryable=FALSE WHERE id=#{args[0]}
+    </update>
+
+    <update id="activateOutboxEventsWrite">
+        UPDATE outbox_events SET status='DONE' WHERE event_type='INGEST_DOCUMENT' AND resource_id=#{args[0]} AND resource_version=#{args[1]}
+    </update>
+
+    <update id="failDocumentIngestionsWrite">
+        UPDATE document_ingestions i JOIN documents d ON d.id=i.document_id JOIN knowledge_bases k ON k.id=d.knowledge_base_id SET i.status='FAILED',i.failure_stage=i.phase,i.lease_until=NULL,i.retryable=FALSE,i.error_code=CASE WHEN d.deleted THEN 'DOCUMENT_DELETED' WHEN k.deleted THEN 'LIBRARY_DELETED' WHEN NOT k.enabled THEN 'LIBRARY_DISABLED' WHEN d.current_version&lt;&gt;i.document_version THEN 'DOCUMENT_VERSION_CHANGED' WHEN i.execution_deadline&lt;=CURRENT_TIMESTAMP(6) THEN 'INGESTION_BUDGET_EXCEEDED' ELSE 'STALE_EXECUTION' END WHERE i.id=#{args[0]} AND i.worker_id=#{args[1]} AND i.fencing_token=#{args[2]} AND i.status='PROCESSING'
+    </update>
+
+    <select id="failIngestionBatchesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) FROM ingestion_batches WHERE ingestion_id=#{args[0]} AND state IN ('SENDING','UNKNOWN')
+    </select>
+
+    <update id="failIngestionBatchesWrite">
+        UPDATE ingestion_batches SET state='UNKNOWN' WHERE ingestion_id=#{args[0]} AND state='SENDING'
+    </update>
+
+    <update id="failDocumentIngestionsWrite2">
+        UPDATE document_ingestions SET status='FAILED',error_code=#{args[0]},failure_stage=IF(#{args[1]},'EMBEDDING',phase),retryable=#{args[2]},lease_until=NULL,next_attempt_at=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 30 SECOND) WHERE id=#{args[3]}
+    </update>
+
+    <update id="failDocumentVersionsWrite">
+        UPDATE document_versions SET ingestion_status=IF(active_processing_revision IS NULL,'FAILED',ingestion_status) WHERE document_id=#{args[0]} AND document_version=#{args[1]}
+    </update>
+
+    <select id="reprocessDocumentIngestionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COALESCE(MAX(processing_revision),0)+1 FROM document_ingestions WHERE document_id=#{args[0]} AND document_version=#{args[1]}
+    </select>
+
+    <insert id="reprocessDocumentIngestionsWrite">
+        INSERT INTO document_ingestions(document_id,document_version,processing_revision,actor_user_id) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]})
+    </insert>
+
+    <update id="recoverDocumentIngestionsWrite">
+        UPDATE document_ingestions i SET next_attempt_at=CURRENT_TIMESTAMP(6) WHERE i.document_id=#{args[0]} AND i.document_version=#{args[1]} AND i.processing_revision=#{args[2]} AND i.status='FAILED' AND i.retryable=TRUE AND i.attempt&lt;3 AND i.execution_deadline&gt;CURRENT_TIMESTAMP(6) AND NOT EXISTS(SELECT 1 FROM ingestion_batches b WHERE b.ingestion_id=i.id AND b.state IN ('SENDING','UNKNOWN')) AND i.processing_revision=(SELECT newest.rev FROM (SELECT MAX(processing_revision) rev FROM document_ingestions WHERE document_id=#{args[3]} AND document_version=#{args[4]}) newest)
+    </update>
+
+    <select id="validDocumentIngestionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) FROM document_ingestions i JOIN documents d ON d.id=i.document_id JOIN knowledge_bases k ON k.id=d.knowledge_base_id WHERE i.id=#{args[0]} AND i.document_id=#{args[1]} AND i.document_version=#{args[2]} AND i.processing_revision=#{args[3]} AND i.actor_user_id=#{args[4]} AND i.worker_id=#{args[5]} AND i.fencing_token=#{args[6]} AND i.status='PROCESSING' AND i.lease_until&gt;CURRENT_TIMESTAMP(6) AND (i.execution_deadline IS NULL OR i.execution_deadline&gt;CURRENT_TIMESTAMP(6)) AND d.current_version=i.document_version AND d.deleted=FALSE AND k.deleted=FALSE AND k.enabled=TRUE AND d.owner_user_id=i.actor_user_id AND i.processing_revision=(SELECT MAX(j.processing_revision) FROM document_ingestions j WHERE j.document_id=i.document_id AND j.document_version=i.document_version)
+    </select>
+</mapper>

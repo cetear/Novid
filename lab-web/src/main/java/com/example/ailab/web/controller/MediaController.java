@@ -1,6 +1,7 @@
 package com.example.ailab.web.controller;
 import com.example.ailab.business.application.MediaApplicationService;
 import com.example.ailab.contract.dto.Media;
+import com.example.ailab.contract.dto.VideoApi;
 import com.example.ailab.web.security.CurrentUser;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -13,7 +14,7 @@ import java.util.List;
 @RestController @RequestMapping("/api/v1")
 public class MediaController {
     private final MediaApplicationService service;
-    public record Edit(@Min(1) @Max(10) int previewVersion,@NotEmpty @Size(max=12) List<Media.Unit> units) { }
+    public record Edit(@Min(1) @Max(10) int previewVersion,@NotEmpty @Size(max=12) List<Media.@NotNull Unit> units) { }
     public record Decision(boolean approved,@Positive long taskId) { }
     public record HumanReview(@Min(1) @Max(10) int previewVersion,boolean accepted,@NotBlank @Size(max=2000) String note) { }
     public record PresentationExport(@Min(1) @Max(10) int previewVersion) { }
@@ -21,7 +22,7 @@ public class MediaController {
     @PostMapping("/tasks/{id}/presentation-export") public ResponseEntity<Void> export(Authentication a,@PathVariable long id,@Valid @RequestBody PresentationExport r){service.exportPresentation(CurrentUser.from(a),id,r.previewVersion());return ResponseEntity.accepted().header("Cache-Control","no-store").header("Retry-After","2").build();}
     /** 返回当前本人版本的检查／PNG下载ID，没有结果时204。 */
     @GetMapping("/tasks/{id}/presentation-check") public ResponseEntity<com.example.ailab.contract.dto.Presentation.Bundle> check(Authentication a,@PathVariable long id){return service.presentationCheck(CurrentUser.from(a),id).map(p->ResponseEntity.ok().header("Cache-Control","no-store").body(p)).orElseGet(()->ResponseEntity.noContent().header("Cache-Control","no-store").build());}
-    public record VideoSelection(@Min(1) @Max(10) int previewVersion,@NotEmpty @Size(max=6) List<com.example.ailab.contract.dto.VideoApi.Recommendation> shots) { }
+    public record VideoSelection(@Min(1) @Max(10) int previewVersion,@NotEmpty @Size(max=6) List<VideoApi.@NotNull Recommendation> shots) { }
     /** 修改建议后必须对新版本重新批准，不能沿用旧费用确认。 */
     @PatchMapping("/tasks/{id}/video-selection") public ResponseEntity<Media.Preview> selection(Authentication a,@PathVariable long id,@Valid @RequestBody VideoSelection r){return ResponseEntity.ok().header("Cache-Control","no-store").body(service.videoSelection(CurrentUser.from(a),id,r.previewVersion(),r.shots()));}
     /** 本人对听看效果作明确验收，提交不同于费用批准。 */

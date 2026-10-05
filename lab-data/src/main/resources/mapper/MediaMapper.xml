@@ -1,0 +1,366 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.ailab.data.persistence.mapper.MediaMapper">
+    <select id="previewGenerationPreviewsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT preview_json,status FROM generation_previews WHERE task_id=#{args[0]} ORDER BY preview_version DESC LIMIT 1
+    </select>
+
+    <insert id="planMediaPlansWrite">
+        INSERT INTO media_plans(task_id,plan_version,plan_hash,plan_json,model_id,policy_version) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]})
+    </insert>
+
+    <select id="plansMediaPlansSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM media_plans WHERE task_id=#{args[0]} ORDER BY plan_version
+    </select>
+
+    <select id="resultsMediaWorkerResultsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT result_json FROM media_worker_results WHERE task_id=#{args[0]} AND plan_version=#{args[1]} ORDER BY step_id
+    </select>
+
+    <insert id="resultMediaWorkerResultsWrite">
+        INSERT INTO media_worker_results(task_id,plan_version,step_id,input_hash,result_json) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]})
+    </insert>
+
+    <update id="consumeAiTasksWrite">
+        <choose>
+            <when test="column == 'media_replans'">UPDATE ai_tasks SET media_replans=media_replans+1 WHERE id=#{args[0]} AND media_replans&lt;1</when>
+            <otherwise>UPDATE ai_tasks SET media_reworks=media_reworks+1 WHERE id=#{args[0]} AND media_reworks&lt;1</otherwise>
+        </choose>
+    </update>
+
+    <select id="prepareMediaCatalogItemsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT item_json FROM media_catalog_items WHERE item_id=#{args[0]} AND version=#{args[1]}
+    </select>
+
+    <insert id="prepareMediaCatalogItemsWrite">
+        INSERT INTO media_catalog_items(item_id,version,kind,enabled,item_json) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]})
+    </insert>
+
+    <update id="prepareTaskStepProgressWrite">
+        UPDATE task_step_progress SET status='SUCCEEDED',completed_at=CURRENT_TIMESTAMP(6) WHERE task_id=#{args[0]} AND step_id IN ('research','analysis','report')
+    </update>
+
+    <select id="editMediaOperationsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT operation_id,fee_scope_id FROM media_operations WHERE task_id=#{args[0]} AND state='RESERVED'
+    </select>
+
+    <update id="editMediaOperationsWrite">
+        UPDATE media_operations SET state='INVALIDATED' WHERE operation_id=#{args[0]}
+    </update>
+
+    <update id="editGenerationPreviewsWrite">
+        UPDATE generation_previews SET status='INVALIDATED' WHERE task_id=#{args[0]} AND preview_version=#{args[1]}
+    </update>
+
+    <update id="editArtifactsWrite">
+        UPDATE artifacts SET published=FALSE WHERE task_id=#{args[0]} AND kind IN ('PPTX','PAGE_PREVIEW','PPT_CHECK')
+    </update>
+
+    <update id="editAiTasksWrite">
+        UPDATE ai_tasks SET artifact_id=NULL WHERE id=#{args[0]}
+    </update>
+
+    <update id="editAiTasksWrite2">
+        UPDATE ai_tasks SET status='WAITING_APPROVAL',media_phase='REAPPROVAL_REQUIRED',error_code=NULL,media_remaining_seconds=IF(media_deadline IS NULL,media_remaining_seconds,GREATEST(0,TIMESTAMPDIFF(SECOND,CURRENT_TIMESTAMP(6),media_deadline))),media_deadline=NULL,fencing_token=fencing_token+1,state_version=state_version+1 WHERE id=#{args[0]}
+    </update>
+
+    <select id="decideGenerationPreviewsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT task_id FROM generation_previews WHERE approval_id=#{args[0]}
+    </select>
+
+    <update id="decideGenerationPreviewsWrite">
+        UPDATE generation_previews SET status='REJECTED' WHERE approval_id=#{args[0]}
+    </update>
+
+    <update id="decideAiTasksWrite">
+        UPDATE ai_tasks SET status='CANCELLED',media_phase='REJECTED',fencing_token=fencing_token+1,state_version=state_version+1 WHERE id=#{args[0]}
+    </update>
+
+    <insert id="decideMediaShotExecutionWrite">
+        INSERT INTO media_shot_execution(task_id,preview_version,shot_id,approval_hash) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]})
+    </insert>
+
+    <select id="decideMediaOperationsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT operation_id,asset_id FROM media_operations WHERE task_id=#{args[0]} AND unit_id=#{args[1]} AND capability=#{args[2]} AND input_hash=#{args[3]} AND state='SUCCEEDED' ORDER BY preview_version DESC LIMIT 1
+    </select>
+
+    <insert id="decideMediaOperationsWrite">
+        INSERT INTO media_operations(operation_id,task_id,preview_version,unit_id,capability,input_hash,submission_json,fee_scope_id) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]})
+    </insert>
+
+    <update id="decideMediaOperationsWrite2">
+        UPDATE media_operations SET provider_namespace=#{args[0]} WHERE operation_id=#{args[1]}
+    </update>
+
+    <update id="decideMediaShotExecutionWrite2">
+        UPDATE media_shot_execution SET <choose><when test="column == 'audio_asset_id'">audio_asset_id</when><otherwise>video_asset_id</otherwise></choose>=#{args[0]} WHERE task_id=#{args[1]} AND preview_version=#{args[2]} AND shot_id=#{args[3]}
+    </update>
+
+    <insert id="decideMediaPreviewOperationsWrite">
+        INSERT INTO media_preview_operations(task_id,preview_version,operation_id) VALUES(#{args[0]},#{args[1]},#{args[2]})
+    </insert>
+
+    <update id="decideGenerationPreviewsWrite2">
+        UPDATE generation_previews SET status='APPROVED' WHERE approval_id=#{args[0]} AND status='WAITING'
+    </update>
+
+    <update id="decideAiTasksWrite2">
+        UPDATE ai_tasks SET status='QUEUED',media_phase='APPROVED_MEDIA_PENDING',media_deadline=COALESCE(media_deadline,DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL LEAST(media_remaining_seconds,1200-total_execution_seconds) SECOND)),state_version=state_version+1 WHERE id=#{args[0]}
+    </update>
+
+    <select id="operationsMediaOperationsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT m.*,f.state AS fee_state FROM media_operations m JOIN fee_attempts f ON f.operation_id=m.operation_id JOIN media_preview_operations x ON x.operation_id=m.operation_id WHERE x.task_id=#{args[0]} AND x.preview_version=#{args[1]} ORDER BY m.capability,m.unit_id
+    </select>
+
+    <update id="sendingMediaOperationsWrite">
+        UPDATE media_operations SET state='SENDING',deadline=(SELECT media_deadline FROM ai_tasks WHERE id=#{args[0]}) WHERE operation_id=#{args[1]} AND state='RESERVED'
+    </update>
+
+    <insert id="sendingMediaAttemptsWrite">
+        INSERT INTO media_attempts(operation_id,action,attempt,fencing_token) VALUES(#{args[0]},'SUBMIT',1,#{args[1]})
+    </insert>
+
+    <select id="receivedMediaOperationsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT task_id FROM media_operations WHERE operation_id=#{args[0]}
+    </select>
+
+    <select id="receivedSystemControlSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT id FROM system_control WHERE id=1 FOR UPDATE
+    </select>
+
+    <select id="receivedMediaOperationsSelect2" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM media_operations WHERE operation_id=#{args[0]} FOR UPDATE
+    </select>
+
+    <update id="receivedMediaOperationsWrite">
+        UPDATE media_operations SET state=#{args[0]},provider_job_id=#{args[1]},provider_status=#{args[2]},response_json=#{args[3]},error_code=#{args[4]},next_poll_at=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL #{args[5]} SECOND) WHERE operation_id=#{args[6]}
+    </update>
+
+    <select id="pollingMediaOperationsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COALESCE(SUM(poll_count),0) FROM media_operations WHERE task_id=#{args[0]}
+    </select>
+
+    <update id="pollingMediaOperationsWrite">
+        UPDATE media_operations SET poll_count=poll_count+1,last_poll_at=CURRENT_TIMESTAMP(6),next_poll_at=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 30 SECOND) WHERE operation_id=#{args[0]}
+    </update>
+
+    <insert id="pollingMediaAttemptsWrite">
+        INSERT INTO media_attempts(operation_id,action,attempt,fencing_token) VALUES(#{args[0]},'QUERY',#{args[1]},#{args[2]})
+    </insert>
+
+    <update id="downloadingMediaOperationsWrite">
+        UPDATE media_operations SET download_count=download_count+1 WHERE operation_id=#{args[0]} AND download_count&lt;3
+    </update>
+
+    <insert id="downloadingMediaAttemptsWrite">
+        INSERT INTO media_attempts(operation_id,action,attempt,fencing_token) VALUES(#{args[0]},'DOWNLOAD',#{args[1]},#{args[2]})
+    </insert>
+
+    <select id="publishAssetMediaAssetsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COALESCE(SUM(byte_size),0) FROM media_assets WHERE task_id=#{args[0]}
+    </select>
+
+    <insert id="publishAssetArtifactsInsert" useGeneratedKeys="true" keyProperty="insert.id" keyColumn="id">
+        INSERT INTO artifacts(requester_user_id,task_id,filename,mime,content,source_json,checksum,kind,revision,unit_id,preview_version,storage_key,byte_size,media_operation_id,published) VALUES(#{insert.args[0]},#{insert.args[1]},#{insert.args[2]},#{insert.args[3]},#{insert.args[4]},#{insert.args[5]},#{insert.args[6]},#{insert.args[7]},#{insert.args[8]},#{insert.args[9]},#{insert.args[10]},#{insert.args[11]},#{insert.args[12]},#{insert.args[13]},FALSE)
+    </insert>
+
+    <insert id="publishAssetMediaAssetsWrite">
+        INSERT INTO media_assets(asset_id,task_id,unit_id,operation_id,asset_json,byte_size) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]})
+    </insert>
+
+    <update id="publishAssetMediaOperationsWrite">
+        UPDATE media_operations SET state='SUCCEEDED',asset_id=#{args[0]} WHERE operation_id=#{args[1]}
+    </update>
+
+    <update id="publishAssetMediaShotExecutionWrite">
+        UPDATE media_shot_execution SET <choose><when test="column == 'audio_asset_id'">audio_asset_id</when><otherwise>video_asset_id</otherwise></choose>=#{args[0]} WHERE task_id=#{args[1]} AND preview_version=#{args[2]} AND shot_id=#{args[3]}
+    </update>
+
+    <select id="webAssetMediaAssetsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COALESCE(SUM(byte_size),0) FROM media_assets WHERE task_id=#{args[0]}
+    </select>
+
+    <select id="webAssetMediaAssetsSelect2" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT asset_json FROM media_assets WHERE asset_id=#{args[0]}
+    </select>
+
+    <insert id="webAssetMediaAssetsWrite">
+        INSERT INTO media_assets(asset_id,task_id,unit_id,asset_json,byte_size) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]})
+    </insert>
+
+    <update id="measuredMediaShotExecutionWrite">
+        UPDATE media_shot_execution SET audio_duration_ms=#{args[0]} WHERE task_id=#{args[1]} AND preview_version=#{args[2]} AND shot_id=#{args[3]}
+    </update>
+
+    <update id="measuredMediaShotExecutionWrite2">
+        UPDATE media_shot_execution SET audio_duration_ms=#{args[0]},provider_duration_seconds=#{args[1]} WHERE task_id=#{args[2]} AND preview_version=#{args[3]} AND shot_id=#{args[4]} AND approval_hash=#{args[5]}
+    </update>
+
+    <select id="shotsMediaShotExecutionSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM media_shot_execution WHERE task_id=#{args[0]} AND preview_version=#{args[1]}
+    </select>
+
+    <select id="renderingMediaLocalRendersSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT asset_json FROM media_local_renders WHERE task_id=#{args[0]} AND unit_id=#{args[1]} AND input_hash=#{args[2]}
+    </select>
+
+    <insert id="renderingMediaLocalRendersWrite">
+        INSERT INTO media_local_renders(task_id,unit_id,input_hash) VALUES(#{args[0]},#{args[1]},#{args[2]})
+    </insert>
+
+    <update id="renderingMediaLocalRendersWrite2">
+        UPDATE media_local_renders SET attempt=attempt+1 WHERE task_id=#{args[0]} AND unit_id=#{args[1]} AND input_hash=#{args[2]} AND attempt&lt;2
+    </update>
+
+    <select id="renderedMediaLocalRendersSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT asset_json FROM media_local_renders WHERE task_id=#{args[0]} AND unit_id=#{args[1]} AND input_hash=#{args[2]}
+    </select>
+
+    <select id="renderedMediaAssetsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COALESCE(SUM(byte_size),0) FROM media_assets WHERE task_id=#{args[0]}
+    </select>
+
+    <update id="renderedMediaShotExecutionWrite">
+        UPDATE media_shot_execution SET timeline_start_ms=#{args[0]},timeline_end_ms=#{args[1]},rendered_asset_id=#{args[2]} WHERE task_id=#{args[3]} AND preview_version=#{args[4]} AND shot_id=#{args[5]}
+    </update>
+
+    <insert id="renderedArtifactsInsert" useGeneratedKeys="true" keyProperty="insert.id" keyColumn="id">
+        INSERT INTO artifacts(requester_user_id,task_id,filename,mime,content,source_json,checksum,kind,revision,unit_id,preview_version,storage_key,byte_size,published) VALUES(#{insert.args[0]},#{insert.args[1]},#{insert.args[2]},#{insert.args[3]},#{insert.args[4]},#{insert.args[5]},#{insert.args[6]},#{insert.args[7]},#{insert.args[8]},#{insert.args[9]},#{insert.args[10]},#{insert.args[11]},#{insert.args[12]},FALSE)
+    </insert>
+
+    <insert id="renderedMediaAssetsWrite">
+        INSERT INTO media_assets(asset_id,task_id,unit_id,asset_json,byte_size) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]})
+    </insert>
+
+    <update id="renderedMediaLocalRendersWrite">
+        UPDATE media_local_renders SET asset_json=#{args[0]} WHERE task_id=#{args[1]} AND unit_id=#{args[2]} AND input_hash=#{args[3]}
+    </update>
+
+    <select id="checkDeadlineAiTasksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT media_deadline FROM ai_tasks WHERE id=#{args[0]}
+    </select>
+
+    <select id="deadlineAiTasksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT media_deadline FROM ai_tasks WHERE id=#{args[0]}
+    </select>
+
+    <update id="publishVideoAiTasksWrite">
+        UPDATE ai_tasks SET artifact_id=#{args[0]} WHERE id=#{args[1]}
+    </update>
+
+    <select id="loadAssetsMediaAssetsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT asset_json FROM media_assets WHERE task_id=#{args[0]} ORDER BY unit_id
+    </select>
+
+    <insert id="yieldArtifactsWrite">
+        INSERT IGNORE INTO artifacts(requester_user_id,task_id,filename,mime,content,source_json,checksum,kind,revision,unit_id,preview_version) VALUES(#{args[0]},#{args[1]},'preview.json','application/json',#{args[2]},#{args[3]},#{args[4]},'PREVIEW_JSON',#{args[5]},'PREVIEW',#{args[6]})
+    </insert>
+
+    <update id="yieldArtifactsWrite2">
+        UPDATE artifacts SET published=TRUE WHERE task_id=#{args[0]} AND preview_version=#{args[1]}
+    </update>
+
+    <update id="yieldArtifactsWrite3">
+        UPDATE artifacts a JOIN media_preview_operations x ON x.operation_id=a.media_operation_id SET a.published=TRUE WHERE x.task_id=#{args[0]} AND x.preview_version=#{args[1]}
+    </update>
+
+    <update id="yieldTaskStepProgressWrite">
+        UPDATE task_step_progress SET status='SUCCEEDED',completed_at=CURRENT_TIMESTAMP(6) WHERE task_id=#{args[0]} AND step_id='publish'
+    </update>
+
+    <update id="yieldAiTasksWrite">
+        UPDATE ai_tasks SET status=#{args[0]},media_phase=#{args[1]},error_code=#{args[2]},state_version=state_version+1,lease_until=NULL,worker_id=NULL,total_execution_seconds=total_execution_seconds+TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6)),claimed_at=NULL WHERE id=#{args[3]}
+    </update>
+
+    <insert id="reviewMediaHumanReviewsWrite">
+        INSERT INTO media_human_reviews(task_id,preview_version,actor_id,accepted,note,approval_hash) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]})
+    </insert>
+
+    <update id="reviewAiTasksWrite">
+        UPDATE ai_tasks SET status=#{args[0]},media_phase=#{args[1]},state_version=state_version+1 WHERE id=#{args[2]}
+    </update>
+
+    <update id="reviewTaskStepProgressWrite">
+        UPDATE task_step_progress SET status='SUCCEEDED',completed_at=CURRENT_TIMESTAMP(6) WHERE task_id=#{args[0]} AND step_id='publish'
+    </update>
+
+    <select id="operationMediaOperationsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM media_operations WHERE operation_id=#{args[0]} AND task_id=#{args[1]} FOR UPDATE
+    </select>
+
+    <update id="phaseAiTasksWrite">
+        UPDATE ai_tasks SET media_phase=#{args[0]},state_version=state_version+1 WHERE id=#{args[1]}
+    </update>
+
+    <insert id="insertPreviewGenerationPreviewsWrite">
+        INSERT INTO generation_previews(task_id,preview_version,approval_id,preview_hash,config_hash,status,source_json,preview_json,expires_at) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]},#{args[8]})
+    </insert>
+
+    <select id="requestPresentationAiTasksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT media_deadline FROM ai_tasks WHERE id=#{args[0]}
+    </select>
+
+    <update id="requestPresentationAiTasksWrite">
+        UPDATE ai_tasks SET status='QUEUED',media_phase='PPT_EXPORT_QUEUED',artifact_id=NULL,error_code=NULL,fencing_token=fencing_token+1,state_version=state_version+1 WHERE id=#{args[0]}
+    </update>
+
+    <update id="requestPresentationTaskStepProgressWrite">
+        UPDATE task_step_progress SET status='PENDING',completed_at=NULL WHERE task_id=#{args[0]} AND step_id='publish'
+    </update>
+
+    <update id="requestPresentationArtifactsWrite">
+        UPDATE artifacts SET published=FALSE WHERE task_id=#{args[0]} AND kind IN ('PPTX','PAGE_PREVIEW','PPT_CHECK')
+    </update>
+
+    <select id="presentationStartPresentationExportsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT input_hash,bundle_json FROM presentation_exports WHERE task_id=#{args[0]} AND preview_version=#{args[1]}
+    </select>
+
+    <insert id="presentationStartPresentationExportsWrite">
+        INSERT INTO presentation_exports(task_id,preview_version,input_hash) VALUES(#{args[0]},#{args[1]},#{args[2]})
+    </insert>
+
+    <update id="presentationStartPresentationExportsWrite2">
+        UPDATE presentation_exports SET attempt=attempt+1,bundle_json=NULL WHERE task_id=#{args[0]} AND preview_version=#{args[1]} AND attempt&lt;2
+    </update>
+
+    <update id="presentationStartArtifactsWrite">
+        UPDATE artifacts SET published=FALSE WHERE task_id=#{args[0]} AND preview_version=#{args[1]} AND kind IN ('PPTX','PAGE_PREVIEW','PPT_CHECK')
+    </update>
+
+    <select id="presentationCompletePresentationExportsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT input_hash FROM presentation_exports WHERE task_id=#{args[0]} AND preview_version=#{args[1]}
+    </select>
+
+    <select id="presentationCompleteMediaAssetsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COALESCE(SUM(byte_size),0) FROM media_assets WHERE task_id=#{args[0]}
+    </select>
+
+    <update id="presentationCompletePresentationExportsWrite">
+        UPDATE presentation_exports SET bundle_json=#{args[0]} WHERE task_id=#{args[1]} AND preview_version=#{args[2]} AND input_hash=#{args[3]}
+    </update>
+
+    <insert id="presentationCompleteArtifactsWrite">
+        INSERT INTO artifacts(requester_user_id,task_id,filename,mime,content,source_json,checksum,kind,revision,unit_id,preview_version,published) VALUES(#{args[0]},#{args[1]},'presentation-check.json','application/json',#{args[2]},#{args[3]},#{args[4]},'PPT_CHECK',#{args[5]},'CHECK',#{args[6]},FALSE) ON DUPLICATE KEY UPDATE content=VALUES(content),checksum=VALUES(checksum),published=FALSE
+    </insert>
+
+    <update id="presentationCompleteAiTasksWrite">
+        UPDATE ai_tasks SET artifact_id=#{args[0]} WHERE id=#{args[1]}
+    </update>
+
+    <insert id="presentationArtifactArtifactsWrite">
+        INSERT INTO artifacts(requester_user_id,task_id,filename,mime,content,source_json,checksum,kind,revision,unit_id,preview_version,storage_key,byte_size,published) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]},#{args[8]},#{args[9]},#{args[10]},#{args[11]},#{args[12]},FALSE) ON DUPLICATE KEY UPDATE storage_key=VALUES(storage_key),byte_size=VALUES(byte_size),checksum=VALUES(checksum),published=FALSE
+    </insert>
+
+    <select id="presentationArtifactArtifactsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT id FROM artifacts WHERE task_id=#{args[0]} AND kind=#{args[1]} AND revision=#{args[2]} AND unit_id=#{args[3]}
+    </select>
+
+    <update id="phaseAfterReviewAiTasksWrite">
+        UPDATE ai_tasks SET media_phase='PPT_WAITING_REVIEW' WHERE id=#{args[0]}
+    </update>
+
+    <select id="presentationCheckPresentationExportsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT bundle_json FROM presentation_exports WHERE task_id=#{args[0]} AND preview_version=#{args[1]} AND bundle_json IS NOT NULL
+    </select>
+</mapper>

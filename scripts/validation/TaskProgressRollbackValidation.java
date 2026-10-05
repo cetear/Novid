@@ -5,6 +5,7 @@ import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.error.LabException;
 import com.example.ailab.contract.port.TaskStorePort;
 import com.example.ailab.data.repository.SqlSupport;
+import com.example.ailab.app.ValidationSql;
 import org.springframework.boot.SpringApplication;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -34,7 +35,7 @@ public class TaskProgressRollbackValidation {
             transaction.executeWithoutResult(status -> {
                 try {
                     String username = "progress-test-" + UUID.randomUUID().toString().substring(0, 12);
-                    context.getBean(SqlSupport.class).insert("INSERT INTO users(username,password_hash,role,password_change_required) VALUES(?,?,'ADMIN',FALSE)", username, new BCryptPasswordEncoder(12).encode(PASSWORD));
+                    ValidationSql.from(context).insert("INSERT INTO users(username,password_hash,role,password_change_required) VALUES(?,?,'ADMIN',FALSE)", username, new BCryptPasswordEncoder(12).encode(PASSWORD));
                     var accounts = context.getBean(AccountApplicationService.class);
                     var actor = accounts.authenticate(accounts.login(username, PASSWORD).token());
                     var tasks = context.getBean(TaskStorePort.class);

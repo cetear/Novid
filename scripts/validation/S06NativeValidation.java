@@ -120,7 +120,7 @@ public final class S06NativeValidation {
     private static void database() throws Exception {
         var app=new SpringApplication(LabApplication.class);LocalEnvironmentLoader.initialize(app,Path.of(".env"));
         try(var context=app.run("--lab.search.enabled=false","--lab.bootstrap.enabled=false","--lab.task.worker-enabled=false","--lab.ingestion.worker-enabled=false","--lab.model.mode=mock","--lab.observability.export-enabled=false","--spring.main.web-application-type=none","--spring.main.banner-mode=off","--logging.level.root=OFF")) {
-            var jdbc=context.getBean(JdbcTemplate.class);var sql=context.getBean(SqlSupport.class);var store=context.getBean(TraceRecordPort.class);
+            var jdbc=context.getBean(JdbcTemplate.class);var sql=ValidationSql.from(context);var store=context.getBean(TraceRecordPort.class);
             var before=counts(jdbc);var tx=new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
             tx.executeWithoutResult(status->{try {
                 var owner=actor(context.getBean(AccountApplicationService.class),sql);var other=actor(context.getBean(AccountApplicationService.class),sql);
@@ -157,7 +157,7 @@ public final class S06NativeValidation {
         }
     }
     /** 只创建唯一前缀合成管理员，密码不进入证据，禁止读已有用户。 */
-    private static UserContext actor(AccountApplicationService accounts,SqlSupport sql) {
+    private static UserContext actor(AccountApplicationService accounts,ValidationSql sql) {
         String name="s06-test-"+UUID.randomUUID().toString().substring(0,12);
         sql.insert("INSERT INTO users(username,password_hash,role,password_change_required) VALUES(?,?,'ADMIN',FALSE)",name,new BCryptPasswordEncoder(12).encode(PASSWORD));
         return accounts.authenticate(accounts.login(name,PASSWORD).token());

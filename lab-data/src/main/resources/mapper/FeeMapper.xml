@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.ailab.data.persistence.mapper.FeeMapper">
+    <update id="completeMediaOutcome">
+        UPDATE fee_attempts SET outcome=#{args[0]},response_hash=#{args[1]} WHERE operation_id=#{args[2]}
+    </update>
+    <select id="reserveAiTasksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT request_json FROM ai_tasks WHERE id=#{args[0]} AND requester_user_id=#{args[1]}
+    </select>
+
+    <select id="reserveFeeScopesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM fee_scopes WHERE scope_id=#{args[0]} FOR UPDATE
+    </select>
+
+    <insert id="reserveFeeScopesWrite">
+        INSERT INTO fee_scopes(scope_id,actor_user_id,scope_kind,resource_id,currency,limit_amount,token_limit,legacy_untracked_attempts) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]})
+    </insert>
+
+    <select id="reserveFeeScopesSelect2" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM fee_scopes WHERE scope_id=#{args[0]} FOR UPDATE
+    </select>
+
+    <select id="reserveFeeAttemptsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT request_hash FROM fee_attempts WHERE operation_id=#{args[0]}
+    </select>
+
+    <select id="reserveFeeAttemptsSelect2" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) FROM fee_attempts WHERE operation_id=#{args[0]} AND scope_id=#{args[1]}
+    </select>
+
+    <select id="reserveFeeAttemptsSelect3" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COALESCE(SUM(CASE WHEN state='RELEASED' THEN 0 WHEN state='SETTLED' THEN COALESCE(input_tokens,0)+COALESCE(output_tokens,0) ELSE reserved_input+reserved_output END),0) FROM fee_attempts WHERE scope_id=#{args[0]}
+    </select>
+
+    <insert id="reserveFeeAttemptsWrite">
+        INSERT INTO fee_attempts(operation_id,scope_id,run_id,model_id,operation_type,state,simulated,reserved_input,reserved_output,usage_source,price_ref,price_version,currency,price_unit,price_effective_at,input_rate,output_rate,reserved_amount,request_hash) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},'RESERVED',#{args[5]},#{args[6]},#{args[7]},'UNKNOWN',#{args[8]},#{args[9]},#{args[10]},#{args[11]},#{args[12]},#{args[13]},#{args[14]},#{args[15]},#{args[16]})
+    </insert>
+
+    <update id="reserveFeeAttemptsWrite2">
+        UPDATE fee_attempts SET reserved_units=#{args[0]} WHERE operation_id=#{args[1]}
+    </update>
+
+    <update id="sendingFeeAttemptsWrite">
+        UPDATE fee_attempts SET state='SENDING',sent_at=CURRENT_TIMESTAMP(6) WHERE operation_id=#{args[0]} AND scope_id=#{args[1]} AND state='RESERVED'
+    </update>
+
+    <update id="releaseFeeAttemptsWrite">
+        UPDATE fee_attempts SET state='RELEASED',outcome='NOT_SENT',completed_at=CURRENT_TIMESTAMP(6) WHERE operation_id=#{args[0]} AND scope_id=#{args[1]} AND state='RESERVED'
+    </update>
+
+    <select id="completeFeeAttemptsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM fee_attempts WHERE operation_id=#{args[0]} AND scope_id=#{args[1]} FOR UPDATE
+    </select>
+
+    <update id="completeFeeAttemptsWrite">
+        UPDATE fee_attempts SET state=#{args[0]},outcome=#{args[1]},input_tokens=#{args[2]},output_tokens=#{args[3]},usage_source=#{args[4]},estimated_amount=#{args[5]},response_hash=#{args[6]},completed_at=CURRENT_TIMESTAMP(6) WHERE operation_id=#{args[7]}
+    </update>
+
+    <select id="completeMediaFeeAttemptsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM fee_attempts WHERE operation_id=#{args[0]} AND scope_id=#{args[1]} FOR UPDATE
+    </select>
+
+    <update id="completeMediaFeeAttemptsWrite">
+        UPDATE fee_attempts SET state=#{args[0]},used_units=#{args[1]},usage_source=#{args[2]},estimated_amount=#{args[3]},outcome=#{args[4]},response_hash=#{args[5]},completed_at=CURRENT_TIMESTAMP(6) WHERE operation_id=#{args[6]}
+    </update>
+
+    <select id="mediaTaskAiTasksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) FROM ai_tasks WHERE id=#{args[0]} AND requester_user_id=#{args[1]} AND task_type IN ('NOTES_PPT','NOTES_VIDEO')
+    </select>
+
+    <select id="lockFeeScopesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT scope_id FROM fee_scopes WHERE scope_id=#{args[0]} FOR UPDATE
+    </select>
+
+    <select id="summaryFeeAttemptsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT DISTINCT s.actor_user_id FROM fee_attempts a JOIN fee_scopes s ON s.scope_id=a.scope_id WHERE a.run_id=#{args[0]}
+    </select>
+
+    <select id="summaryAiRunsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT attempts FROM ai_runs WHERE trace_id=#{args[0]} AND actor_user_id=#{args[1]}
+    </select>
+
+    <select id="summaryFeeAttemptsSelect2" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT scope_id FROM fee_attempts WHERE run_id=#{args[0]} LIMIT 1
+    </select>
+
+    <select id="summaryFeeScopesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT COUNT(*) FROM fee_scopes WHERE scope_id=#{args[0]}
+    </select>
+
+    <select id="totalsFeeScopesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM fee_scopes WHERE scope_id=#{args[0]}
+    </select>
+
+    <select id="totalsFeeAttemptsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM fee_attempts WHERE scope_id=#{args[0]}
+    </select>
+
+    <select id="totalsFeeAttemptsSelect2" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM fee_attempts WHERE scope_id=#{args[0]} AND run_id=#{args[1]}
+    </select>
+
+    <select id="legacyAiTasksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        <choose>
+            <when test="task">SELECT model_attempts FROM ai_tasks WHERE id=#{args[0]} AND requester_user_id=#{args[1]}</when>
+            <otherwise>SELECT i.model_attempts FROM document_ingestions i JOIN documents d ON d.id=i.document_id JOIN knowledge_bases k ON k.id=d.knowledge_base_id WHERE i.id=#{args[0]} AND k.owner_user_id=#{args[1]}</otherwise>
+        </choose>
+    </select>
+
+    <select id="aggregateFeeAttemptsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT currency,COUNT(*) AS attempts,SUM(state='UNKNOWN') AS unknown_count,SUM(state IN ('RESERVED','SENDING')) AS pending_count,SUM(state='SIMULATED') AS simulated_count,COALESCE(SUM(CASE WHEN state='SETTLED' THEN estimated_amount ELSE 0 END),0) AS estimated,COALESCE(SUM(CASE WHEN state IN ('RESERVED','SENDING','UNKNOWN') AND simulated=FALSE THEN reserved_amount ELSE 0 END),0) AS reserved FROM fee_attempts WHERE created_at&gt;=#{args[0]} AND state&lt;&gt;'RELEASED' GROUP BY currency ORDER BY currency LIMIT 32
+    </select>
+
+    <select id="markUnknownBeforeFeeAttemptsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT operation_id,scope_id FROM fee_attempts WHERE state IN ('RESERVED','SENDING') AND created_at&lt;#{args[0]} ORDER BY created_at,operation_id LIMIT #{args[1]}
+    </select>
+
+    <update id="markUnknownBeforeFeeAttemptsWrite">
+        UPDATE fee_attempts SET state='UNKNOWN',outcome='RECONCILIATION_REQUIRED' WHERE operation_id=#{args[0]} AND state IN ('RESERVED','SENDING')
+    </update>
+</mapper>

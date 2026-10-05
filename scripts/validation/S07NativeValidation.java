@@ -30,11 +30,11 @@ public final class S07NativeValidation {
         var options=new ArrayList<>(List.of("--lab.search.enabled=false","--lab.bootstrap.enabled=false","--lab.task.worker-enabled=false","--lab.ingestion.worker-enabled=false","--lab.observability.export-enabled=false","--spring.main.web-application-type=none","--spring.main.banner-mode=off","--logging.level.root=OFF","--lab.model.models.primary.output-limit=256","--lab.model.models.backup.output-limit=256"));
         if(databaseOnly)options.add("--lab.model.mode=mock");
         try(var context=app.run(options.toArray(String[]::new))) {
-            var sql=context.getBean(SqlSupport.class);var jdbc=sql.jdbc;var fees=context.getBean(FeeStorePort.class);
+            var sql=ValidationSql.from(context);var jdbc=sql.jdbc;var fees=context.getBean(FeeStorePort.class);
             var tx=new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
             var actor=tx.execute(s->actor(sql,"USER"));var admin=tx.execute(s->actor(sql,"ADMIN"));
             try {
-                database(fees,jdbc,actor,admin,tx);
+                database(fees,sql,actor,admin,tx);
                 concurrency(fees,actor);
                 if(!databaseOnly) real(context.getBean(ModelGateway.class),context.getBean(ModelRegistry.class),fees,jdbc,actor);
             } finally {
@@ -58,7 +58,8 @@ public final class S07NativeValidation {
     }
 
     /** 用合成固定单价验证真实SQL计算／状态，不当真实市场价格或账单。 */
-    private static void database(FeeStorePort fees,JdbcTemplate jdbc,UserContext actor,UserContext admin,TransactionTemplate tx) {
+    private static void database(FeeStorePort fees,ValidationSql sql,UserContext actor,UserContext admin,TransactionTemplate tx) {
+        var jdbc=sql.jdbc;
         var p=price("v1","1","2");var scope=scope(actor,"RUN",UUID.randomUUID().toString());
         var key=reserve(fees,scope,p,"1",100,100,false);
         check(fees.summary(actor,"RUN",scope.runId()).pendingAttempts()==1,"mysql_reserved_before_send");
@@ -86,7 +87,7 @@ public final class S07NativeValidation {
         Instant cutoff=Instant.parse("2000-01-02T00:00:00Z");
         check(jdbc.queryForObject("SELECT COUNT(*) FROM fee_attempts WHERE created_at<? AND state IN ('RESERVED','SENDING')",Integer.class,java.sql.Timestamp.from(cutoff))==1,"mysql_reconcile_fixture_isolated");
         check(fees.markUnknownBefore(cutoff,1)==1 && fees.summary(actor,"RUN",old).unknownAttempts()==1,"mysql_crash_window_bounded_unknown");
-        var restarted=new com.example.ailab.data.repository.FeeRepository(new SqlSupport(jdbc));
+        var restarted=new com.example.ailab.data.repository.FeeRepository(sql.support());
         check(restarted.summary(actor,"RUN",old).reservedAmount().signum()>0,"mysql_repository_restart_preserves_reservation");
         fees.complete(crashed,3,2,"SUCCESS");
         var noPrice=reserve(fees,scope(actor,"RUN",UUID.randomUUID().toString()),null,"1",100,100,false);fees.sending(noPrice);fees.complete(noPrice,7,3,"SUCCESS");
@@ -102,7 +103,7 @@ public final class S07NativeValidation {
         check(fees.summary(actor,"RUN",overScope.runId()).overLimit(),"mysql_actual_overrun_preserved");
         budgetExceeded(()->reserve(fees,overScope,p,"30",1,1,false),"mysql_overrun_blocks_future_reserve");
         // 旧任务仅保存历史缺账计数，不猜历史价；新任务恢复后仍在相同费用scope内累计。
-        long task=new SqlSupport(jdbc).insert("INSERT INTO ai_tasks(requester_user_id,task_type,request_json,request_hash,status,model_attempts) VALUES(?,'RESEARCH_REPORT','{}',?,'PAUSED',2)",actor.userId(),"0".repeat(64));
+        long task=new ValidationSql(jdbc).insert("INSERT INTO ai_tasks(requester_user_id,task_type,request_json,request_hash,status,model_attempts) VALUES(?,'RESEARCH_REPORT','{}',?,'PAUSED',2)",actor.userId(),"0".repeat(64));
         var taskScope=scope(actor,"TASK",Long.toString(task));var taskFee=reserve(fees,taskScope,p,"1",10,10,false);fees.sending(taskFee);fees.complete(taskFee,7,3,"SUCCESS");
         check(fees.summary(actor,"TASK",Long.toString(task)).legacyUntrackedAttempts()==2,"mysql_legacy_task_not_free");
         var recovered=scope(actor,"TASK",Long.toString(task));var taskFee2=reserve(fees,recovered,p,"99",10,10,false);fees.sending(taskFee2);fees.complete(taskFee2,7,3,"SUCCESS");
@@ -114,7 +115,7 @@ public final class S07NativeValidation {
         check(fees.summary(actor,"RUN",legacyRun).legacyUntrackedAttempts()==2 && fees.summary(actor,"RUN",legacyRun).costStatus().equals("UNKNOWN"),"mysql_legacy_run_unknown_not_free");
         // 入库两批和新run共享同一代次；整个合成结构及费用事务回滚，不进入队列。
         tx.executeWithoutResult(status->{try {
-            var sql=new SqlSupport(jdbc);long base=sql.insert("INSERT INTO knowledge_bases(owner_user_id,name) VALUES(?,'S07合成费用')",actor.userId());
+            long base=sql.insert("INSERT INTO knowledge_bases(owner_user_id,name) VALUES(?,'S07合成费用')",actor.userId());
             long doc=sql.insert("INSERT INTO documents(knowledge_base_id,owner_user_id,title,format) VALUES(?,?,'合成','txt')",base,actor.userId());
             jdbc.update("INSERT INTO document_versions(document_id,document_version,raw_text,checksum) VALUES(?,1,'合成',?)",doc,"0".repeat(64));
             long ingestion=sql.insert("INSERT INTO document_ingestions(document_id,document_version,processing_revision,actor_user_id,status) VALUES(?,1,1,?,'FAILED')",doc,actor.userId());
@@ -160,7 +161,7 @@ public final class S07NativeValidation {
         check(sum.unknownAttempts()==1 && sum.estimatedAmount().signum()==0,"real_embedding_amount_unknown_not_invoice");
     }
     /** 独立用户只由本专项创建，既有用户凭证不读取、不改动。 */
-    private static UserContext actor(SqlSupport sql,String role) {long id=sql.insert("INSERT INTO users(username,password_hash,role,password_change_required) VALUES(?,?,?,FALSE)","s07-native-"+UUID.randomUUID(),"synthetic-non-login",role);return new UserContext(id,UserContext.Role.valueOf(role),true,1,false);}
+    private static UserContext actor(ValidationSql sql,String role) {long id=sql.insert("INSERT INTO users(username,password_hash,role,password_change_required) VALUES(?,?,?,FALSE)","s07-native-"+UUID.randomUUID(),"synthetic-non-login",role);return new UserContext(id,UserContext.Role.valueOf(role),true,1,false);}
     /** 服务端稳定后台资源与独立执行run，模拟数据不带正文。 */
     private static FeeScope scope(UserContext actor,String kind,String resource) {return new FeeScope(actor,kind,resource,kind.equals("RUN")?resource:UUID.randomUUID().toString());}
     /** 合成定价只验证程序计算，不冒称提供方价格。 */

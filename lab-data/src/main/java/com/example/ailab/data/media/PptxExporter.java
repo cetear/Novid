@@ -60,7 +60,7 @@ public class PptxExporter implements PresentationPort {
                 }else if(unit.layout().equals("TWO_COLUMN")){
                     int split=split(unit.text());
                     box(slide,unit.text().substring(0,split),new Rectangle2D.Double(48,136,416,314),24,18,false);
-                    box(slide,unit.text().substring(split),new Rectangle2D.Double(496,136,416,314),24,18,false);
+                    if(split<unit.text().length())box(slide,unit.text().substring(split),new Rectangle2D.Double(496,136,416,314),24,18,false);
                 }else{
                     box(slide,unit.text(),new Rectangle2D.Double(48,136,864,314),26,18,false);
                 }
@@ -135,8 +135,15 @@ public class PptxExporter implements PresentationPort {
             for(int cp:line.codePoints().toArray()){String value=new String(Character.toChars(cp));if(row.length()>0&&actual.getStringBounds(row+value,metrics).getWidth()>width){result.append(row).append('\n');row.setLength(0);}row.append(value);}result.append(row);}
         return result.toString();
     }
-    /** 双栏按已有段落切分，单段使用码点中点，不产生模型改写。 */
-    private int split(String text){int midpoint=text.offsetByCodePoints(0,text.codePointCount(0,text.length())/2);int newline=text.indexOf('\n',midpoint);return newline>=0?newline:midpoint;}
+    /** 优先段落边界，两侧均有正文才分栏；无法分栏时保留完整正文在左栏。 */
+    private int split(String text){
+        int midpoint=text.offsetByCodePoints(0,text.codePointCount(0,text.length())/2);
+        for(int newline=text.indexOf('\n',midpoint);newline>=0;newline=text.indexOf('\n',newline+1))
+            if(!text.substring(0,newline).isBlank()&&!text.substring(newline).isBlank())return newline;
+        int candidate=midpoint;
+        if(candidate>0&&!text.substring(0,candidate).isBlank()&&!text.substring(candidate).isBlank())return candidate;
+        return text.length();
+    }
     /** 图片按原比例完整显示，不裁掉事实或拉伸。 */
     private Rectangle2D contain(XSLFPictureData picture,Rectangle2D frame){var d=picture.getImageDimension();double scale=Math.min(frame.getWidth()/d.width,frame.getHeight()/d.height);double w=d.width*scale,h=d.height*scale;return new Rectangle2D.Double(frame.getCenterX()-w/2,frame.getCenterY()-h/2,w,h);}
     /** 使用真正的BODY备注占位符，PowerPoint讲者备注保留可编辑文本。 */

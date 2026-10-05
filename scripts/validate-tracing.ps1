@@ -25,7 +25,7 @@ try {
 } finally { $archive.Dispose() }
 $classpath = "$runtimeRoot/classes;$runtimeRoot/*"
 # 正式包之外仅编译本专项入口；不会扫描或领取已有业务队列。
-& javac -encoding UTF-8 -cp $classpath -d $runtimeRoot (Join-Path $PSScriptRoot 'validation/S06NativeValidation.java')
+& javac -encoding UTF-8 -cp $classpath -d $runtimeRoot (Join-Path $PSScriptRoot 'validation/S06NativeValidation.java') (Join-Path $PSScriptRoot 'validation/ValidationSql.java')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($DatabaseOnly) {
     # 显式参数防止PowerShell字符串展开导致专项开关丢失，数据库专项不得额外调用模型。

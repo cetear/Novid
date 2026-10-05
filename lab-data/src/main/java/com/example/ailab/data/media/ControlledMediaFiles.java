@@ -72,7 +72,7 @@ public class ControlledMediaFiles implements MediaFilePort {
         validateUrl(url);
         try {
             int maximum=kind.equals("IMAGE")?10485760:167772160;
-            var response=http.send(HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30)).GET().build(),info->new BoundedBody(maximum));
+            var response=com.example.ailab.contract.http.HttpRequests.send(http,HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30)).GET().build(),info->new BoundedBody(maximum));
             if(response.statusCode()!=200) throw invalid();
             byte[] bytes=response.body();
             String mime=kind.equals("IMAGE")?imageMime(bytes):"video/mp4";

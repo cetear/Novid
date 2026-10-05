@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.ailab.data.persistence.mapper.IndexCleanupMapper">
+    <select id="claimSystemControlSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT id FROM system_control WHERE id=1 FOR UPDATE
+    </select>
+
+    <update id="claimOutboxEventsWrite">
+        UPDATE outbox_events SET status='FAILED',worker_id=NULL,lease_until=NULL,fencing_token=fencing_token+1 WHERE event_type IN ('DELETE_DOCUMENT','DELETE_BASE','PRUNE_DOCUMENT') AND attempt&gt;=3 AND (status='PENDING' OR status='PROCESSING' AND lease_until&lt;CURRENT_TIMESTAMP(6))
+    </update>
+
+    <select id="claimOutboxEventsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT e.* FROM outbox_events e WHERE e.event_type IN ('DELETE_DOCUMENT','DELETE_BASE','PRUNE_DOCUMENT') AND e.attempt&lt;3 AND e.next_attempt_at&lt;=CURRENT_TIMESTAMP(6) AND (e.status='PENDING' OR e.status='PROCESSING' AND e.lease_until&lt;CURRENT_TIMESTAMP(6)) AND (e.event_type='DELETE_DOCUMENT' AND EXISTS(SELECT 1 FROM documents d WHERE d.id=e.resource_id AND d.deleted=TRUE) OR e.event_type='DELETE_BASE' AND EXISTS(SELECT 1 FROM knowledge_bases k WHERE k.id=e.resource_id AND k.deleted=TRUE) OR e.event_type='PRUNE_DOCUMENT' AND EXISTS(SELECT 1 FROM document_ingestions i WHERE i.id=e.resource_version AND i.document_id=e.resource_id AND i.status='READY')) ORDER BY e.id LIMIT 1 FOR UPDATE SKIP LOCKED
+    </select>
+
+    <select id="claimDocumentIngestionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT document_version,processing_revision FROM document_ingestions WHERE id=#{args[0]}
+    </select>
+
+    <update id="claimOutboxEventsWrite2">
+        UPDATE outbox_events SET attempt=attempt+IF(status='PROCESSING',1,0),status='PROCESSING',worker_id=#{args[0]},fencing_token=#{args[1]},lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 90 SECOND) WHERE id=#{args[2]}
+    </update>
+
+    <update id="finishOutboxEventsWrite">
+        UPDATE outbox_events SET status=#{args[0]},worker_id=NULL,lease_until=NULL,next_attempt_at=CURRENT_TIMESTAMP(6) WHERE id=#{args[1]} AND worker_id=#{args[2]} AND fencing_token=#{args[3]} AND status='PROCESSING' AND lease_until&gt;CURRENT_TIMESTAMP(6)
+    </update>
+
+    <update id="failOutboxEventsWrite">
+        UPDATE outbox_events SET attempt=attempt+1,status=IF(attempt&gt;=3,'FAILED','PENDING'),worker_id=NULL,lease_until=NULL,next_attempt_at=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 30 SECOND) WHERE id=#{args[0]} AND worker_id=#{args[1]} AND fencing_token=#{args[2]} AND status='PROCESSING' AND lease_until&gt;CURRENT_TIMESTAMP(6)
+    </update>
+</mapper>
