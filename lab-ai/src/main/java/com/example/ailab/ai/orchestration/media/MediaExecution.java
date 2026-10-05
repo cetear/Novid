@@ -75,7 +75,8 @@ public final class MediaExecution {
             store.measured(lease,shot.shotId(),files.durationMs(asset(lease,shot.videoAssetId()).file(),"audio"));
         }
         var pending=store.operations(lease.actor(),p.taskId());
-        if(pending.stream().anyMatch(o->Set.of("UNKNOWN","SENDING").contains(o.state())&&o.providerJobId()==null)){store.yield(lease,"NEEDS_RECONCILIATION","MEDIA_SUBMISSION_UNKNOWN");return;}
+        // UNKNOWN即使有原ID也需显式核对，普通外部等待队列不会领取UNKNOWN操作。
+        if(pending.stream().anyMatch(o->o.state().equals("UNKNOWN")||o.state().equals("SENDING")&&o.providerJobId()==null)){store.yield(lease,"NEEDS_RECONCILIATION","MEDIA_SUBMISSION_UNKNOWN");return;}
         if(pending.stream().anyMatch(o->o.state().equals("FAILED")))throw new LabException("MEDIA_PROVIDER_FAILED","生成失败，需本人新批准");
         if(pending.stream().anyMatch(o->!o.state().equals("SUCCEEDED"))){store.yield(lease,"WAITING_EXTERNAL",null);return;}
         if(!video){

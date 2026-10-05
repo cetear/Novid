@@ -67,18 +67,25 @@ public class MediaApplicationService {
     public Media.Preview edit(UserContext actor,long id,int version,List<Media.Unit> units){
         actor=policy.current(actor);var p=store.preview(actor,id).orElseThrow(LabException::denied);
         if(units==null||units.size()!=p.units().size())throw LabException.invalid("编辑保留原页／镜头数量与稳定ID；重规划需另行有限执行");
+        var task=tasks.read(actor,id);boolean video=task.taskType().equals("NOTES_VIDEO");
         var refs=p.sourceDependencies().stream().map(s->"D"+s.documentId()+"v"+s.documentVersion()).collect(java.util.stream.Collectors.toSet());
-        var ids=new HashSet<String>();int seconds=0;
+        var ids=new HashSet<String>();
         for(var u:units){
             var old=p.units().stream().filter(x->x.unitId().equals(u.unitId())).findFirst().orElseThrow(()->LabException.invalid("编辑单位ID不合法"));
-            if(!ids.add(u.unitId())||u.title()==null||u.title().isBlank()||u.title().length()>200||u.text()==null||u.text().isBlank()||u.text().length()>3000||u.notes()==null||u.notes().length()>1500
+            if(!ids.add(u.unitId())||u.title()==null||u.title().isBlank()||u.title().length()>200||u.text()==null||(!video&&u.text().isBlank())||u.text().length()>3000||u.notes()==null||u.notes().length()>1500
                     ||!Set.of("TITLE","TEXT","TWO_COLUMN","IMAGE_TEXT","SCENE").contains(u.layout())||u.references().isEmpty()||!refs.containsAll(u.references())
                     ||!u.imageMode().equals(old.imageMode())||u.imagePrompt()==null||u.imagePrompt().length()>1000||u.seconds()!=old.seconds()
                     ||u.imageMode().equals("WEB_SEARCH")&&!u.imagePrompt().equals(old.imagePrompt()))throw LabException.invalid("编辑超限或改变不可替换来源／资产约束");
-            seconds+=u.seconds();
+            if(video){
+                if(u.text().codePointCount(0,u.text().length())>1024)throw LabException.invalid("单镜头台词超过1024字符范围");
+                if(p.storyboard()!=null){
+                    var shot=p.storyboard().shots().stream().filter(s->s.shotId().equals(u.unitId())).findFirst()
+                            .orElseThrow(()->LabException.invalid("缺少对应的批准分镜"));
+                    if(shot.video()!=null)StoryboardRules.audioPolicy(shot.video(),u.text());
+                }
+            }
         }
-        if(tasks.read(actor,id).taskType().equals("NOTES_VIDEO")&&units.stream().anyMatch(u->u.text().codePointCount(0,u.text().length())>1024))throw LabException.invalid("单镜头台词超过1024字符范围");
-        return store.edit(actor,id,version,units,configurationHash(tasks.read(actor,id).taskType()));
+        return store.edit(actor,id,version,units,configurationHash(task.taskType()));
     }
     /** 决定只接收批准ID和布尔值，不允许覆盖脚本／价格／来源；数据端原子消费。 */
     public Media.Preview decide(UserContext actor,String id,boolean approved,long taskId){

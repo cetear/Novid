@@ -138,12 +138,13 @@ public class ControlledMediaFiles implements MediaFilePort {
             }finally{reader.dispose();}
         }catch(LabException e){throw e;}catch(Exception e){throw invalid();}
     }
-    /** 稳定资产名及原子rename实现文件落盘，不宣称文件与DB同一事务。 */
+    /** 稳定资产名及原子rename实现文件落盘，随机临时名使中断残留不阻断重试。 */
     private Media.FileFact save(String id,byte[] bytes,String mime) {
         if(!id.matches("[a-f0-9-]{36}")||bytes.length==0)throw invalid();
+        Path temporary=root.resolve(UUID.randomUUID()+".part");
         try {
             Files.createDirectories(root); String extension=mime.equals("image/png")?".png":mime.equals("image/jpeg")?".jpg":mime.equals("audio/wav")?".wav":mime.equals("application/x-subrip")?".srt":".mp4";
-            String key=id+extension; Path target=root.resolve(key),temporary=root.resolve(id+".part");
+            String key=id+extension; Path target=root.resolve(key);
             if(Files.exists(target)) {
                 if(!checksum(Files.readAllBytes(target)).equals(checksum(bytes)))throw invalid();
             } else {
@@ -151,6 +152,7 @@ public class ControlledMediaFiles implements MediaFilePort {
             }
             return new Media.FileFact(key,mime,bytes.length,checksum(bytes));
         }catch(LabException e){throw e;}catch(Exception e){throw invalid();}
+        finally{try{Files.deleteIfExists(temporary);}catch(Exception ignored){}}
     }
     /** 仅UUID文件名且真实路径仍位于根目录，拒绝遍历和符号链接逃逸。 */
     private Path path(String key) {
