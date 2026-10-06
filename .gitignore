@@ -27,6 +27,7 @@ replay_pid*
 **/target/
 .mvn/repository/
 var/
+.ua/
 .env
 .env.*
 !.env.example
