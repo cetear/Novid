@@ -15,11 +15,13 @@ public final class ExecutionBudget {
     private final Runnable cancellationCheck;
     private int attempts, turns, tools, repairs;
     private int maxTurns = 6, maxTools = 8;
+    private int maximumWaitSeconds = 30;
     /** 仅媒体入口显式启用独立预算，普通问答／报告仍六轮八工具。 */
     public ExecutionBudget media(String taskType) {
         if (!java.util.Set.of("NOTES_PPT", "NOTES_VIDEO").contains(taskType) || maxAttempts != 36)
             throw new IllegalArgumentException("媒体预算仅限登记媒体任务");
-        maxTurns = 24; maxTools = taskType.equals("NOTES_PPT") ? 40 : 24; return this;
+        maxTurns = 24; maxTools = taskType.equals("NOTES_PPT") ? 40 : 24;
+        maximumWaitSeconds = 120; return this;
     }
     private Runnable toolJournal = () -> {}, repairJournal = () -> {};
     private final java.util.List<com.example.ailab.contract.dto.ModelRoute.Attempt> observed = new java.util.ArrayList<>();
@@ -130,11 +132,11 @@ public final class ExecutionBudget {
     }
 
     /**
-     * 实际调用超时取 30 秒和剩余期限的较小值。
+     * 在线单次等待最多30秒，登记媒体最多120秒；均不能超过原任务剩余期限。
      */
     public Duration timeout() {
         check();
-        return Duration.ofMillis(Math.max(1, Math.min(30000, Duration.between(Instant.now(), deadline).toMillis())));
+        return Duration.ofMillis(Math.max(1, Math.min(maximumWaitSeconds * 1000L, Duration.between(Instant.now(), deadline).toMillis())));
     }
 
     /**

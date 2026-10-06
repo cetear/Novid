@@ -1,9 +1,10 @@
 package com.example.ailab.ai.model;
 
 import dev.langchain4j.model.chat.request.json.JsonSchema;
+import com.example.ailab.contract.error.LabException;
 import java.util.Set;
 
-/** 后续计划／工具参数可复用的结构定义与程序语义校验，当前不执行工具或动态计划。 */
+/** 结构输出定义与服务端语义校验，共享有限修复协议。 */
 public interface StructuredSchema<T> {
     /** 结构定义由服务端构建，不接受用户提供的任意Schema。 */
     JsonSchema schema();
@@ -11,4 +12,8 @@ public interface StructuredSchema<T> {
     String instruction(Set<String> references);
     /** 字段、枚举及引用都必须验证；不能仅依赖提供方约束生成。 */
     T validate(String text, Set<String> references);
+    /** 默认不回送草稿和异常消息；具体协议可提供服务端白名单诊断。 */
+    default String repairInstruction(LabException failure) {
+        return "上次输出未满足字段或引用约束，请按同一结构重新生成。";
+    }
 }

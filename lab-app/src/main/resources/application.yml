@@ -20,6 +20,17 @@ spring:
       max-request-size: 11MB
   main:
     allow-circular-references: false
+logging:
+  config: classpath:log4j2-spring.xml
+  file:
+    path: ${LOG_PATH:./logs}
+  level:
+    root: ${LOG_LEVEL:INFO}
+    com.example.ailab: ${LAB_LOG_LEVEL:INFO}
+  log4j2:
+    max-file-size: ${LOG_MAX_FILE_SIZE:20MB}
+    max-history-days: ${LOG_MAX_HISTORY_DAYS:30}
+    max-archive-size: ${LOG_MAX_ARCHIVE_SIZE:1GB}
 server:
   port: ${PORT:8080}
   error:
@@ -65,6 +76,8 @@ lab:
   tools:
     # S05：只读模型工具暴露开关；写工具仍只能通过本人确认API。
     enabled: true
+    # 包含排队、授权复核、远程向量和检索；范围1～120秒，在线仍受30秒单次上限限制。
+    timeout-seconds: ${TOOL_TIMEOUT_SECONDS:90}
   ingestion:
     worker-enabled: ${INGESTION_WORKER_ENABLED:true}
   task:
@@ -113,7 +126,8 @@ lab:
         data-classifications: [PRIVATE]
         context-window: 16000
         output-limit: 2048
-        timeout-seconds: 30
+        # 后台生成可等待更长完整响应，在线仍受30秒单次上限限制。
+        timeout-seconds: ${MODEL_PRIMARY_TIMEOUT_SECONDS:90}
       backup:
         provider-id: openai-compatible
         endpoint: ${MODEL_BACKUP_BASE_URL:${MODEL_BASE_URL:https://api.openai.com/v1}}
@@ -125,7 +139,7 @@ lab:
         data-classifications: [PRIVATE]
         context-window: 16000
         output-limit: 2048
-        timeout-seconds: 30
+        timeout-seconds: ${MODEL_BACKUP_TIMEOUT_SECONDS:90}
       embedding:
         provider-id: glm-compatible
         endpoint: ${EMBEDDING_BASE_URL:${MODEL_BASE_URL:https://api.openai.com/v1}}
@@ -187,3 +201,107 @@ lab:
       max-attempts-per-logical-call: 3
       failure-threshold: 3
       cooldown-seconds: 30
+  media:
+    # 生图API配置
+    image-submit-url: https://open.bigmodel.cn/api/paas/v4/async/images/generations
+    image-model: glm-image
+    image-size: 1280x1280
+    credential-ref: MODEL_BACKUP_API_KEY
+    # 生图报价：每张图片计价
+    image-price:
+      ref: glm-image-price
+      version: v1
+      currency: CNY
+      unit: PER_IMAGE
+      effective-at: ${IMAGE_PRICE_EFFECTIVE_AT:2026-10-01T00:00:00Z}
+      input-rate: ${IMAGE_UNIT_PRICE:0.1}
+      output-rate: 0
+    enabled: true                 # 开启媒体能力
+    worker-enabled: true          # 开启PPT／视频后台处理
+    external-data-allowed: true   # 允许向提供方发送批准内容
+  presentation:
+    font: Microsoft YaHei         # 本机已安装的中文字体
+  video-registry:
+    profiles:
+      - id: zhipu-viduq1-text
+        version: 1
+        enabled: false
+        verification-status: REGISTERED
+        provider: bigmodel
+        account-namespace: bigmodel-account-1
+        region: cn
+        model: viduq1-text
+        credential-ref: MODEL_BACKUP_API_KEY
+        auth-header: Authorization
+        auth-prefix: 'Bearer '
+        submit-url: https://open.bigmodel.cn/api/paas/v4/videos/generations
+        query-url: https://open.bigmodel.cn/api/paas/v4/async-result/{id}
+        headers: { }
+        body:
+          model: viduq1-text
+          aspect_ratio: '16:9'
+        inputs:
+          prompt: /prompt
+          seconds: /duration
+        id-path: /id
+        status-path: /task_status
+        result-url-path: /video_result/0/url
+        statuses:
+          PROCESSING: PROCESSING
+          SUCCESS: SUCCESS
+          FAIL: FAIL
+        durations: [ 5 ]
+        resolutions: [ 1080P ]
+        audio-modes: [ NONE ]
+        prices: { }
+        query-free-verified: false
+        poll-interval-seconds: 15
+        max-polls: 60
+        timeout-seconds: 30
+        max-prompt-characters: 512
+      - id: bailian-wan3
+        version: 1
+        enabled: false
+        verification-status: REGISTERED
+        provider: bailian
+        account-namespace: bailian-beijing-account-1
+        region: cn-beijing
+        model: wan3.0-video
+        credential-ref: BAILIAN_API_KEY
+        auth-header: Authorization
+        auth-prefix: 'Bearer '
+        submit-url: https://${BAILIAN_WORKSPACE_ID:unconfigured}.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis
+        query-url: https://${BAILIAN_WORKSPACE_ID:unconfigured}.cn-beijing.maas.aliyuncs.com/api/v1/tasks/{id}
+        headers:
+          X-DashScope-Async: enable
+        body:
+          model: wan3.0-video
+          parameters:
+            prompt_extend: false
+            watermark: true
+        inputs:
+          prompt: /input/prompt
+          seconds: /parameters/duration
+          resolution: /parameters/resolution
+          aspectRatio: /parameters/ratio
+          audio: /parameters/audio
+        id-path: /output/task_id
+        status-path: /output/task_status
+        result-url-path: /output/video_url
+        usage-path: /usage/duration
+        statuses:
+          PENDING: PROCESSING
+          RUNNING: PROCESSING
+          SUCCEEDED: SUCCESS
+          FAILED: FAIL
+          CANCELED: FAIL
+          UNKNOWN: UNKNOWN
+        durations: [ 2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30 ]
+        resolutions: [ 480P, 720P, 1080P ]
+        audio-modes: [ NATIVE, NONE ]
+        prices: { }
+        query-free-verified: false
+        poll-interval-seconds: 15
+        max-polls: 60
+        timeout-seconds: 30
+        max-prompt-characters: 20000

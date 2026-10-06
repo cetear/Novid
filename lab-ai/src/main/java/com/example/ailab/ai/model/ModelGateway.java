@@ -22,6 +22,7 @@ import java.time.Clock;
  */
 @Component
 public class ModelGateway {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(ModelGateway.class);
     public record Turn(String text, String modelId, Integer inputTokens, Integer outputTokens, boolean mock,
                        String finishReason, AiMessage rawMessage, ModelRoute route, List<EvidenceBundle> evidence) {
         /** 旧六参数构造仍可用于测试，不伪造路由和用量事实。 */
@@ -89,6 +90,11 @@ public class ModelGateway {
         if (tools.isEmpty()) throw new LabException("TOOL_DISABLED", "没有可暴露工具");
         return generate(task, selection, input, budget, null, "", new ArrayList<>(), pinnedModel, tools);
     }
+    /** 工具循环最后一轮只汇总已配对结果；固定原目标且不再暴露工具，不另开预算。 */
+    public Turn finishToolTurn(String task, ModelRegistry.Selection selection, ModelInput input,
+                               ExecutionBudget budget, String pinnedModel) {
+        return generate(task, selection, input, budget, null, "", new ArrayList<>(), pinnedModel, List.of());
+    }
     /** 摘要／报告每次重试和备用前重核来源；固定整页语义不允许静默裁剪。 */
     public Turn chatVerified(String task, String system, String prompt, ExecutionBudget budget, Runnable verify) {
         var fixed = ModelInput.fixed(system, List.of(), prompt);
@@ -105,7 +111,7 @@ public class ModelGateway {
             if (!invalid.code().equals("MODEL_STRUCTURED_INVALID")) throw invalid;
             markInvalid(attempts); budget.invalidStructure(); budget.repair();
             // 修复固定当前成功目标，避免把结构错误当服务故障，或跨模型追求更有利的安全结果。
-            turn = generate(task, selection, input, budget, schema, "上次输出未满足字段或引用约束，请按同一结构重新生成。", attempts, turn.modelId(), List.of());
+            turn = generate(task, selection, input, budget, schema, schema.repairInstruction(invalid), attempts, turn.modelId(), List.of());
             try { return new StructuredTurn<>(validateStructured(schema, turn, budget), turn); }
             catch (LabException failed) { markInvalid(attempts); budget.invalidStructure(); throw failed; }
         }
@@ -217,6 +223,8 @@ public class ModelGateway {
                     return turn(text, id, inputUsage, outputUsage, false, response.aiMessage(), decision, log, prepared.evidence());
                 } catch (RuntimeException error) {
                     failure = refused(raw.get()) ? "MODEL_REFUSED" : classify(error);
+                    LOG.warn("event=model.attempt_failed modelId={} attempt={} code={}",id,attempts,failure);
+                    LOG.debug("event=model.diagnostic",com.example.ailab.contract.error.DiagnosticFailure.sanitized(error));
                     outcome = failure;
                     if (!sent || !Set.of("MODEL_TIMEOUT", "MODEL_UNAVAILABLE", "MODEL_RATE_LIMITED", "MODEL_CONFIGURATION_ERROR").contains(failure))
                         throw new LabException(failure, "模型调用失败");
@@ -243,6 +251,7 @@ public class ModelGateway {
                         if(!outcome.equals("SUCCESS")) modelSpan.fail(new LabException(outcome,"模型失败"));
                         modelSpan.close();
                     }
+                    LOG.info("event=model.attempt_complete modelId={} attempt={} outcome={} inputTokens={} outputTokens={} mock={}",id,attempts,outcome,inputUsage,outputUsage,registry.mock());
                     DeadlineHttpClient.CURRENT.remove(); health.release(permit);
                     if (local) semaphore.release(); if (global) concurrency.release();
                     // 先释放运行资源再可靠结算；结算故障不引发第二次远程请求。
@@ -358,6 +367,7 @@ public class ModelGateway {
             if(embeddingSpan!=null) embeddingSpan.fail(e);
             throw e;
         } catch (RuntimeException e) {
+            LOG.error("event=embedding.failed code={}",classify(e),com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));
             outcome=classify(e);
             if(embeddingSpan!=null) embeddingSpan.fail(new LabException(classify(e),"嵌入失败"));
             throw new LabException(classify(e), "Embedding 调用失败");
@@ -367,6 +377,7 @@ public class ModelGateway {
                 embeddingSpan.model(id,"EMBEDDING","embedding",registry.configuration().routing().policyVersion(),"SINGLE_VECTOR_SPACE",budget.attempts(),used,null,registry.mock()?"SIMULATED":used==null?"UNKNOWN":"PROVIDER");
                 embeddingSpan.close();
             }
+            LOG.info("event=embedding.complete modelId={} outcome={} inputTokens={} mock={}",id,outcome,used,registry.mock());
             DeadlineHttpClient.CURRENT.remove();
             concurrency.release();
             if(fee!=null) {

@@ -14,7 +14,7 @@ public final class ToolRegistry {
         var registered = new LinkedHashMap<String, ToolDefinition>();
         for (var d : values) {
             if (d == null || !d.name().matches("[a-z_]{1,64}") || d.version().isBlank() || d.description().isBlank()
-                    || !Set.of("READ", "WRITE").contains(d.type()) || d.timeoutSeconds() < 1 || d.timeoutSeconds() > 30
+                    || !Set.of("READ", "WRITE").contains(d.type()) || d.timeoutSeconds() < 1 || d.timeoutSeconds() > 120
                     || !executors.contains(d.name()) || registered.putIfAbsent(d.name(), d) != null
                     || !"object".equals(d.parameters().get("type")) || !Boolean.FALSE.equals(d.parameters().get("additionalProperties"))
                     || !(d.parameters().get("properties") instanceof Map<?, ?>) || !(d.parameters().get("required") instanceof List<?>))

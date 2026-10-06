@@ -12,6 +12,7 @@ import java.util.concurrent.*;
 /** 正式入口唯一追踪收集器；有界队列与有限flush不参与可靠执行预算。 */
 @Component
 public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(TraceCollector.class);
     private final TraceRecordPort store;
     private final int maximum, days;
     private final ArrayBlockingQueue<Batch> queue;
@@ -51,6 +52,7 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
             try { store.record(mark(run,true,false,0)); } catch(RuntimeException ignored) { holder[0].drop(); }
             pending.incrementAndGet();
             if(!running || !queue.offer(new Batch(run,nodes,holder[0]))) {
+                LOG.warn("event=trace.queue_dropped traceId={}",id);
                 pending.decrementAndGet();
                 holder[0].drop(); try { store.record(mark(run,true,true,0)); } catch(RuntimeException ignored) { }
             }
@@ -58,7 +60,7 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
         holder[0]=context;
         try { store.record(new TraceSnapshot(id,actor,"RUNNING","none",0,false,start,null,session,task,ingestion,prior,true,false,0)); }
         catch(RuntimeException ignored) { failed=true; }
-        if(failed) context.drop();
+        if(failed) { context.drop(); LOG.warn("event=trace.open_failed traceId={}",id); }
         return context;
     }
     /** 独立串行写入，最多一次重试；导出先脱敏，外部失效只影响观测完整性。 */
@@ -70,10 +72,14 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
                 try {
                 for(int attempt=0;attempt<2 && !saved;attempt++) {
                     try { store.recordGraph(mark(batch.run(),batch.run().incomplete() || batch.context().incomplete(),batch.context().incomplete(),batch.nodes().size()),batch.nodes()); saved=true; }
-                    catch(RuntimeException ignored) { if(attempt==1) batch.context().drop(); }
+                    catch(RuntimeException ignored) {
+                        LOG.warn("event=trace.write_failed traceId={} attempt={} code={}",batch.run().traceId(),attempt+1,com.example.ailab.contract.error.DiagnosticFailure.code(ignored));
+                        if(attempt==1) batch.context().drop();
+                    }
                 }
                 if(!saved) { try { store.record(mark(batch.run(),true,true,0)); } catch(RuntimeException ignored) { } }
                 if(saved && !exporter.export(batch.run(),batch.nodes())) {
+                    LOG.warn("event=trace.export_failed traceId={}",batch.run().traceId());
                     batch.context().drop(); try { store.record(mark(batch.run(),true,true,batch.nodes().size())); } catch(RuntimeException ignored) { }
                 }
                 } finally { pending.decrementAndGet(); }
@@ -83,7 +89,8 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
     }
     /** 保留期只清理观测，每小时最多100行，失败静默等待下次调度。 */
     @org.springframework.scheduling.annotation.Scheduled(fixedDelay=3600000,initialDelay=3600000)
-    public void purge() { try { store.purge(Instant.now().minus(java.time.Duration.ofDays(days)),100); } catch(RuntimeException ignored) { } }
+    public void purge() { try { store.purge(Instant.now().minus(java.time.Duration.ofDays(days)),100); }
+        catch(RuntimeException failure) { LOG.error("event=trace.purge_failed",com.example.ailab.contract.error.DiagnosticFailure.sanitized(failure)); } }
     /** 保留所有关联字段，只改变观测状态，不能更改任务成功或可靠attempt。 */
     private TraceSnapshot mark(TraceSnapshot r,boolean incomplete,boolean dropped,int count) {
         return new TraceSnapshot(r.traceId(),r.actorUserId(),r.status(),r.modelId(),r.attempts(),r.mock(),r.createdAt(),r.endedAt(),r.sessionId(),r.taskId(),r.ingestionId(),r.previousTraceId(),incomplete,dropped,count);

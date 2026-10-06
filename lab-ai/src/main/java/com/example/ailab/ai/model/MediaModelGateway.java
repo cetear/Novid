@@ -86,7 +86,10 @@ public class MediaModelGateway implements MediaProviderPort {
             if (videoCapabilities().isEmpty())
                 throw new LabException("MEDIA_SELECTION_UNSUPPORTED", "视频人物／配音／场景支持或查询收费尚未核验");
             var options = request.videoOptions();
-            if (options == null) throw LabException.invalid("视频必须选择登记人物、配音和场景");
+            if (options == null || options.characterId() == null || options.characterId().isBlank()
+                    || options.voiceId() == null || options.voiceId().isBlank()
+                    || options.sceneId() == null || options.sceneId().isBlank())
+                throw LabException.invalid("视频必须选择登记人物、配音和场景");
             var selected=List.of(options.characterId(),options.voiceId(),options.sceneId());var kinds=List.of("CHARACTER","VOICE","SCENE");
             for(int i=0;i<3;i++){String id=selected.get(i),kind=kinds.get(i);if(config.catalogs().stream().noneMatch(c->c.enabled()&&c.id().equals(id)&&c.kind().equals(kind)))throw new LabException("MEDIA_SELECTION_UNSUPPORTED","登记人物／声音／场景类型或映射尚未配置");}
         } else {if(key().isBlank())throw unavailable();if(request.presentationOptions() == null) throw LabException.invalid("PPT准备必须包含presentationOptions");}

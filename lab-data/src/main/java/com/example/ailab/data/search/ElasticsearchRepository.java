@@ -84,7 +84,7 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
             String body = encode(Map.of("mappings", Map.of("dynamic", "strict", "properties", fields), "settings", Map.of("number_of_shards", 1, "number_of_replicas", 0)));
             client.indices().create(i -> i.index(config.index()).withJson(new StringReader(body)));
         } catch (Exception e) {
-            throw unavailable();
+            throw unavailable(e);
         }
     }
 
@@ -107,7 +107,7 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
         } catch (LabException e) {
             throw e;
         } catch (Exception e) {
-            throw unavailable();
+            throw unavailable(e);
         }
     }
 
@@ -150,7 +150,7 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
             }
             return Set.copyOf(found);
         } catch(LabException e){throw e;}
-        catch(Exception e){throw unavailable();}
+        catch(Exception e){throw unavailable(e);}
     }
 
     /** 固定代次全集必须恰好匹配，count分片失败亦不能激活。 */
@@ -162,7 +162,7 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
             var response=client.count(c->c.index(config.index()).withJson(new StringReader(body)));
             if(response.shards().failed().intValue()>0 || response.count()!=expected) throw new LabException("INDEX_NOT_READY","固定代次全集数量不匹配");
         } catch(LabException e){throw e;}
-        catch(Exception e){throw unavailable();}
+        catch(Exception e){throw unavailable(e);}
     }
 
     /**
@@ -180,7 +180,7 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
         } catch (LabException e) {
             throw e;
         } catch (Exception e) {
-            throw unavailable();
+            throw unavailable(e);
         }
     }
 
@@ -241,7 +241,7 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
         } catch (LabException e) {
             throw e;
         } catch (Exception e) {
-            throw unavailable();
+            throw unavailable(e);
         }
     }
 
@@ -344,6 +344,11 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
     /**
      * 可理解错误不泄露供应商地址或内部异常。
      */
+    private LabException unavailable(Exception failure) {
+        org.slf4j.LoggerFactory.getLogger(ElasticsearchRepository.class).error("event=search.failed code=SEARCH_UNAVAILABLE",com.example.ailab.contract.error.DiagnosticFailure.sanitized(failure));
+        return unavailable();
+    }
+
     private LabException unavailable() {
         return new LabException("SEARCH_UNAVAILABLE", "搜索服务未启用或暂不可用");
     }

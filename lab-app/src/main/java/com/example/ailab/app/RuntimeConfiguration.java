@@ -73,16 +73,16 @@ public class RuntimeConfiguration {
                         env.getProperty("lab.governance.batch-size", Integer.class, 100));
                 var now = java.time.Instant.now();
                 var result = governance.purge(now, now.minusSeconds(settings.retentionDays()*86400L), settings.batchSize());
-                System.out.println("本批维护删除计数：" + result + "；可靠执行／费用／原文保留");
+                org.slf4j.LoggerFactory.getLogger(RuntimeConfiguration.class).info("本批维护删除计数：" + result + "；可靠执行／费用／原文保留");
                 org.springframework.boot.SpringApplication.exit(context);
             } else if ("fees-reconcile".equals(command)) {
                 // 只封存最多100条旧意图；不查询提供方、不退款、不扫描正式任务队列。
                 int changed=fees.markUnknownBefore(java.time.Instant.now().minusSeconds(120),100);
-                System.out.println("已标记待对账费用："+changed+"；原预留保持，未提交任何模型请求");
+                org.slf4j.LoggerFactory.getLogger(RuntimeConfiguration.class).info("已标记待对账费用："+changed+"；原预留保持，未提交任何模型请求");
                 org.springframework.boot.SpringApplication.exit(context);
             } else if ("init-index".equals(command)) {
                 index.initialize();
-                System.out.println("索引初始化完成（已有索引保留）");
+                org.slf4j.LoggerFactory.getLogger(RuntimeConfiguration.class).info("索引初始化完成（已有索引保留）");
                 org.springframework.boot.SpringApplication.exit(context);
             } else if ("cleanup-index".equals(command)) {
                 int maximum = env.getProperty("lab.cleanup.max-batches", Integer.class, 20);
@@ -90,7 +90,7 @@ public class RuntimeConfiguration {
                 int batches = 0;
                 // 每次仅领取一个有版本边界的事件，不扩大为整索引删除。
                 while (batches < maximum && cleanup.executeNext()) batches++;
-                System.out.println("已执行索引清理批次：" + batches + "；剩余、待重试或失败事件保留在 Outbox");
+                org.slf4j.LoggerFactory.getLogger(RuntimeConfiguration.class).info("已执行索引清理批次：" + batches + "；剩余、待重试或失败事件保留在 Outbox");
                 org.springframework.boot.SpringApplication.exit(context);
             }
         };

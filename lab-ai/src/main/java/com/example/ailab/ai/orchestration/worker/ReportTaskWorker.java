@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 @Component
 @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "lab.task.worker-enabled", havingValue = "true")
 public class ReportTaskWorker {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(ReportTaskWorker.class);
     private TraceTelemetryPort telemetry=TraceTelemetryPort.NONE;
     /** 正式装配独立遥测；历史显式构造不会获得可靠预算以外的新额度。 */
     @org.springframework.beans.factory.annotation.Autowired(required=false)
@@ -89,13 +90,17 @@ public class ReportTaskWorker {
      * 失败与暂停都在安全边界停止，既有成功检查点不重放。
      */
     private void run(TaskLease lease) {
+        WorkerLogging.run(lease, runId -> runObserved(lease, runId));
+    }
+
+    private void runObserved(TaskLease lease, String runId) {
         var renewal = heartbeat.scheduleAtFixedRate(() -> {
             try {
                 tasks.renew(lease);
             } catch (RuntimeException ignored) {
+                LOG.warn("event=worker.renew_failed taskId={} code={}", lease.task().taskId(), com.example.ailab.contract.error.DiagnosticFailure.code(ignored));
             }
         }, 20, 20, TimeUnit.SECONDS);
-        String runId=UUID.randomUUID().toString();
         var observation=telemetry.open(runId,lease.actor().userId(),null,lease.task().taskId(),null);
         var root=observation.span("TASK","report_execution");
         var roleNodes=new ConcurrentHashMap<String,String>();
@@ -197,9 +202,12 @@ public class ReportTaskWorker {
                 knowledge.document(lease.actor(), lease.request().scope(), id);
             final var published=report;
             budget.trace().call("PUBLISH","publish",()->{ tasks.publish(lease,published); return null; });
+            LOG.info("event=worker.published partial={}", usedPartial);
         } catch (LabException e) {
+            LOG.warn("event=worker.failed code={}", com.example.ailab.contract.error.DiagnosticFailure.code(e));
             root.fail(e); tasks.fail(lease, e.code());
         } catch (Exception e) {
+            LOG.error("event=worker.failed code={}", failureCode(e), com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));
             root.fail(new LabException(failureCode(e),"任务失败")); tasks.fail(lease, failureCode(e));
         } finally {
             scheduled.stream().filter(f->!f.isDone()).forEach(f->f.cancel(true));

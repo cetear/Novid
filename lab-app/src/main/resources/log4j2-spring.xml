@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN">
+    <Properties>
+        <Property name="logPath">${spring:logging.file.path:-./var/logs}</Property>
+        <Property name="maxFileSize">${spring:logging.log4j2.max-file-size:-20MB}</Property>
+        <Property name="historyDays">${spring:logging.log4j2.max-history-days:-30}</Property>
+        <Property name="archiveSize">${spring:logging.log4j2.max-archive-size:-1GB}</Property>
+        <Property name="pattern">%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}{UTC} %-5level [%t] %c{1} requestId=%X{requestId} operationId=%X{operationId} actorId=%X{actorId} resourceId=%X{resource_id} baseId=%X{resource_baseId} version=%X{resource_version} sessionId=%X{sessionId} documentId=%X{documentId} taskId=%X{taskId} ingestionId=%X{ingestionId} traceId=%X{traceId} %msg%n%throwable</Property>
+    </Properties>
+    <Appenders>
+        <Console name="Console" target="SYSTEM_OUT">
+            <PatternLayout pattern="${pattern}" charset="UTF-8"/>
+        </Console>
+        <RollingFile name="Application" fileName="${logPath}/novid.log"
+                     filePattern="${logPath}/archive/novid-%d{yyyy-MM-dd}-%i.log.gz">
+            <PatternLayout pattern="${pattern}" charset="UTF-8"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="${maxFileSize}"/>
+            </Policies>
+            <DefaultRolloverStrategy max="100">
+                <Delete basePath="${logPath}/archive" maxDepth="1">
+                    <IfFileName glob="novid-*.log.gz">
+                        <IfAny>
+                            <IfLastModified age="${historyDays}d"/>
+                            <IfAccumulatedFileSize exceeds="${archiveSize}"/>
+                        </IfAny>
+                    </IfFileName>
+                </Delete>
+            </DefaultRolloverStrategy>
+        </RollingFile>
+        <RollingFile name="Errors" fileName="${logPath}/novid-error.log"
+                     filePattern="${logPath}/archive/novid-error-%d{yyyy-MM-dd}-%i.log.gz">
+            <ThresholdFilter level="ERROR" onMatch="ACCEPT" onMismatch="DENY"/>
+            <PatternLayout pattern="${pattern}" charset="UTF-8"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="${maxFileSize}"/>
+            </Policies>
+            <DefaultRolloverStrategy max="100"/>
+        </RollingFile>
+    </Appenders>
+    <Loggers>
+        <!-- SDK详细HTTP日志可能包含请求正文或认证头，保持关闭。 -->
+        <Logger name="dev.langchain4j" level="OFF"/>
+        <Logger name="org.apache.hc.client5.http.wire" level="OFF"/>
+        <Logger name="org.apache.http.wire" level="OFF"/>
+        <Logger name="com.example.ailab" level="${spring:logging.level.com.example.ailab:-INFO}"/>
+        <Root level="${spring:logging.level.root:-INFO}">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="Application"/>
+            <AppenderRef ref="Errors"/>
+        </Root>
+    </Loggers>
+</Configuration>

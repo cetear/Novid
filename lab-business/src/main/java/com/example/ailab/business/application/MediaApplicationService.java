@@ -32,6 +32,10 @@ public class MediaApplicationService {
             if(presentation!=null)presentation.validateConfiguration();
         } else {
             var v=r.videoOptions();if(v==null||r.presentationOptions()!=null||v.shotCount()<1||v.shotCount()>6||v.seconds()<1||v.seconds()>90)throw LabException.invalid("视频需登记选项和1～6镜头");limit=v.maximumAmount();
+            if(v.characterId()==null||v.characterId().isBlank()
+                    ||v.voiceId()==null||v.voiceId().isBlank()
+                    ||v.sceneId()==null||v.sceneId().isBlank())
+                throw LabException.invalid("视频必须选择登记人物、配音和场景");
             var tiers=provider.videoDurationTiers();
             if(tiers.isEmpty())throw new LabException("MEDIA_CAPABILITY_UNAVAILABLE","当前视频模型没有已核验时长档位");
             if(v.seconds()>v.shotCount()*Collections.max(tiers))throw new LabException("MEDIA_DURATION_MISMATCH","目标总时长超过所选模型与镜头数共同上限");

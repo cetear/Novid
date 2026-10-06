@@ -32,8 +32,11 @@ public class GovernanceMaintenance {
     /** 有限清理失败后保留事实，下一调度再试；不循环清全部积压。 */
     @Scheduled(initialDelay = 3600000, fixedDelay = 3600000)
     public void scheduled() {
-        try { execute(); }
-        catch (RuntimeException failure) { org.slf4j.LoggerFactory.getLogger(getClass()).warn("运维清理失败，本次事务回滚；等待下一调度"); }
+        try {
+            var result = execute();
+            org.slf4j.LoggerFactory.getLogger(getClass()).info("event=governance.cleanup_complete counts={}", result);
+        }
+        catch (RuntimeException failure) { org.slf4j.LoggerFactory.getLogger(getClass()).error("event=governance.cleanup_failed",com.example.ailab.contract.error.DiagnosticFailure.sanitized(failure)); }
     }
 
     /** 截止时间只由服务端生成，不清费用、任务、审批、原文版本或可靠执行记录。 */

@@ -20,6 +20,7 @@ import java.math.BigDecimal;
 @Component
 @ConditionalOnProperty(name="lab.media.worker-enabled",havingValue="true")
 public class MediaTaskWorker {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(MediaTaskWorker.class);
     private final TaskStorePort tasks;private final MediaStorePort media;private final MediaProviderPort provider;
     private final MediaFilePort files;private final KnowledgeCapabilityPort knowledge;private final DocumentContextPort context;
     private final ModelGateway model;private final ToolExecutionService tools;private final TraceTelemetryPort telemetry;
@@ -43,8 +44,11 @@ public class MediaTaskWorker {
     public void scan(){if(coordinator.getActiveCount()==0&&coordinator.getQueue().isEmpty())tasks.claimMedia(workerId).ifPresent(l->coordinator.execute(()->run(l)));}
     /** 每次领取新运行图，可靠预算仍由同taskId持久事实限制。 */
     public void run(TaskLease lease){
-        String runId=UUID.randomUUID().toString();var observation=telemetry.open(runId,lease.actor().userId(),null,lease.task().taskId(),null);
-        var root=observation.span("TASK","media_execution");var renewal=heartbeat.scheduleAtFixedRate(()->{try{tasks.renew(lease);}catch(RuntimeException ignored){}},20,20,TimeUnit.SECONDS);
+        com.example.ailab.ai.orchestration.worker.WorkerLogging.run(lease, runId -> runObserved(lease, runId));
+    }
+    private void runObserved(TaskLease lease,String runId){
+        var observation=telemetry.open(runId,lease.actor().userId(),null,lease.task().taskId(),null);
+        var root=observation.span("TASK","media_execution");var renewal=heartbeat.scheduleAtFixedRate(()->{try{tasks.renew(lease);}catch(RuntimeException ignored){LOG.warn("event=worker.renew_failed taskId={} code={}",lease.task().taskId(),com.example.ailab.contract.error.DiagnosticFailure.code(ignored));}},20,20,TimeUnit.SECONDS);
         try{
             var budget=new ExecutionBudget(Duration.ofSeconds(Math.max(1,1200-lease.task().progress().elapsedExecutionSeconds())),36,
                     ()->tasks.reserveModelAttempt(lease),()->tasks.reserveModelTurn(lease),()->verify(lease,List.of()),()->tasks.reserveToolCall(lease),()->tasks.reserveModelRepair(lease))
@@ -95,10 +99,12 @@ public class MediaTaskWorker {
             var amount=video?lease.request().videoOptions().maximumAmount():lease.request().presentationOptions().maximumAmount();
             String hash=MediaModelGateway.hash(encode(units)+encode(board)+config+encode(allSources)+encode(catalogs)+amount);
             media.prepare(lease,new Media.Preview(lease.task().taskId(),1,plan.planVersion(),hash,"WAITING",UUID.randomUUID().toString(),Instant.now().plusSeconds(1800),config,"CNY",estimate(units,board),amount,units,List.copyOf(allSources),tasks.read(lease.actor(),lease.task().taskId()).coverage(),catalogs,media.assets(lease),"TEXT_REVIEW_ACCEPTED_MEDIA_REQUIRES_HUMAN_REVIEW",board));
+            LOG.info("event=worker.review_pending");
         }catch(Exception failure){
             Throwable e=failure;while((e instanceof ExecutionException||e instanceof CompletionException)&&e.getCause()!=null)e=e.getCause();
             root.fail(e instanceof RuntimeException r?r:new IllegalStateException("媒体执行失败"));
             String code=e instanceof LabException l?l.code():"MEDIA_EXECUTION_FAILED";
+            LOG.error("event=worker.failed code={}", code, com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));
             if(Set.of("MEDIA_SUBMISSION_UNKNOWN","MEDIA_REMOTE_TIMEOUT").contains(code)){
                 try{media.yield(lease,"NEEDS_RECONCILIATION",code);}catch(RuntimeException ignored){}
             }else tasks.fail(lease,code);
@@ -153,7 +159,8 @@ public class MediaTaskWorker {
                 var dependencies=step.dependsOn().stream().map(futures::get).toArray(CompletableFuture[]::new);
                 futures.put(step.stepId(),CompletableFuture.allOf(dependencies).thenApplyAsync(ignored->{
                     var prior=step.dependsOn().stream().map(id->futures.get(id).join()).toList();
-                    String input="主题="+lease.request().topic()+"\n选项="+encode(lease.request().videoOptions()!=null?lease.request().videoOptions():lease.request().presentationOptions())+"\n来源="+evidence+"\n前序="+encode(prior);
+                    String preceding=lease.request().presentationOptions()!=null?MediaResultInput.encode(json,prior):encode(prior);
+                    String input="主题="+lease.request().topic()+"\n选项="+encode(lease.request().videoOptions()!=null?lease.request().videoOptions():lease.request().presentationOptions())+"\n来源="+evidence+"\n前序="+preceding;
                     // PPT请求的总页数包含程序来源页，Worker只生成其余内容，不覆盖旧角色结果。
                     if(lease.request().presentationOptions()!=null)input+="\n内容页数="+(lease.request().presentationOptions().pageCount()-1)+"，另有一页来源由程序生成。";
                     String stepRepair=reusable.containsKey(step.stepId())?"":repair;

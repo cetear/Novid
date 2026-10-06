@@ -42,7 +42,7 @@ public class ControlledMediaFiles implements MediaFilePort {
             Files.write(temporary,bytes,StandardOpenOption.CREATE_NEW);
             Files.move(temporary,target,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
             return new Media.FileFact(id+extension,mime,bytes.length,checksum(bytes));
-        }catch(LabException e){throw e;}catch(Exception e){throw invalid();}
+        }catch(LabException e){throw e;}catch(Exception e){org.slf4j.LoggerFactory.getLogger(ControlledMediaFiles.class).error("event=media.local_failed",com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));throw invalid();}
         finally{try{Files.deleteIfExists(temporary);}catch(Exception ignored){}}
     }
     /** 下载主机白名单来自服务端资源核验；默认空表阻止任意URL，原生库由JavaCV加载。 */
@@ -65,7 +65,7 @@ public class ControlledMediaFiles implements MediaFilePort {
                         || b.length==4 && (Byte.toUnsignedInt(b[0])==0 || Byte.toUnsignedInt(b[0])>=224 || Byte.toUnsignedInt(b[0])==100 && (Byte.toUnsignedInt(b[1])&192)==64)
                         || b.length==16 && (Byte.toUnsignedInt(b[0])&254)==252) throw invalid();
             }
-        } catch(LabException e){throw e;}catch(Exception e){throw invalid();}
+        } catch(LabException e){throw e;}catch(Exception e){org.slf4j.LoggerFactory.getLogger(ControlledMediaFiles.class).error("event=media.local_failed",com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));throw invalid();}
     }
     /** 有界收取与全响应期限；视频必须经JavaCV解码校验可识别视频流。 */
     public Media.FileFact fetch(String assetId,String url,String kind) {
@@ -80,7 +80,7 @@ public class ControlledMediaFiles implements MediaFilePort {
             var fact=save(assetId,bytes,mime);
             if(kind.equals("VIDEO")) probe(path(fact.storageKey()),"video");
             return fact;
-        } catch(LabException e){throw e;}catch(InterruptedException e){Thread.currentThread().interrupt();throw invalid();}catch(Exception e){throw invalid();}
+        } catch(LabException e){throw e;}catch(InterruptedException e){Thread.currentThread().interrupt();throw invalid();}catch(Exception e){org.slf4j.LoggerFactory.getLogger(ControlledMediaFiles.class).error("event=media.local_failed",com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));throw invalid();}
     }
     /** 本人／来源由调用者先核验，存储再核真实路径、大小与checksum，防替换或损坏。 */
     public byte[] read(Media.FileFact fact) {
@@ -89,7 +89,7 @@ public class ControlledMediaFiles implements MediaFilePort {
             if(Files.size(p)!=fact.size() || fact.size()>209715200L) throw invalid();
             var bytes=Files.readAllBytes(p);
             if(!checksum(bytes).equals(fact.checksum())) throw invalid(); return bytes;
-        } catch(LabException e){throw e;}catch(Exception e){throw invalid();}
+        } catch(LabException e){throw e;}catch(Exception e){org.slf4j.LoggerFactory.getLogger(ControlledMediaFiles.class).error("event=media.local_failed",com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));throw invalid();}
     }
     /** 解码计量音轨／视频真实时长。 */
     public long durationMs(Media.FileFact file,String stream){
@@ -123,7 +123,7 @@ public class ControlledMediaFiles implements MediaFilePort {
             }
             action.run(temporary);if(Files.size(temporary)>Math.min(167772160L,remaining))throw invalid();
             probe(temporary,"video");probe(temporary,"audio");return save(id,Files.readAllBytes(temporary),"video/mp4");
-        }catch(LabException e){throw e;}catch(Exception e){throw invalid();}finally{try{Files.deleteIfExists(temporary);}catch(Exception ignored){}}
+        }catch(LabException e){throw e;}catch(Exception e){org.slf4j.LoggerFactory.getLogger(ControlledMediaFiles.class).error("event=media.local_failed",com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));throw invalid();}finally{try{Files.deleteIfExists(temporary);}catch(Exception ignored){}}
     }
     /** 兼容旧文件校验入口，实际时长来自JavaCV解码。 */
     private double probe(Path file,String type){return processor.duration(file,type)/1000d;}
@@ -136,7 +136,7 @@ public class ControlledMediaFiles implements MediaFilePort {
                 if(!Set.of("png","jpeg","jpg").contains(format)||(long)reader.getWidth(0)*reader.getHeight(0)>16000000)throw invalid();
                 if(reader.read(0)==null)throw invalid(); return format.equals("png")?"image/png":"image/jpeg";
             }finally{reader.dispose();}
-        }catch(LabException e){throw e;}catch(Exception e){throw invalid();}
+        }catch(LabException e){throw e;}catch(Exception e){org.slf4j.LoggerFactory.getLogger(ControlledMediaFiles.class).error("event=media.local_failed",com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));throw invalid();}
     }
     /** 稳定资产名及原子rename实现文件落盘，随机临时名使中断残留不阻断重试。 */
     private Media.FileFact save(String id,byte[] bytes,String mime) {
@@ -151,7 +151,7 @@ public class ControlledMediaFiles implements MediaFilePort {
                 Files.write(temporary,bytes,StandardOpenOption.CREATE_NEW); Files.move(temporary,target,StandardCopyOption.ATOMIC_MOVE);
             }
             return new Media.FileFact(key,mime,bytes.length,checksum(bytes));
-        }catch(LabException e){throw e;}catch(Exception e){throw invalid();}
+        }catch(LabException e){throw e;}catch(Exception e){org.slf4j.LoggerFactory.getLogger(ControlledMediaFiles.class).error("event=media.local_failed",com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));throw invalid();}
         finally{try{Files.deleteIfExists(temporary);}catch(Exception ignored){}}
     }
     /** 仅UUID文件名且真实路径仍位于根目录，拒绝遍历和符号链接逃逸。 */
@@ -159,10 +159,10 @@ public class ControlledMediaFiles implements MediaFilePort {
         try {
             if(key==null||!key.matches("[a-f0-9-]{36}\\.(png|jpg|mp4|wav|srt|pptx)"))throw invalid();
             Path p=root.resolve(key).normalize(); if(!p.toRealPath().startsWith(root.toRealPath())||Files.isSymbolicLink(p))throw invalid();return p;
-        }catch(LabException e){throw e;}catch(Exception e){throw invalid();}
+        }catch(LabException e){throw e;}catch(Exception e){org.slf4j.LoggerFactory.getLogger(ControlledMediaFiles.class).error("event=media.local_failed",com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));throw invalid();}
     }
     /** 实际二进制SHA256而非文本后缀标记。 */
-    private String checksum(byte[] bytes) { try{return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));}catch(Exception e){throw invalid();} }
+    private String checksum(byte[] bytes) { try{return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));}catch(Exception e){org.slf4j.LoggerFactory.getLogger(ControlledMediaFiles.class).error("event=media.local_failed",com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));throw invalid();} }
     /** 技术错误稳定脱敏；下载错误不能授权再次生成。 */
     private LabException invalid() { return new LabException("MEDIA_VALIDATION_FAILED","媒体地址、格式、大小、校验或取回无效"); }
     /** 全响应有界订阅，避免headers超时后无限流式读取。 */

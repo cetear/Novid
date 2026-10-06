@@ -59,7 +59,7 @@ public interface ModelInput {
     /** 固定输入不足不发送；S01工具消息保留原始SDK对象而非拼成正文。 */
     private static Prepared checked(List<ChatMessage> messages, List<EvidenceBundle> evidence, ModelProperties.Definition target) {
         int size = count(messages);
-        if (size + target.outputLimit() > target.contextWindow()) throw new LabException("BUDGET_EXCEEDED", "实际模型上下文不足");
+        if (size + target.outputLimit() > target.contextWindow()) throw new LabException("MODEL_CONTEXT_INSUFFICIENT", "实际模型上下文不足");
         return new Prepared(messages, evidence, size);
     }
 }

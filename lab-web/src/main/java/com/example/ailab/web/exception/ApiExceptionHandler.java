@@ -15,6 +15,7 @@ import java.util.*;
  */
 @RestControllerAdvice
 public class ApiExceptionHandler {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(ApiExceptionHandler.class);
     public record Error(String code, String message, boolean retryable) {
     }
 
@@ -23,6 +24,7 @@ public class ApiExceptionHandler {
      */
     @ExceptionHandler(LabException.class)
     public ResponseEntity<Error> business(LabException e) {
+        LOG.warn("event=api.rejected code={}", com.example.ailab.contract.error.DiagnosticFailure.code(e));
         int status = switch (e.code()) {
             case "AUTH_REQUIRED" -> 401;
             case "ACCESS_DENIED", "PASSWORD_CHANGE_REQUIRED" -> 403;
@@ -49,6 +51,7 @@ public class ApiExceptionHandler {
      */
     @ExceptionHandler({MethodArgumentNotValidException.class, HttpMessageNotReadableException.class, org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class, org.springframework.web.multipart.support.MissingServletRequestPartException.class, org.springframework.web.bind.MissingRequestHeaderException.class, org.springframework.web.bind.MissingServletRequestParameterException.class})
     public ResponseEntity<Error> arguments(Exception e) {
+        LOG.warn("event=api.rejected code=INVALID_ARGUMENTS type={}", e.getClass().getSimpleName());
         return ResponseEntity.badRequest().body(new Error("INVALID_ARGUMENTS", "请求格式或参数不合法", false));
     }
 
@@ -57,12 +60,14 @@ public class ApiExceptionHandler {
      */
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<Error> upload(Exception e) {
+        LOG.warn("event=api.rejected code=DOCUMENT_LIMIT_EXCEEDED");
         return ResponseEntity.status(413).body(new Error("DOCUMENT_LIMIT_EXCEEDED", "文件超过 10 MB 限额", false));
     }
 
     /** 真实断线后响应已不可写；取消由 SSE 回调完成，此处不能再尝试输出 JSON 错误。 */
     @ExceptionHandler(AsyncRequestNotUsableException.class)
     public void disconnected(AsyncRequestNotUsableException failure) {
+        LOG.warn("event=api.disconnected");
         // 只处理容器明确标记不可用的异步响应，普通业务与基础设施异常仍按原错误路径上报。
     }
 
@@ -71,6 +76,7 @@ public class ApiExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Error> unexpected(Exception e) {
+        LOG.error("event=api.failed code=INTERNAL_ERROR", com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));
         return ResponseEntity.status(500).body(new Error("INTERNAL_ERROR", "服务暂不可用", false));
     }
 }

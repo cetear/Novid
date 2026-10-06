@@ -13,6 +13,7 @@ import java.util.UUID;
  */
 @Component
 public class IndexCleanupWorker {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(IndexCleanupWorker.class);
     private final IndexCleanupStorePort store;
     private final KnowledgeIndexPort index;
     private final boolean enabled;
@@ -46,9 +47,12 @@ public class IndexCleanupWorker {
         var claimed = store.claim(workerId);
         if (claimed.isEmpty()) return false;
         var lease = claimed.get();
+        LOG.info("event=index_cleanup.start eventId={} resourceId={}",lease.eventId(),lease.resourceId());
         try {
             store.finish(lease, index.cleanup(lease));
+            LOG.info("event=index_cleanup.complete eventId={}",lease.eventId());
         } catch (RuntimeException failure) {
+            LOG.error("event=index_cleanup.failed eventId={}",lease.eventId(),com.example.ailab.contract.error.DiagnosticFailure.sanitized(failure));
             store.fail(lease);
             throw new LabException("SEARCH_UNAVAILABLE", "索引清理失败，数据库意图已保留供重试");
         }

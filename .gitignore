@@ -36,3 +36,6 @@ var/
 docs/API资源.txt
 .idea/
 .vscode/
+
+# 自定义日志目录下的压缩滚动归档
+*.log.gz

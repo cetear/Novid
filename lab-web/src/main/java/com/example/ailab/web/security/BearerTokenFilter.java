@@ -50,6 +50,7 @@ public class BearerTokenFilter extends OncePerRequestFilter {
                 throw new LabException("PASSWORD_CHANGE_REQUIRED", "请先修改临时密码");
             SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(user, null, List.of(new SimpleGrantedAuthority("ROLE_" + user.role().name()))));
         } catch (LabException e) {
+            org.slf4j.LoggerFactory.getLogger(BearerTokenFilter.class).warn("event=auth.rejected code={}", com.example.ailab.contract.error.DiagnosticFailure.code(e));
             res.setStatus(e.code().equals("AUTH_REQUIRED") ? 401 : 403);
             res.setContentType("application/json;charset=UTF-8");
             json.writeValue(res.getOutputStream(), Map.of("code", e.code(), "message", e.getMessage(), "retryable", false));

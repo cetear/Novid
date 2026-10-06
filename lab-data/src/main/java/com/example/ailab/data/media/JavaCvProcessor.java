@@ -42,7 +42,7 @@ public final class JavaCvProcessor {
             }
             if(start<0&&type.equals("audio"))return 0; // 无音轨是明确事实，不伪造静音时长。
             long ms=(end-start+999)/1000;if(start<0||ms<=0||ms>MAX_MS)throw invalid();return ms;
-        }catch(LabException e){throw e;}catch(Exception e){throw invalid();}finally{SLOTS.release();}
+        }catch(LabException e){throw e;}catch(Exception e){org.slf4j.LoggerFactory.getLogger(JavaCvProcessor.class).error("event=media.local_failed",com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));throw invalid();}finally{SLOTS.release();}
     }
     /** 统一重编码连续时间轴，原生轨保留；仅需字幕时通过Java绘制，避免滤镜字符串执行。 */
     public void concatenate(java.util.List<Path> clips,Path output,String srt,Instant deadline,long maximum){
@@ -74,7 +74,7 @@ public final class JavaCvProcessor {
                 }
                 offset+=nextVideo;if(offset>MAX_MS*1000)throw invalid();
             }finally{if(last!=null)last.close();}}
-        }}catch(LabException e){throw e;}catch(Exception e){throw invalid();}finally{SLOTS.release();}
+        }}catch(LabException e){throw e;}catch(Exception e){org.slf4j.LoggerFactory.getLogger(JavaCvProcessor.class).error("event=media.local_failed",com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));throw invalid();}finally{SLOTS.release();}
     }
     /** 流式读取受控本地文件；禁止通过媒体容器再访问网络协议。 */
     private FFmpegFrameGrabber open(Path path)throws Exception{

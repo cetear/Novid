@@ -93,7 +93,7 @@ public class PptxExporter implements PresentationPort {
             }
             var check=new Presentation.Check(p.taskId(),p.previewVersion(),p.planVersion(),p.hash(),inputHash,Presentation.VERSION,font,ppt.getSlides().size(),"PASSED","REQUIRES_HUMAN_REVIEW",warnings,images,p.sourceDependencies(),p.coverage());
             return new Presentation.Bundle(deck,null,pages,check);
-        }catch(LabException e){throw e;}catch(Exception e){throw error("PPT_EXPORT_FAILED","PPTX导出、备注或逐页预览失败");}
+        }catch(LabException e){throw e;}catch(Exception e){org.slf4j.LoggerFactory.getLogger(PptxExporter.class).error("event=presentation.export_failed",com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));throw error("PPT_EXPORT_FAILED","PPTX导出、备注或逐页预览失败");}
     }
     /** 恢复只使用原文件／PNG与checksum，不触发任何图片／视频API。 */
     public boolean intact(Presentation.Bundle bundle){

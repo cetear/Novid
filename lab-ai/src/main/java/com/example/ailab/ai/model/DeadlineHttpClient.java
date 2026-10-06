@@ -11,15 +11,20 @@ import java.time.format.DateTimeFormatter;
 final class DeadlineHttpClient implements dev.langchain4j.http.client.HttpClient {
     record Scope(ExecutionBudget budget, int timeoutSeconds, java.util.concurrent.atomic.AtomicReference<String> responseBody) { }
     static final ThreadLocal<Scope> CURRENT = new ThreadLocal<>();
-    private final java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(30)).followRedirects(java.net.http.HttpClient.Redirect.NEVER).build();
+    private final java.net.http.HttpClient client;
+    DeadlineHttpClient() {
+        this(java.net.http.HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30))
+                .followRedirects(java.net.http.HttpClient.Redirect.NEVER).build());
+    }
+    /** 传输协议测试可替换网络层，实际发送仍走完整响应和预算检查。 */
+    DeadlineHttpClient(java.net.http.HttpClient client) { this.client = java.util.Objects.requireNonNull(client); }
     /** 只保留HTTP状态与冷却时间，异常不携带提供方正文、地址或密钥。 */
     static final class Failure extends RuntimeException {
         final int status; final Duration retryAfter;
         /** 错误正文不进入SDK异常链，避免观测或日志外泄。 */
         Failure(int status, Duration retryAfter) { super("受控模型HTTP失败"); this.status = status; this.retryAfter = retryAfter; }
     }
-    /** 所有模型生成均为同步完整响应，等待受目标、30秒和剩余时间最小值限制。 */
+    /** 同步完整响应取目标配置、调用方单次等待上限和任务剩余时间的最小值。 */
     @Override public SuccessfulHttpResponse execute(dev.langchain4j.http.client.HttpRequest request) {
         var scope = CURRENT.get();
         if (scope == null) throw new IllegalStateException("缺少模型调用预算");
