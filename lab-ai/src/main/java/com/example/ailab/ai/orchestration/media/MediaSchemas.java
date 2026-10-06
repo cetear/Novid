@@ -114,7 +114,7 @@ public final class MediaSchemas {
                     +"，须原样使用英文小写值，不得使用角色名、stepId、中文、自造动作或其他任务动作；每种action最多一个节点。"
                     +"action与agentId对应关系："+JSON.valueToTree(roles)+"。必需动作："+List.of(first,second,"review")+"；其余允许动作按需要选择。"
                     +second+"必须直接依赖"+first+"；review汇合所有前序。stepId须小写英文开头且唯一；dependsOn填写其他节点的stepId，禁止循环及自身依赖；inputRefs仅SOURCE或直接依赖stepId。"
-                    +"when使用ALWAYS"+(video?"":"，仅visual可用HAS_WEB_IMAGES")+"；completionCondition=VALID_TYPED_RESULT。"
+                    +"when使用ALWAYS"+(video?"":"；visual只负责WEB_SEARCH事实图片搜索，生成概念图GENERATED和无图NONE不需要visual。visual须依赖content或layout，并使用HAS_WEB_IMAGES；执行时没有事实图片需求会跳过，即使旧计划写了ALWAYS")+"；completionCondition=VALID_TYPED_RESULT。"
                     +"合法最小计划示例（按实际需求调整允许节点和依赖）："+JSON.valueToTree(example)
                     +"。不输出权限、URL、密钥、批准、预算、正文或代码。";
         }

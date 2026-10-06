@@ -29,6 +29,21 @@ public class PptxExporter implements PresentationPort {
     public String version(){return Presentation.VERSION+":"+font;}
     /** 使用统一英文家族名核验字体，系统显示语言不影响部署检查。 */
     public void validateConfiguration(){if(!Arrays.asList(GraphicsEnvironment.getLocalGraphicsEnvironment().getAvailableFontFamilyNames(Locale.ENGLISH)).contains(font))throw error("PPT_FONT_UNAVAILABLE","指定中文字体未安装");}
+    /** 不读取或购买图片；有图页按正式半栏模板检查，并复用导出的同一文本框实现。 */
+    public List<Presentation.LayoutIssue> validateLayout(List<Media.Unit> units){
+        validateConfiguration();var issues=new ArrayList<Presentation.LayoutIssue>();
+        try(var ppt=new XMLSlideShow()){
+            ppt.setPageSize(new Dimension(960,540));
+            for(var unit:units){
+                try{textBoxes(ppt.createSlide(),unit,!unit.imageMode().equals("NONE"));}
+                catch(LabException failure){
+                    if(!Set.of("PPT_TEXT_OVERFLOW","PPT_CONTENT_INVALID","PPT_LAYOUT_INVALID","PPT_FONT_GLYPH_MISSING").contains(failure.code()))throw failure;
+                    issues.add(new Presentation.LayoutIssue(unit.unitId(),failure.code()));
+                }
+            }
+        }catch(IOException failure){throw error("PPT_STRUCTURE_INVALID","排版预检资源无法关闭");}
+        return List.copyOf(issues);
+    }
     /** 批准正文不改写、不截断；超页／缺图／溢出明确停止并等待重新审批。 */
     public Presentation.Bundle export(Media.Preview p,String inputHash,Instant deadline,long remaining){
         limit(deadline);
@@ -51,20 +66,11 @@ public class PptxExporter implements PresentationPort {
                     picture=ppt.addPicture(bytes,image.file().mime().equals("image/png")?PictureData.PictureType.PNG:PictureData.PictureType.JPEG);
                     images.add(new Presentation.Image(unit.unitId(),image.assetId(),image.kind(),image.file().checksum(),image.operationId(),image.webSource()));
                 }
-                if(!Set.of("TITLE","TEXT","TWO_COLUMN","IMAGE_TEXT").contains(unit.layout()))throw error("PPT_LAYOUT_INVALID","PPT版式不属于受控目录");
-                box(slide,unit.title(),new Rectangle2D.Double(48,32,864,82),34,28,true);
+                textBoxes(slide,unit,picture!=null);
                 if(picture!=null){
-                    box(slide,unit.text(),new Rectangle2D.Double(48,136,416,314),24,18,false);
                     var shape=slide.createPicture(picture);shape.setAnchor(contain(picture,new Rectangle2D.Double(508,136,404,280)));
                     box(slide,image.kind().equals("GENERATED")?"AI生成概念示意":"网络事实配图，出处见备注及来源页",new Rectangle2D.Double(508,430,404,38),16,16,false);
-                }else if(unit.layout().equals("TWO_COLUMN")){
-                    int split=split(unit.text());
-                    box(slide,unit.text().substring(0,split),new Rectangle2D.Double(48,136,416,314),24,18,false);
-                    if(split<unit.text().length())box(slide,unit.text().substring(split),new Rectangle2D.Double(496,136,416,314),24,18,false);
-                }else{
-                    box(slide,unit.text(),new Rectangle2D.Double(48,136,864,314),26,18,false);
                 }
-                box(slide,"笔记引用 "+String.join("  ",unit.references()),new Rectangle2D.Double(48,480,864,42),14,14,false);
                 notes(ppt,slide,unit.notes()+"\n\n笔记引用："+unit.references()+"\n"+sourceNotes(p)+(image==null?"":"\n配图："+image.kind()+"\nchecksum="+image.file().checksum()+"\noperation="+image.operationId()+"\n"+image.webSource()));
             }
             if(images.size()>8)throw error("PPT_IMAGE_LIMIT","每任务最多8张配图");
@@ -110,6 +116,18 @@ public class PptxExporter implements PresentationPort {
         if(!Set.of("image/png","image/jpeg").contains(a.file().mime()))throw error("PPT_IMAGE_INVALID","配图须为真实PNG或JPEG");
         if(kind.equals("WEB_SEARCH")&&(a.webSource()==null||a.webSource().sourcePageUrl()==null||a.webSource().imageUrl()==null||a.webSource().objectAndPeriod()==null||a.webSource().license()==null))throw error("PPT_IMAGE_SOURCE_REQUIRED","事实配图缺少出处、对象或使用条件");
         return a;
+    }
+    /** 预检与导出共享标题、正文和引用的尺寸、字体及分栏规则。 */
+    private void textBoxes(XSLFSlide slide,Media.Unit unit,boolean image){
+        if(!Set.of("TITLE","TEXT","TWO_COLUMN","IMAGE_TEXT").contains(unit.layout()))throw error("PPT_LAYOUT_INVALID","PPT版式不属于受控目录");
+        box(slide,unit.title(),new Rectangle2D.Double(48,32,864,82),34,28,true);
+        if(image)box(slide,unit.text(),new Rectangle2D.Double(48,136,416,314),24,18,false);
+        else if(unit.layout().equals("TWO_COLUMN")){
+            int boundary=split(unit.text());
+            box(slide,unit.text().substring(0,boundary),new Rectangle2D.Double(48,136,416,314),24,18,false);
+            if(boundary<unit.text().length())box(slide,unit.text().substring(boundary),new Rectangle2D.Double(496,136,416,314),24,18,false);
+        }else box(slide,unit.text(),new Rectangle2D.Double(48,136,864,314),26,18,false);
+        box(slide,"笔记引用 "+String.join("  ",unit.references()),new Rectangle2D.Double(48,480,864,42),14,14,false);
     }
     /** 按实际字体换行并逐级适配字号，最低字号仍放不下时失败，不截断批准正文。 */
     private void box(XSLFSlide slide,String text,Rectangle2D anchor,int initial,int minimum,boolean title){

@@ -10,6 +10,8 @@ public interface MediaProviderPort {
     default VideoApi.Selection selectVideo(VideoApi.Recommendation recommendation,List<Media.CatalogItem> catalogs){throw new UnsupportedOperationException();}
     /** 批准及发送前复核同版本配置；原ID查询可使用保留的历史版本。 */
     default void verifyVideo(VideoApi.Selection selection,boolean submitting){throw new UnsupportedOperationException();}
+    /** 生图提交所需协议能力在审批前核验，异步结果查询必须同时可用。 */
+    default void verifyImage(){ }
     /** 查询上限和间隔来自原配置，仍受整任务上限约束。 */
     default int queryLimit(VideoApi.Selection selection){return 60;}
     default int queryInterval(VideoApi.Selection selection){return 15;}

@@ -8,6 +8,8 @@ public final class Presentation {
     public static final String VERSION="pptx-layout-v1";
     /** 纯契约工具类不接受实例化。 */
     private Presentation() { }
+    /** 实际字体与模板的文本预检结果，不携带来源正文或文件路径。 */
+    public record LayoutIssue(String unitId,String code) { }
     public record Page(int number,String unitId,Media.FileFact preview,Long artifactId) { }
     public record Image(String unitId,String assetId,String kind,String checksum,String operationId,Media.ImageSource source) { }
     public record Check(long taskId,int previewVersion,int planVersion,String approvalHash,String inputHash,

@@ -206,6 +206,8 @@ lab:
     image-submit-url: https://open.bigmodel.cn/api/paas/v4/async/images/generations
     image-model: glm-image
     image-size: 1280x1280
+    # 仅在核实异步结果查询不另收费后设为 true；未核验时审批和提交均拒绝生图。
+    query-free-verified: ${MEDIA_QUERY_FREE_VERIFIED:false}
     credential-ref: MODEL_BACKUP_API_KEY
     # 生图报价：每张图片计价
     image-price:

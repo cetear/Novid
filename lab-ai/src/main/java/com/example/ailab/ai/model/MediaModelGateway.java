@@ -52,11 +52,20 @@ public class MediaModelGateway implements MediaProviderPort {
     /** 在途任务恢复永远使用自己的原配置与原提供方ID。 */
     public Media.ProviderResult query(Media.Submission s,String id,java.time.Instant deadline){
         if(!s.capability().equals("IMAGE_GENERATION"))return videos.query(s.video(),id,deadline);
-        if(!config.queryFreeVerified()||id==null||id.isBlank()||id.length()>256)throw unavailable();
-        long remaining=Math.min(30000,Duration.between(java.time.Instant.now(),deadline).toMillis());if(remaining<=0)throw unavailable();
+        verifyImage();
+        if(!config.queryFreeVerified())throw new LabException("MEDIA_CAPABILITY_UNAVAILABLE","异步图片结果查询收费尚未核验，请配置 lab.media.query-free-verified");
+        if(id==null||id.isBlank()||id.length()>256)throw protocol();
+        long remaining=Math.min(30000,Duration.between(java.time.Instant.now(),deadline).toMillis());if(remaining<=0)throw new LabException("BUDGET_EXCEEDED","媒体请求共同期限耗尽");
         String segment=URLEncoder.encode(id,StandardCharsets.UTF_8).replace("+","%20");
-        return parseAsyncImage(request("GET","https://open.bigmodel.cn/api/paas/v4/async-result/"+segment,null,Duration.ofMillis(remaining)),id,false);
+        String url=URI.create(config.imageSubmitUrl()).resolve("/api/paas/v4/async-result/"+segment).toString();
+        return parseAsyncImage(request("GET",url,null,Duration.ofMillis(remaining)),id,false);
     }
+    /** 异步提交依赖查询；审批和发送前使用相同检查，防止购买后才发现无法取回结果。 */
+    public void verifyImage(){
+        if(!config.enabled()||!config.externalDataAllowed()||key().isBlank())throw unavailable();
+        if(asyncImage()&&!config.queryFreeVerified())throw new LabException("MEDIA_CAPABILITY_UNAVAILABLE","异步图片结果查询收费尚未核验，请配置 lab.media.query-free-verified");
+    }
+    private boolean asyncImage(){return URI.create(config.imageSubmitUrl()).getPath().equals("/api/paas/v4/async/images/generations");}
     private static final ObjectMapper JSON = new ObjectMapper()
             .enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
@@ -121,6 +130,7 @@ public class MediaModelGateway implements MediaProviderPort {
         if (!config.enabled() || !config.externalDataAllowed()) throw unavailable();
         if(!Set.of("IMAGE_GENERATION","VIDEO_GENERATION").contains(submission.capability()))throw unavailable();
         boolean image = submission.capability().equals("IMAGE_GENERATION");
+        if(image)verifyImage();
         var body = new LinkedHashMap<String, Object>(); body.put("model", modelId(submission.capability()));
         String prompt = submission.prompt();
         if (!image) {
@@ -136,7 +146,7 @@ public class MediaModelGateway implements MediaProviderPort {
         long remaining=Math.min((image?imageTimeoutSeconds():30)*1000L,Duration.between(java.time.Instant.now(),deadline).toMillis());
         if(remaining<=0)throw new LabException("BUDGET_EXCEEDED","媒体请求共同期限耗尽");
         var root = request("POST", image ? config.imageSubmitUrl() : config.videoSubmitUrl(), body,Duration.ofMillis(remaining));
-        return image ? (URI.create(config.imageSubmitUrl()).getPath().equals("/api/paas/v4/async/images/generations")?parseAsyncImage(root,null,true):parseImage(root)) : parseVideo(root, null, true);
+        return image ? (asyncImage()?parseAsyncImage(root,null,true):parseImage(root)) : parseVideo(root, null, true);
     }
     /** 路径仅来自持久操作，UTF-8百分号编码为单路径段；没有POST或生成请求体。 */
     public Media.ProviderResult query(String providerJobId) {

@@ -95,7 +95,16 @@ public class MediaApplicationService {
     /** 决定只接收批准ID和布尔值，不允许覆盖脚本／价格／来源；数据端原子消费。 */
     public Media.Preview decide(UserContext actor,String id,boolean approved,long taskId){
         actor=policy.current(actor);var t=tasks.read(actor,taskId);var prices=new HashMap<String,FeePrice>();var models=new HashMap<String,String>();
-        if(approved&&t.taskType().equals("NOTES_PPT")&&presentation!=null)presentation.validateConfiguration();
+        if(approved&&t.taskType().equals("NOTES_PPT")){
+            var preview=store.preview(actor,taskId).orElseThrow(LabException::denied);
+            if(preview.units().stream().anyMatch(u->u.imageMode().equals("GENERATED")))provider.verifyImage();
+        }
+        if(approved&&t.taskType().equals("NOTES_PPT")&&presentation!=null){
+            presentation.validateConfiguration();
+            var preview=store.preview(actor,taskId).orElseThrow(LabException::denied);
+            var issues=presentation.validateLayout(preview.units());
+            if(!issues.isEmpty())throw new LabException(issues.get(0).code(),"PPT排版预检未通过，请调整标题、正文或版式后再批准："+issues.get(0).unitId());
+        }
         for(String c:List.of("IMAGE_GENERATION","VIDEO_GENERATION")){var price=provider.price(c);if(price!=null)prices.put(c,price);models.put(c,provider.modelId(c));}
         if(approved&&t.taskType().equals("NOTES_VIDEO")&&!files.videoRuntimeAvailable())throw new LabException("MEDIA_CAPABILITY_UNAVAILABLE","JavaCV视频处理运行时不可用");
         if(approved&&t.taskType().equals("NOTES_VIDEO")){
