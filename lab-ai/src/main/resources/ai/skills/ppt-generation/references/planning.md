@@ -1,0 +1,1 @@
+按用户请求选择research/content/layout/visual/review。layout依赖content，review汇合全部步骤；visual依赖已产生配图需求的content或layout，并使用HAS_WEB_IMAGES。根据任务增加有价值的资料研究，计划完成条件是可执行的依赖图。只选择服务端登记的角色和动作，不输出正文或批准字段。

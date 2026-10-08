@@ -75,6 +75,16 @@ public final class MediaSchemas {
         }
         if(units.stream().filter(u->!u.imageMode().equals("NONE")).count()>8)throw invalid();
     }
+    /** 用户配图类型是硬约束，模型或Skill不能把事实对象改用生成图。 */
+    public static void validateImagePolicy(List<Media.Unit> units,String policy) {
+        var allowed=switch(policy){
+            case "CONCEPT"->Set.of("NONE","GENERATED");
+            case "FACTUAL"->Set.of("NONE","WEB_SEARCH");
+            case "MIXED"->Set.of("NONE","GENERATED","WEB_SEARCH");
+            default->throw invalid("IMAGE_POLICY");
+        };
+        if(units.stream().anyMatch(u->!allowed.contains(u.imageMode())))throw invalid("IMAGE_POLICY");
+    }
     /** 真实Planner Schema，包含动作和依赖而非只返回大纲。 */
     public static final class PlanSchema implements StructuredSchema<Media.Plan> {
         private static final Map<String,String> REPAIR_HINTS=Map.ofEntries(

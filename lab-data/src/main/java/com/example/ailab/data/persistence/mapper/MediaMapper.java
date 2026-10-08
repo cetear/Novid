@@ -6,6 +6,9 @@ import java.util.List;
 
 /** 自定义 SQL 由 MyBatis 执行，参数绑定与事务使用统一数据源。 */
 public interface MediaMapper {
+    List<SqlRow> skillBindingEligibleSelect(@Param("args") Object[] args);
+    List<SqlRow> executionBindingSelect(@Param("args") Object[] args);
+    int executionBindingInsert(@Param("args") Object[] args);
     List<SqlRow> previewGenerationPreviewsSelect(@Param("args") Object[] args);
     int planMediaPlansWrite(@Param("args") Object[] args);
     List<SqlRow> plansMediaPlansSelect(@Param("args") Object[] args);

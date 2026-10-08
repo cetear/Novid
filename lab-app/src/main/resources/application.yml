@@ -78,6 +78,25 @@ lab:
     enabled: true
     # 包含排队、授权复核、远程向量和检索；范围1～120秒，在线仍受30秒单次上限限制。
     timeout-seconds: ${TOOL_TIMEOUT_SECONDS:90}
+    mcp:
+      enabled: true
+      # 服务、远端工具名到本地别名及任务范围由服务端显式配置。
+      servers:
+        - id: zhipu_search
+          transport: http
+          url: https://open.bigmodel.cn/api/mcp/web_search_prime/mcp
+          headers:
+            Authorization: "Bearer ${MODEL_BACKUP_API_KEY}"
+          required: true
+          timeout-seconds: 60
+          tools:
+            web_search_prime: mcp_zhipu_search
+          tasks: [KNOWLEDGE_QA, RESEARCH]
+  skills:
+    enabled: ${SKILLS_ENABLED:true}
+    # 分号分隔服务端目录；外部同名版本覆盖内置版本，新任务生效。
+    roots: ${SKILLS_ROOTS:}
+    ppt-skill: ${PPT_SKILL:ppt-generation}
   ingestion:
     worker-enabled: ${INGESTION_WORKER_ENABLED:true}
   task:

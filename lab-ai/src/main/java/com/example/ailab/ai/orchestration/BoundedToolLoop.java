@@ -27,9 +27,15 @@ public final class BoundedToolLoop {
     /** 媒体研究Worker含首次调用最多三轮，最后一轮关闭工具并汇总，不执行无后续轮可用的申请。 */
     public Result run(UserContext actor,ScopeRequest scope,ModelRegistry.Selection selection,ModelInput initial,
             ExecutionBudget budget,Runnable verify,String toolTask,int maximumRounds) {
+        return run(actor,scope,selection,initial,budget,verify,toolTask,maximumRounds,null,Map.of());
+    }
+    /** Skill只可缩小工具目录；固定契约与每轮当前授权同时成立才允许执行。 */
+    public Result run(UserContext actor,ScopeRequest scope,ModelRegistry.Selection selection,ModelInput initial,
+            ExecutionBudget budget,Runnable verify,String toolTask,int maximumRounds,Set<String> allowedTools,Map<String,String> contracts) {
+        tools.verifyContracts(contracts);
         if(maximumRounds<1)throw LabException.invalid("工具循环至少需要一轮");
         int rounds=1;
-        var specs = tools.definitions(actor, toolTask).stream().map(ToolRegistry::specification).toList();
+        var specs = tools.definitions(actor, toolTask).stream().filter(d->allowedTools==null||allowedTools.contains(d.name())).map(ToolRegistry::specification).toList();
         if(specs.isEmpty())throw new LabException("SEARCH_UNAVAILABLE","此媒体研究角色没有已配置的受控工具");
         var sent = new java.util.concurrent.atomic.AtomicReference<ModelInput.Prepared>();
         ModelInput first=target->{
@@ -58,13 +64,14 @@ public final class BoundedToolLoop {
                 requested.tool(request.id()); resultNodes.add(requested.id());
                 try(var active=budget.activate(requested.context())) {
                 verify.run(); tools.verify(actor, scope, evidence);
-                if (evidence.size() >= 6 && !request.name().equals("get_knowledge_statistics"))
-                    throw new LabException("BUDGET_EXCEEDED", "工具证据包数已满");
+                tools.verifyContracts(contracts);
+                if(allowedTools!=null&&!allowedTools.contains(request.name()))throw new LabException("TOOL_NOT_ALLOWED","工具不在本任务Skill目录中");
                 var outcome = tools.execute(actor, scope, toolTask, request.id(), request.name(), request.arguments(),
                         "E" + (evidence.size() + 1), budget, query -> {
                             var vector = models.embed(List.of(query), budget);
                             return new ToolExecutionService.ModelVector(vector.vectors().get(0), vector.modelVersion());
                         });
+                if(evidence.size()+outcome.evidence().size()>6)throw new LabException("BUDGET_EXCEEDED","工具证据包数已满");
                 evidence.addAll(outcome.evidence());
                 if (evidence.stream().mapToInt(e -> TextWindow.count(e.text()) + TextWindow.count(e.headingPath()) + 64).sum() > 4000)
                     throw new LabException("BUDGET_EXCEEDED", "续轮证据超过共享上限");

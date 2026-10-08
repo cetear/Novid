@@ -29,6 +29,36 @@ public class MediaRepository implements MediaStorePort {
     public MediaRepository(SqlSupport sql, TaskRepository tasks, DocumentSqlRepository docs, FeeStorePort fees) {
         this.sql=sql; this.mapper = sql.mapper(MediaMapper.class); this.tasks=tasks; this.docs=docs; this.fees=fees;
     }
+    /** 迁移前任务保持原执行模式，新任务在首次规划前固定基线。 */
+    @Override
+    @Transactional
+    public boolean skillBindingEligible(TaskLease lease) {
+        tasks.valid(lease);
+        return mapper.skillBindingEligibleSelect(new Object[]{lease.task().taskId()}).get(0).booleanValue("skill_binding_eligible");
+    }
+    /** 绑定读取沿可信任务租约核验。 */
+    @Override
+    @Transactional
+    public Optional<TaskExecutionBinding> executionBinding(TaskLease lease) {
+        tasks.valid(lease);
+        var rows=mapper.executionBindingSelect(new Object[]{lease.task().taskId()});
+        if(rows.isEmpty())return Optional.empty();
+        var row=rows.get(0);TaskExecutionBinding value;
+        try {value=json.readValue(row.string("binding_json"),TaskExecutionBinding.class);}
+        catch(Exception invalid){throw new LabException("SKILL_SNAPSHOT_INVALID","任务Skill快照无法解析");}
+        if(!SqlSupport.hash(encode(value)).equals(row.string("binding_hash")))throw new LabException("SKILL_SNAPSHOT_INVALID","任务Skill快照损坏");
+        return Optional.of(value);
+    }
+    /** 可信租约和账户锁序沿任务仓库；首次写入后不允许替换。 */
+    @Override
+    @Transactional
+    public void bindExecution(TaskLease lease,TaskExecutionBinding binding) {
+        tasks.valid(lease);
+        var saved=executionBinding(lease);
+        if(saved.isPresent()){if(!saved.get().equals(binding))throw conflict();return;}
+        if(!plans(lease.actor(),lease.task().taskId()).isEmpty())throw new LabException("SKILL_BINDING_CONFLICT","已有计划不能补写新Skill基线");
+        mapper.executionBindingInsert(new Object[]{lease.task().taskId(),SqlSupport.hash(encode(binding)),encode(binding)});
+    }
     /** 私人预览与来源二次复核；没有预览时不返回模型草稿。 */
     @Transactional(readOnly=true)
     public Optional<Media.Preview> preview(UserContext actor,long taskId) {
