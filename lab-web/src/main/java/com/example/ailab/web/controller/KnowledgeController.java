@@ -40,18 +40,24 @@ public class KnowledgeController {
         ingestion = i;
         this.contextApplication = contextApplication;
     }
-    /** S02 章节详情使用绝对 UTF-16 游标，禁止默认把旧章节绑定到新版；私人正文不缓存。 */
+
+    /**
+     * S02 章节详情使用绝对 UTF-16 游标，禁止默认把旧章节绑定到新版；私人正文不缓存。
+     */
     @GetMapping("/documents/{id}/sections/{sectionId}")
     public ResponseEntity<SectionPage> section(Authentication a, @PathVariable long id, @PathVariable String sectionId,
                                                @RequestParam int documentVersion, @RequestParam long processingRevision,
                                                @RequestParam(required = false) Integer afterOffset,
                                                @RequestParam(defaultValue = "4000") int maxTokens) {
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(contextApplication.section(CurrentUser.from(a),id,sectionId,documentVersion,processingRevision,afterOffset,maxTokens));
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(contextApplication.section(CurrentUser.from(a), id, sectionId, documentVersion, processingRevision, afterOffset, maxTokens));
     }
-    /** S02 处理详情不输出 worker／lease／内部路径或原始异常，失败状态与旧激活代次分别展示。 */
+
+    /**
+     * S02 处理详情不输出 worker／lease／内部路径或原始异常，失败状态与旧激活代次分别展示。
+     */
     @GetMapping("/documents/{id}/ingestion")
     public ResponseEntity<IngestionMetadata> ingestionMetadata(Authentication a, @PathVariable long id) {
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(contextApplication.ingestion(CurrentUser.from(a),id));
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(contextApplication.ingestion(CurrentUser.from(a), id));
     }
 
     /**
@@ -153,16 +159,17 @@ public class KnowledgeController {
      * 支持新代次 retry/reprocess 或指定失败代次 recover；客户端不能重置预算。
      */
     @PostMapping("/documents/{id}/index-actions")
-    public void reprocess(Authentication a, @PathVariable long id, @RequestParam String action, @RequestParam(required=false) Long processingRevision) {
+    public void reprocess(Authentication a, @PathVariable long id, @RequestParam String action, @RequestParam(required = false) Long processingRevision) {
         if (!action.equals("reprocess") && !action.equals("retry") && !action.equals("recover"))
             throw LabException.invalid("仅支持 retry/reprocess/recover");
         var u = CurrentUser.from(a);
         capability.authorize(u, ScopeRequest.self());
-        if(action.equals("recover")) {
-            if(processingRevision==null || processingRevision<=0) throw LabException.invalid("recover必须指定正数processingRevision");
-            ingestion.recover(u,id,processingRevision);
+        if (action.equals("recover")) {
+            if (processingRevision == null || processingRevision <= 0)
+                throw LabException.invalid("recover必须指定正数processingRevision");
+            ingestion.recover(u, id, processingRevision);
         } else {
-            if(processingRevision!=null) throw LabException.invalid("新处理代次不接收processingRevision");
+            if (processingRevision != null) throw LabException.invalid("新处理代次不接收processingRevision");
             ingestion.reprocess(u, id);
         }
     }

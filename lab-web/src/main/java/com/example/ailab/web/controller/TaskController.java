@@ -21,11 +21,20 @@ import java.net.URI;
 public class TaskController {
     public record Create(@NotBlank String taskType, @NotBlank @Size(max = 1000) String topic, ScopeRequest scope,
                          @NotEmpty @Size(max = 6) List<@NotNull @Positive Long> documentIds, String strategy,
-                         Media.PresentationOptions presentationOptions,Media.VideoOptions videoOptions) {
-        /** 旧五参数JSON／测试构造继续使用普通任务语义。 */
-        public Create(String taskType,String topic,ScopeRequest scope,List<Long> documentIds,String strategy){this(taskType,topic,scope,documentIds,strategy,null,null);}
-        /** 旧四参数构造保持默认固定工作流。 */
-        public Create(String taskType, String topic, ScopeRequest scope, List<Long> documentIds) { this(taskType, topic, scope, documentIds, null); }
+                         Media.PresentationOptions presentationOptions, Media.VideoOptions videoOptions) {
+        /**
+         * 旧五参数JSON／测试构造继续使用普通任务语义。
+         */
+        public Create(String taskType, String topic, ScopeRequest scope, List<Long> documentIds, String strategy) {
+            this(taskType, topic, scope, documentIds, strategy, null, null);
+        }
+
+        /**
+         * 旧四参数构造保持默认固定工作流。
+         */
+        public Create(String taskType, String topic, ScopeRequest scope, List<Long> documentIds) {
+            this(taskType, topic, scope, documentIds, null);
+        }
     }
 
     public record Action(@NotBlank String action) {
@@ -45,7 +54,7 @@ public class TaskController {
      */
     @PostMapping("/tasks")
     public ResponseEntity<TaskSnapshot> create(Authentication a, @Valid @RequestBody Create r, @RequestHeader("Idempotency-Key") String key) {
-        var task = service.create(CurrentUser.from(a), new TaskRequest(r.taskType(), r.topic(), r.scope() == null ? ScopeRequest.self() : r.scope(), r.documentIds(), key, r.strategy(),r.presentationOptions(),r.videoOptions()));
+        var task = service.create(CurrentUser.from(a), new TaskRequest(r.taskType(), r.topic(), r.scope() == null ? ScopeRequest.self() : r.scope(), r.documentIds(), key, r.strategy(), r.presentationOptions(), r.videoOptions()));
         // 立即返回任务和真实进度入口，客户端不要阻塞等待最终产物或重复创建任务。
         return ResponseEntity.accepted().location(URI.create("/api/v1/tasks/" + task.taskId()))
                 .header("Retry-After", "2").header("Cache-Control", "no-store").body(task);
@@ -59,7 +68,9 @@ public class TaskController {
         return ResponseEntity.ok().header("Cache-Control", "no-store").body(service.read(CurrentUser.from(a), id));
     }
 
-    /** 只输出已持久计划，无计划返回204，不能将排队当作规划完成。 */
+    /**
+     * 只输出已持久计划，无计划返回204，不能将排队当作规划完成。
+     */
     @GetMapping("/tasks/{id}/plan")
     public ResponseEntity<TaskPlanSnapshot> plan(Authentication a, @PathVariable long id) {
         return service.plan(CurrentUser.from(a), id)
@@ -81,10 +92,10 @@ public class TaskController {
     @GetMapping("/artifacts/{id}")
     public ResponseEntity<byte[]> artifact(Authentication a, @PathVariable long id) {
         var artifact = service.artifact(CurrentUser.from(a), id);
-        byte[] bytes=artifact.storageKey()==null?artifact.content().getBytes(StandardCharsets.UTF_8):service.artifactBytes(CurrentUser.from(a),id);
-        service.artifact(CurrentUser.from(a),id);
-        return ResponseEntity.ok().contentType(MediaType.parseMediaType(artifact.mime())).header("Cache-Control","no-store")
-                .header("Content-Disposition", "attachment; filename=artifact-"+id+(artifact.mime().equals(Presentation.MIME)?".pptx":artifact.mime().equals("application/x-subrip")?".srt":artifact.mime().equals("video/mp4")?".mp4":artifact.mime().equals("image/png")?".png":artifact.mime().equals("image/jpeg")?".jpg":artifact.mime().equals("audio/wav")?".wav":artifact.mime().equals("application/json")?".json":".md"))
-                .header("X-Content-Type-Options", "nosniff").header("X-Artifact-Checksum",artifact.checksum()==null?"":artifact.checksum()).header("X-Artifact-Revision",Integer.toString(artifact.revision())).contentLength(bytes.length).body(bytes);
+        byte[] bytes = artifact.storageKey() == null ? artifact.content().getBytes(StandardCharsets.UTF_8) : service.artifactBytes(CurrentUser.from(a), id);
+        service.artifact(CurrentUser.from(a), id);
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType(artifact.mime())).header("Cache-Control", "no-store")
+                .header("Content-Disposition", "attachment; filename=artifact-" + id + (artifact.mime().equals(Presentation.MIME) ? ".pptx" : artifact.mime().equals("application/x-subrip") ? ".srt" : artifact.mime().equals("video/mp4") ? ".mp4" : artifact.mime().equals("image/png") ? ".png" : artifact.mime().equals("image/jpeg") ? ".jpg" : artifact.mime().equals("audio/wav") ? ".wav" : artifact.mime().equals("application/json") ? ".json" : ".md"))
+                .header("X-Content-Type-Options", "nosniff").header("X-Artifact-Checksum", artifact.checksum() == null ? "" : artifact.checksum()).header("X-Artifact-Revision", Integer.toString(artifact.revision())).contentLength(bytes.length).body(bytes);
     }
 }

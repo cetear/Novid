@@ -41,11 +41,16 @@ public class AccountApplicationService {
         attempts.acquire(digest(name));
     }
 
-    /** 四个并发密码验证许可；压力拒绝不堆积无界等待线程，finally归还许可。 */
+    /**
+     * 四个并发密码验证许可；压力拒绝不堆积无界等待线程，finally归还许可。
+     */
     private boolean checkPassword(String password, String hash) {
         if (!passwordChecks.tryAcquire()) throw new LabException("RATE_LIMITED", "登录繁忙");
-        try { return passwords.matches(password, hash); }
-        finally { passwordChecks.release(); }
+        try {
+            return passwords.matches(password, hash);
+        } finally {
+            passwordChecks.release();
+        }
     }
 
     /**

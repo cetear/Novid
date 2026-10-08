@@ -47,12 +47,12 @@ public class IndexCleanupWorker {
         var claimed = store.claim(workerId);
         if (claimed.isEmpty()) return false;
         var lease = claimed.get();
-        LOG.info("event=index_cleanup.start eventId={} resourceId={}",lease.eventId(),lease.resourceId());
+        LOG.info("event=index_cleanup.start eventId={} resourceId={}", lease.eventId(), lease.resourceId());
         try {
             store.finish(lease, index.cleanup(lease));
-            LOG.info("event=index_cleanup.complete eventId={}",lease.eventId());
+            LOG.info("event=index_cleanup.complete eventId={}", lease.eventId());
         } catch (RuntimeException failure) {
-            LOG.error("event=index_cleanup.failed eventId={}",lease.eventId(),com.example.ailab.contract.error.DiagnosticFailure.sanitized(failure));
+            LOG.error("event=index_cleanup.failed eventId={}", lease.eventId(), com.example.ailab.contract.error.DiagnosticFailure.sanitized(failure));
             store.fail(lease);
             throw new LabException("SEARCH_UNAVAILABLE", "索引清理失败，数据库意图已保留供重试");
         }

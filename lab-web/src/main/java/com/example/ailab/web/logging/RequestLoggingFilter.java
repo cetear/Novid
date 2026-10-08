@@ -16,7 +16,9 @@ import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** 安全链外层记录认证拒绝及实际异步完成，只保存服务端生成的编号和路由模板。 */
+/**
+ * 安全链外层记录认证拒绝及实际异步完成，只保存服务端生成的编号和路由模板。
+ */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -47,7 +49,9 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
                 if (status >= 500) LOG.error(message, method(request), route, status, duration);
                 else if (status >= 400) LOG.warn(message, method(request), route, status, duration);
                 else LOG.info(message, method(request), route, status, duration);
-            } finally { restore(old); }
+            } finally {
+                restore(old);
+            }
         };
         try {
             chain.doFilter(request, response);
@@ -59,20 +63,32 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
             try {
                 if (request.isAsyncStarted()) {
                     var listener = new AsyncListener() {
-                        public void onComplete(AsyncEvent event) { finish.run(); }
+                        public void onComplete(AsyncEvent event) {
+                            finish.run();
+                        }
+
                         public void onTimeout(AsyncEvent event) {
                             withId(id, () -> LOG.warn("event=request.timeout"));
                         }
+
                         public void onError(AsyncEvent event) {
                             withId(id, () -> LOG.warn("event=request.async_error type={}",
                                     event.getThrowable() == null ? "UNKNOWN" : event.getThrowable().getClass().getName()));
                         }
-                        public void onStartAsync(AsyncEvent event) { event.getAsyncContext().addListener(this); }
+
+                        public void onStartAsync(AsyncEvent event) {
+                            event.getAsyncContext().addListener(this);
+                        }
                     };
-                    try { request.getAsyncContext().addListener(listener); }
-                    catch (IllegalStateException alreadyCompleted) { finish.run(); }
+                    try {
+                        request.getAsyncContext().addListener(listener);
+                    } catch (IllegalStateException alreadyCompleted) {
+                        finish.run();
+                    }
                 } else finish.run();
-            } finally { restore(previous); }
+            } finally {
+                restore(previous);
+            }
         }
     }
 
@@ -84,10 +100,15 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
     private static void withId(String id, Runnable action) {
         var old = MDC.getCopyOfContextMap();
         MDC.put("requestId", id);
-        try { action.run(); } finally { restore(old); }
+        try {
+            action.run();
+        } finally {
+            restore(old);
+        }
     }
 
     private static void restore(Map<String, String> context) {
-        if (context == null) MDC.clear(); else MDC.setContextMap(context);
+        if (context == null) MDC.clear();
+        else MDC.setContextMap(context);
     }
 }

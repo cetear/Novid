@@ -64,17 +64,17 @@ public class IngestionWorker {
                         try {
                             store.renew(lease);
                         } catch (RuntimeException ignored) {
-                            LOG.warn("event=ingestion.renew_failed ingestionId={} code={}",lease.ingestionId(),com.example.ailab.contract.error.DiagnosticFailure.code(ignored));
+                            LOG.warn("event=ingestion.renew_failed ingestionId={} code={}", lease.ingestionId(), com.example.ailab.contract.error.DiagnosticFailure.code(ignored));
                         }
                     }, 20, 20, TimeUnit.SECONDS);
 
                     try {
                         pipeline.execute(lease);
                     } catch (LabException e) {
-                        LOG.warn("event=ingestion.failed ingestionId={} code={}",lease.ingestionId(),com.example.ailab.contract.error.DiagnosticFailure.code(e));
+                        LOG.warn("event=ingestion.failed ingestionId={} code={}", lease.ingestionId(), com.example.ailab.contract.error.DiagnosticFailure.code(e));
                         store.fail(lease, e.code());
                     } catch (RuntimeException e) {
-                        LOG.error("event=ingestion.failed ingestionId={}",lease.ingestionId(),com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));
+                        LOG.error("event=ingestion.failed ingestionId={}", lease.ingestionId(), com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));
                         store.fail(lease, "INGESTION_FAILED");
                     } finally {
                         renewal.cancel(false);
@@ -82,7 +82,7 @@ public class IngestionWorker {
 
                 });
             } catch (RejectedExecutionException e) {
-                LOG.warn("event=ingestion.queue_rejected ingestionId={}",lease.ingestionId());
+                LOG.warn("event=ingestion.queue_rejected ingestionId={}", lease.ingestionId());
                 store.fail(lease, "RATE_LIMITED");
             }
 

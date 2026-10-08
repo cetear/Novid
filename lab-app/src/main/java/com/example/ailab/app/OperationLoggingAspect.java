@@ -15,7 +15,9 @@ import org.springframework.stereotype.Component;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
-/** 统一覆盖实际业务入口和AI边界，不打印参数对象或返回正文。 */
+/**
+ * 统一覆盖实际业务入口和AI边界，不打印参数对象或返回正文。
+ */
 @Aspect
 @Component
 public class OperationLoggingAspect {
@@ -66,7 +68,8 @@ public class OperationLoggingAspect {
         try {
             Object result = invocation.proceed();
             String outcome = "SUCCESS";
-            if (result instanceof com.example.ailab.ai.tools.ToolExecutionService.Outcome tool) outcome = safeStatus(tool.status());
+            if (result instanceof com.example.ailab.ai.tools.ToolExecutionService.Outcome tool)
+                outcome = safeStatus(tool.status());
             if (result instanceof Media.ProviderResult provider) outcome = safeStatus(provider.status());
             if (result instanceof TaskSnapshot task) MDC.put("taskId", Long.toString(task.taskId()));
             if (result instanceof DocumentSnapshot document) MDC.put("documentId", Long.toString(document.id()));
@@ -81,11 +84,15 @@ public class OperationLoggingAspect {
                 LOG.error("event=operation.failed operation={} code={} durationMs={}", operation, DiagnosticFailure.code(failure), elapsed(started), DiagnosticFailure.sanitized(failure));
             throw failure;
         } finally {
-            if (previous == null) MDC.clear(); else MDC.setContextMap(previous);
+            if (previous == null) MDC.clear();
+            else MDC.setContextMap(previous);
         }
     }
 
-    private static long elapsed(long started) { return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started); }
+    private static long elapsed(long started) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+    }
+
     private static String safeStatus(String value) {
         return value != null && value.matches("[A-Z0-9_]{1,80}") ? value : "UNKNOWN";
     }

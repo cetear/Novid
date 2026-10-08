@@ -23,7 +23,9 @@ public class ModelRegistry {
         this(config, new StandardEnvironment());
     }
 
-    /** 正式装配统一从 Spring 配置读取凭证引用，支持启动时加载的 .env。 */
+    /**
+     * 正式装配统一从 Spring 配置读取凭证引用，支持启动时加载的 .env。
+     */
     @Autowired
     public ModelRegistry(ModelProperties config, Environment environment) {
         this.config = config;
@@ -58,11 +60,16 @@ public class ModelRegistry {
             throw new IllegalArgumentException("显式选择白名单引用未知目标");
     }
 
-    /** SDK会追加具体操作路径；拒绝误填完整操作URL，避免重复拼接404，错误不回显地址。 */
+    /**
+     * SDK会追加具体操作路径；拒绝误填完整操作URL，避免重复拼接404，错误不回显地址。
+     */
     private void validateBaseUrl(String endpoint) {
         String path;
-        try { path = java.net.URI.create(endpoint).getPath(); }
-        catch (IllegalArgumentException invalid) { throw new IllegalArgumentException("模型基础地址格式不合法"); }
+        try {
+            path = java.net.URI.create(endpoint).getPath();
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException("模型基础地址格式不合法");
+        }
         if (path != null) {
             path = path.replaceAll("/+$", "");
             if (path.endsWith("/chat/completions") || path.endsWith("/embeddings"))
@@ -77,19 +84,41 @@ public class ModelRegistry {
         return route(task, Selection.auto(), required).ids();
     }
 
-    /** 服务端选择类型，不把HTTP参数当EXACT或任意模型名称。 */
+    /**
+     * 服务端选择类型，不把HTTP参数当EXACT或任意模型名称。
+     */
     public record Selection(String mode, String value) {
-        /** 普通任务自动路由。 */
-        public static Selection auto() { return new Selection("AUTO", null); }
-        /** 逻辑选项仍须经过服务端白名单与任务硬条件。 */
-        public static Selection profile(String id) { return new Selection("PROFILE", id); }
-        /** 仅供可信服务端用例调用，默认禁止自动备用。 */
-        public static Selection exact(String id) { return new Selection("EXACT", id); }
-    }
-    /** 脱敏决策仅返回注册ID，实际地址和名称保持内部。 */
-    public record Decision(String profile, String mode, List<String> ids) { }
+        /**
+         * 普通任务自动路由。
+         */
+        public static Selection auto() {
+            return new Selection("AUTO", null);
+        }
 
-    /** 显式profile也合并原任务条件，不能用经济选项绕过分析质量门槛。 */
+        /**
+         * 逻辑选项仍须经过服务端白名单与任务硬条件。
+         */
+        public static Selection profile(String id) {
+            return new Selection("PROFILE", id);
+        }
+
+        /**
+         * 仅供可信服务端用例调用，默认禁止自动备用。
+         */
+        public static Selection exact(String id) {
+            return new Selection("EXACT", id);
+        }
+    }
+
+    /**
+     * 脱敏决策仅返回注册ID，实际地址和名称保持内部。
+     */
+    public record Decision(String profile, String mode, List<String> ids) {
+    }
+
+    /**
+     * 显式profile也合并原任务条件，不能用经济选项绕过分析质量门槛。
+     */
     public Decision route(String task, Selection selection, Set<String> required) {
         String profileId = config.routing().taskProfiles().get(task);
         if (profileId == null) throw new LabException("MODEL_ROUTE_NOT_FOUND", "任务没有模型路由");
@@ -99,7 +128,8 @@ public class ModelRegistry {
         if (!Set.of("AUTO", "PROFILE", "EXACT").contains(mode)) throw LabException.invalid("模型选择不合法");
         if (mode.equals("PROFILE")) {
             if (selection.value() == null) throw new LabException("MODEL_SELECTION_DENIED", "逻辑选项为空");
-            validateProfile(selection.value()); profileId = selection.value();
+            validateProfile(selection.value());
+            profileId = selection.value();
         }
         if (mode.equals("EXACT") && (selection.value() == null || !config.routing().exactModelIds().contains(selection.value())))
             throw new LabException("MODEL_SELECTION_DENIED", "精确目标未获服务端批准");
@@ -107,7 +137,8 @@ public class ModelRegistry {
         var capabilities = new HashSet<>(required);
         capabilities.addAll(p.requiredCapabilities());
         capabilities.addAll(baseline.requiredCapabilities());
-        var quality = new HashSet<>(p.qualityTags()); quality.addAll(baseline.qualityTags());
+        var quality = new HashSet<>(p.qualityTags());
+        quality.addAll(baseline.qualityTags());
         var candidates = mode.equals("EXACT") ? List.of(selection.value()) : p.candidateModelIds();
         var result = candidates.stream().filter(id -> {
             var d = definition(id);
@@ -117,14 +148,20 @@ public class ModelRegistry {
         return new Decision(profileId, mode, mode.equals("EXACT") || !p.allowFallback() ? List.of(result.get(0)) : result.stream().limit(2).toList());
     }
 
-    /** 在embedding／会话领取前拒绝非法HTTP逻辑选项，避免付费副作用。 */
+    /**
+     * 在embedding／会话领取前拒绝非法HTTP逻辑选项，避免付费副作用。
+     */
     public void validateProfile(String id) {
         if (id != null && !config.routing().selectableProfiles().contains(id))
             throw new LabException("MODEL_SELECTION_DENIED", "模型逻辑选项未获批准");
     }
 
-    /** 不可变版本和有限故障策略供统一网关读取。 */
-    public ModelProperties configuration() { return config; }
+    /**
+     * 不可变版本和有限故障策略供统一网关读取。
+     */
+    public ModelProperties configuration() {
+        return config;
+    }
 
     /**
      * 定义只能从服务器注册表读取。
@@ -135,12 +172,16 @@ public class ModelRegistry {
         return d;
     }
 
-    /** 仅供服务端 SDK 取注册模型的凭证，禁止打印或通过 HTTP 返回该值。 */
+    /**
+     * 仅供服务端 SDK 取注册模型的凭证，禁止打印或通过 HTTP 返回该值。
+     */
     public String credential(String id) {
         return credentialValue(definition(id));
     }
 
-    /** credential-ref 仍是变量名称，不能将配置中的字面密钥误当变量名使用。 */
+    /**
+     * credential-ref 仍是变量名称，不能将配置中的字面密钥误当变量名使用。
+     */
     private String credentialValue(ModelProperties.Definition definition) {
         String reference = definition.credentialRef();
         if (reference == null || !reference.matches("[A-Z][A-Z0-9_]*")) return null;

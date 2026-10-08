@@ -10,7 +10,9 @@ import org.springframework.context.annotation.*;
 @ComponentScan("com.example.ailab.data")
 @MapperScan("com.example.ailab.data.persistence.mapper")
 public class DataConfiguration {
-    /** 锁定读取每次访问数据库；保留复杂查询的空列及列顺序。 */
+    /**
+     * 锁定读取每次访问数据库；保留复杂查询的空列及列顺序。
+     */
     @Bean
     public com.baomidou.mybatisplus.autoconfigure.ConfigurationCustomizer databaseMapping() {
         return configuration -> {

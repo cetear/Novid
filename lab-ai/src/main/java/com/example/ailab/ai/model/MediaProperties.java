@@ -2,16 +2,21 @@ package com.example.ailab.ai.model;
 
 import com.example.ailab.contract.dto.*;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+
 import java.util.*;
 
-/** 媒体配置默认禁用；报价和目录支持须有真实依据，密钥只引用后端配置。 */
+/**
+ * 媒体配置默认禁用；报价和目录支持须有真实依据，密钥只引用后端配置。
+ */
 @ConfigurationProperties("lab.media")
 public record MediaProperties(boolean enabled, boolean workerEnabled, boolean externalDataAllowed,
                               String configurationVersion, String imageSubmitUrl, String videoSubmitUrl,
                               String videoQueryUrl, String credentialRef, String imageModel, String videoModel,
                               String imageSize, boolean videoSelectionVerified, boolean queryFreeVerified,
                               FeePrice imagePrice, FeePrice videoPrice, List<Media.CatalogItem> catalogs) {
-    /** 缺配置仅保留协议适配，不能自动开启付费或把示例价当报价。 */
+    /**
+     * 缺配置仅保留协议适配，不能自动开启付费或把示例价当报价。
+     */
     public MediaProperties {
         configurationVersion = configurationVersion == null ? "s09-unverified-v1" : configurationVersion;
         imageSubmitUrl = imageSubmitUrl == null ? "https://open.bigmodel.cn/api/paas/v4/images/generations" : imageSubmitUrl;

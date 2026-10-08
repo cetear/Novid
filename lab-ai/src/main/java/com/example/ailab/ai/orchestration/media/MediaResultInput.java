@@ -10,12 +10,15 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.HashMap;
 import java.util.List;
 
-/** PPT 多角色交接的无损表示；仅压缩模型输入，不改变持久结果和输出契约。 */
+/**
+ * PPT 多角色交接的无损表示；仅压缩模型输入，不改变持久结果和输出契约。
+ */
 final class MediaResultInput {
     private static final String ENCODING = "含baseStepId的单位继承前面该stepId中相同unitId的完整单位，"
             + "再用overrides逐字段替换（包括空值和空数组）；其余单位是完整定义。审查须比较各角色还原后的内容。";
 
-    private MediaResultInput() { }
+    private MediaResultInput() {
+    }
 
     static String encode(ObjectMapper json, List<Media.WorkerResult> prior) {
         try {
@@ -59,5 +62,6 @@ final class MediaResultInput {
         }
     }
 
-    private record BaseUnit(String stepId, ObjectNode value) { }
+    private record BaseUnit(String stepId, ObjectNode value) {
+    }
 }

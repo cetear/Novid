@@ -11,7 +11,9 @@ import org.springframework.boot.ApplicationRunner;
  */
 @Configuration
 public class RuntimeConfiguration {
-    /** S11在创建任何队列Bean之前校验维护配置，避免等ApplicationRunner时后台扫描已启动。 */
+    /**
+     * S11在创建任何队列Bean之前校验维护配置，避免等ApplicationRunner时后台扫描已启动。
+     */
     @Bean
     public static org.springframework.beans.factory.config.BeanFactoryPostProcessor maintenanceStartupIsolation(
             org.springframework.core.env.Environment env) {
@@ -21,11 +23,15 @@ public class RuntimeConfiguration {
                 requireMaintenanceIsolation(env);
         };
     }
-    /** 单一 RAG 参数源经框架无关契约交给数据端，正式装配不引入反向依赖。 */
+
+    /**
+     * 单一 RAG 参数源经框架无关契约交给数据端，正式装配不引入反向依赖。
+     */
     @Bean
     public com.example.ailab.contract.dto.ContextPolicy contextPolicy(com.example.ailab.ai.orchestration.rag.RagProperties config) {
         return config.contextPolicy();
     }
+
     /**
      * BCrypt 单向密码组件通过端口提供给 business。
      */
@@ -72,13 +78,13 @@ public class RuntimeConfiguration {
                         env.getProperty("lab.governance.retention-days", Integer.class, 30),
                         env.getProperty("lab.governance.batch-size", Integer.class, 100));
                 var now = java.time.Instant.now();
-                var result = governance.purge(now, now.minusSeconds(settings.retentionDays()*86400L), settings.batchSize());
+                var result = governance.purge(now, now.minusSeconds(settings.retentionDays() * 86400L), settings.batchSize());
                 org.slf4j.LoggerFactory.getLogger(RuntimeConfiguration.class).info("本批维护删除计数：" + result + "；可靠执行／费用／原文保留");
                 org.springframework.boot.SpringApplication.exit(context);
             } else if ("fees-reconcile".equals(command)) {
                 // 只封存最多100条旧意图；不查询提供方、不退款、不扫描正式任务队列。
-                int changed=fees.markUnknownBefore(java.time.Instant.now().minusSeconds(120),100);
-                org.slf4j.LoggerFactory.getLogger(RuntimeConfiguration.class).info("已标记待对账费用："+changed+"；原预留保持，未提交任何模型请求");
+                int changed = fees.markUnknownBefore(java.time.Instant.now().minusSeconds(120), 100);
+                org.slf4j.LoggerFactory.getLogger(RuntimeConfiguration.class).info("已标记待对账费用：" + changed + "；原预留保持，未提交任何模型请求");
                 org.springframework.boot.SpringApplication.exit(context);
             } else if ("init-index".equals(command)) {
                 index.initialize();
@@ -96,7 +102,9 @@ public class RuntimeConfiguration {
         };
     }
 
-    /** 维护进程必须显式关闭三个队列及初始化；缺省开启视为未隔离，拒绝任何写操作。 */
+    /**
+     * 维护进程必须显式关闭三个队列及初始化；缺省开启视为未隔离，拒绝任何写操作。
+     */
     static void requireMaintenanceIsolation(org.springframework.core.env.Environment env) {
         for (String key : java.util.List.of("lab.task.worker-enabled", "lab.ingestion.worker-enabled",
                 "lab.media.worker-enabled", "lab.bootstrap.enabled")) {

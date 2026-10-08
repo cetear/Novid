@@ -48,14 +48,16 @@ public class AssistantController {
         var result = assistant.answer(actor, r);
         // 模型完成和 HTTP 发布存在间隔，发送前再核验身份、范围和来源。
         assistant.verifyDelivery(actor, r, result);
-        personal.delivered(actor,result.traceId());
+        personal.delivered(actor, result.traceId());
         return result;
     }
 
-    /** 只读工具定义不授予调用权，模型执行时仍独立复核资源。 */
+    /**
+     * 只读工具定义不授予调用权，模型执行时仍独立复核资源。
+     */
     @GetMapping("/tools")
     public org.springframework.http.ResponseEntity<List<ToolDefinition>> tools(Authentication a,
-            @RequestParam(defaultValue = "KNOWLEDGE_QA") String taskType) {
+                                                                               @RequestParam(defaultValue = "KNOWLEDGE_QA") String taskType) {
         return org.springframework.http.ResponseEntity.ok().header("Cache-Control", "no-store")
                 .body(assistant.tools(CurrentUser.from(a), taskType));
     }
@@ -88,7 +90,7 @@ public class AssistantController {
                         for (int i = 0; i < result.answer().length(); i += 512) {
                             delivery.send("delta", Map.of("text", result.answer().substring(i,
                                     Math.min(i + 512, result.answer().length()))));
-                            if(i==0) personal.delivered(actor,result.traceId());
+                            if (i == 0) personal.delivered(actor, result.traceId());
                         }
                         for (var citation : result.citations()) delivery.send("citation", citation);
                         delivery.done(result);
@@ -109,7 +111,9 @@ public class AssistantController {
         return emitter;
     }
 
-    /** 一个请求只用一个发送锁，心跳、正文与容器回调共享终止事实和事件序号。 */
+    /**
+     * 一个请求只用一个发送锁，心跳、正文与容器回调共享终止事实和事件序号。
+     */
     private static final class StreamDelivery {
         private final SseEmitter emitter;
         private final RequestCancellation cancellation;
@@ -117,19 +121,25 @@ public class AssistantController {
         private boolean closed;
         private ScheduledFuture<?> heartbeat;
 
-        /** 绑定传输与跨模块取消控制，不把传输状态塞入模型文本。 */
+        /**
+         * 绑定传输与跨模块取消控制，不把传输状态塞入模型文本。
+         */
         private StreamDelivery(SseEmitter emitter, RequestCancellation cancellation) {
             this.emitter = emitter;
             this.cancellation = cancellation;
         }
 
-        /** 调度与快速完成可能竞态，已关闭时立即取消新登记的心跳。 */
+        /**
+         * 调度与快速完成可能竞态，已关闭时立即取消新登记的心跳。
+         */
         private synchronized void heartbeat(ScheduledFuture<?> heartbeat) {
             this.heartbeat = heartbeat;
             if (closed) heartbeat.cancel(false);
         }
 
-        /** 每次发送先检查取消；发送失败立即终止后续正文和提交许可。 */
+        /**
+         * 每次发送先检查取消；发送失败立即终止后续正文和提交许可。
+         */
         private synchronized void send(String event, Object body) throws IOException {
             cancellation.check();
             if (closed) return;
@@ -142,7 +152,9 @@ public class AssistantController {
             }
         }
 
-        /** 无正文心跳失败只撤销执行，不能冒充模型错误答案。 */
+        /**
+         * 无正文心跳失败只撤销执行，不能冒充模型错误答案。
+         */
         private void pulse() {
             try {
                 send("progress", Map.of("stage", "processing"));
@@ -151,7 +163,9 @@ public class AssistantController {
             }
         }
 
-        /** 仅未终止的连接接收稳定 error；断线后的错误不再写入已关闭响应。 */
+        /**
+         * 仅未终止的连接接收稳定 error；断线后的错误不再写入已关闭响应。
+         */
         private synchronized void failure(String code, String message) {
             if (closed) return;
             try {
@@ -161,20 +175,26 @@ public class AssistantController {
             }
         }
 
-        /** done 与关闭共享发送锁，心跳不能插在最终事件和完成之间。 */
+        /**
+         * done 与关闭共享发送锁，心跳不能插在最终事件和完成之间。
+         */
         private synchronized void done(AiResult result) throws IOException {
             send("done", result);
             finish();
         }
 
-        /** 容器关闭、错误、超时与心跳失败撤销同一请求，取消事实先于后续提交检查。 */
+        /**
+         * 容器关闭、错误、超时与心跳失败撤销同一请求，取消事实先于后续提交检查。
+         */
         private synchronized void cancel() {
             closed = true;
             cancellation.cancel();
             if (heartbeat != null) heartbeat.cancel(false);
         }
 
-        /** 正常或失败生成都关闭响应并释放心跳；SQL 成功不是浏览器确认收到的证明。 */
+        /**
+         * 正常或失败生成都关闭响应并释放心跳；SQL 成功不是浏览器确认收到的证明。
+         */
         private synchronized void finish() {
             boolean shouldComplete = !closed;
             cancel();
@@ -254,10 +274,12 @@ public class AssistantController {
         return personal.run(CurrentUser.from(a), id);
     }
 
-    /** 图的节点与调用／依赖边只来自本人持久执行事实，禁止浏览器缓存私人链路。 */
+    /**
+     * 图的节点与调用／依赖边只来自本人持久执行事实，禁止浏览器缓存私人链路。
+     */
     @GetMapping("/runs/{id}/graph")
-    public org.springframework.http.ResponseEntity<TraceGraph> graph(Authentication a,@PathVariable String id) {
-        return org.springframework.http.ResponseEntity.ok().header("Cache-Control","no-store")
-                .body(personal.graph(CurrentUser.from(a),id));
+    public org.springframework.http.ResponseEntity<TraceGraph> graph(Authentication a, @PathVariable String id) {
+        return org.springframework.http.ResponseEntity.ok().header("Cache-Control", "no-store")
+                .body(personal.graph(CurrentUser.from(a), id));
     }
 }

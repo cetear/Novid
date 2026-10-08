@@ -35,13 +35,17 @@ public class AssistantApplicationService {
         return result;
     }
 
-    /** 定义查询也复核当前身份，不接受客户端指定执行者。 */
+    /**
+     * 定义查询也复核当前身份，不接受客户端指定执行者。
+     */
     public java.util.List<ToolDefinition> tools(UserContext actor, String taskType) {
         knowledge.authorize(actor, ScopeRequest.self());
         return ai.tools(actor, taskType);
     }
 
-    /** 异步推送沿用同一业务入口及发布复核，取消不是用户或模型授权。 */
+    /**
+     * 异步推送沿用同一业务入口及发布复核，取消不是用户或模型授权。
+     */
     public AiResult answer(UserContext actor, AiRequest request, RequestCancellation cancellation) {
         var result = ai.answer(actor, request, cancellation);
         cancellation.check();
@@ -49,7 +53,9 @@ public class AssistantApplicationService {
         return result;
     }
 
-    /** SSE 响应开始前同步核验参数、本人归属与版本，使这些失败保留真实 HTTP 状态。 */
+    /**
+     * SSE 响应开始前同步核验参数、本人归属与版本，使这些失败保留真实 HTTP 状态。
+     */
     public void validateRequest(UserContext actor, AiRequest request) {
         if (request == null || request.question() == null || request.question().isBlank() || request.question().length() > 2000
                 || (request.sessionId() == null) != (request.sessionVersion() == null)
@@ -65,7 +71,9 @@ public class AssistantApplicationService {
         knowledge.authorize(actor, scope);
     }
 
-    /** JSON 返回或 SSE 发送前重核完整历史来源；事务完成不代表浏览器已收到答案。 */
+    /**
+     * JSON 返回或 SSE 发送前重核完整历史来源；事务完成不代表浏览器已收到答案。
+     */
     public void verifyDelivery(UserContext actor, AiRequest request, AiResult result) {
         if (result.sessionId() != null) {
             sessions.verifyDelivery(actor, result.sessionId(), result.sessionVersion());
