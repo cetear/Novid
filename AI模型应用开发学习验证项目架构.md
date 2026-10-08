@@ -4,9 +4,9 @@
 >
 > 修订日期：2026-10-04。当前状态：架构与已验收实现共同维护；完成状态及限制以开发进展／验收报告为准，分镜媒体新方案尚待完整实施与验收。
 >
-> S11实施补充（2026-10-05）：本轮零新增购买。维护入口在Spring装配前强制检查报告／入库／媒体worker及管理员初始化均关闭；旧迁移V1～V17不改。已提供分层验收、固定三身份资料与局部PPTX强杀恢复探针。固定质量门槛、完整用户流程、提供方恢复、MySQL备份／新ES重建和人工媒体质量缺证据，P0～P4不标全完成；精确结论见[开发进展S11交接](docs/项目开发进展.md)及[验收报告](docs/测试验证与验收报告.md)。
+> S11实施补充（2026-10-05）：本轮零新增购买。维护入口在Spring装配前强制检查报告／入库／媒体worker及管理员初始化均关闭；旧迁移V1～V17不改。已提供分层验收、固定三身份资料与局部PPTX强杀恢复探针。固定质量门槛、完整用户流程、提供方恢复、MySQL备份／新ES重建和人工媒体质量缺证据，P0～P4不标全完成；精确结论见[开发进展S11交接](docs/temp/项目开发进展.md)及[验收报告](docs/temp/测试验证与验收报告.md)。
 >
-> 实施补充（2026-10-04，S02）：章节详情／最新入库元数据、块与原文映射、实际参数策略及逐页报告覆盖已交付；报告受六轮硬预算约束，明确完整或未读范围，不能保证任意长文全读。词元为UTF-8字节保守估计，迁移最新V6；实施事实、限制及下阶段S03交接以[项目开发进展](docs/项目开发进展.md)和[验收报告](docs/测试验证与验收报告.md)为准，原架构P0～P4未全部完成。
+> 实施补充（2026-10-04，S02）：章节详情／最新入库元数据、块与原文映射、实际参数策略及逐页报告覆盖已交付；报告受六轮硬预算约束，明确完整或未读范围，不能保证任意长文全读。词元为UTF-8字节保守估计，迁移最新V6；实施事实、限制及下阶段S03交接以[项目开发进展](docs/temp/项目开发进展.md)和[验收报告](docs/temp/测试验证与验收报告.md)为准，原架构P0～P4未全部完成。
 >
 > 产物规划补充（2026-10-04，用户已确认）：S09完成真实图像生成及分镜教学视频，采用复杂Agent脚本／导演／质检、本人审批、逐镜头视频API原生音频提交／按ID查询、JavaCV后期与私人发布；S10完成可编辑PPTX，S11完整验收。旧R01视频预留由本次方案覆盖，已完成阶段历史不改写。
 >
@@ -276,12 +276,14 @@ ai-learning-lab/
 ├─ compose.yaml                    # 仅 MySQL + ES，固定版本
 ├─ .env.example                    # 无真实密钥，数据库／容器样例
 ├─ docs/
+│  ├─ README.md                    # 长期文档与临时资料导航
 │  ├─ 项目说明与使用介绍.md        # 定位、模块、业务流程与使用方式
-│  ├─ 项目开发进展.md              # 阶段、能力状态、验收与新会话交接
 │  ├─ 前端接口与联调说明.md        # 已实现协议、状态和客户端示例
 │  ├─ 部署配置与运行维护.md        # 环境、版本、启动和恢复
-│  ├─ 测试验证与验收报告.md        # 实际结果、历史证据与限制
-│  └─ 缺陷修复与变更记录.md        # 集中的发现、修复与关闭
+│  ├─ 工具与Skills使用说明.md      # 工具、Skill 配置与使用规则
+│  ├─ 日志记录与问题排查.md        # 日志配置与排查
+│  ├─ database-access.md           # 长期数据库访问规范
+│  └─ temp/                        # 改造方案、阶段交接、测试验收与变更记录
 ├─ lab-contract/src/main/java/com/example/ailab/contract/
 │  ├─ context/                     # UserContext、RequestContext
 │  ├─ dto/                         # 库／文档快照、AuthorizedKnowledgeScope、AI 请求／结果
@@ -621,7 +623,7 @@ flowchart TD
 
 模型注册／路由／健康／切换属于 lab-ai/model；Agent 定义／注册／调度属于 lab-ai/orchestration；app 管理类型化配置和生命周期；data 只保存任务／脱敏观测，不能决定模型路由；contract 只放确实跨模块的请求、结果和策略摘要。七模块依赖方向不变，不新增模型、Agent 或容灾 Maven 模块。
 
-S04实施说明（2026-10-04）：正式入口已增加服务端EXACT白名单、HTTP逻辑PROFILE、脱敏路由、客户端缓存与当前剩余期限、共享配额429冷却、单探针半开、QA按备用窗口重装合法历史／证据、结构Schema与一次有界修复。摘要／报告固定输入不足明确失败，每次重试／备用前重核来源；原始AiMessage只留AI内部。真实双目标／完整质量以[验收报告](docs/测试验证与验收报告.md)为准，不将本机协议计真实主备。价格UNKNOWN与执行内用量快照不替代S06持久追踪或S07可靠结算；未开发S05工具续轮／动态计划，无新增迁移。
+S04实施说明（2026-10-04）：正式入口已增加服务端EXACT白名单、HTTP逻辑PROFILE、脱敏路由、客户端缓存与当前剩余期限、共享配额429冷却、单探针半开、QA按备用窗口重装合法历史／证据、结构Schema与一次有界修复。摘要／报告固定输入不足明确失败，每次重试／备用前重核来源；原始AiMessage只留AI内部。真实双目标／完整质量以[验收报告](docs/temp/测试验证与验收报告.md)为准，不将本机协议计真实主备。价格UNKNOWN与执行内用量快照不替代S06持久追踪或S07可靠结算；未开发S05工具续轮／动态计划，无新增迁移。
 
 
 
@@ -715,7 +717,7 @@ PPTX 正文为可编辑文本／形状，配图为嵌入图片，附讲者备注
 
 百炼万相3北京采用业务空间域名`https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis`，提交`X-DashScope-Async: enable`，保存`output.task_id`，查询原ID路径`/api/v1/tasks/{id}`，读取`output.task_status`／`output.video_url`。密钥来自后端引用，`parameters.audio`决定原生音轨。[官方协议](https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference)及[公开价格](https://help.aliyun.com/zh/model-studio/wan3-0-video)不等于账户最终账单。
 
-**【用户确认，2026-10-04】**视频改为“复杂Agent脚本与分镜→本人审批→整片唯一API及逐镜头音频参数→真实视频与实测时长→JavaCV处理→私人发布”。视频与真实图像生成都在S09完成，旧R01不再独立。PPT仍与视频同级，S10负责可编辑PPTX，S11完整验收。本文是实施规范，不表示新功能已完成或已真实联调。原始[视频建议](docs/视频生成架构建议.txt)只作参考，项目采用范围与差异以下文为准。
+**【用户确认，2026-10-04】**视频改为“复杂Agent脚本与分镜→本人审批→整片唯一API及逐镜头音频参数→真实视频与实测时长→JavaCV处理→私人发布”。视频与真实图像生成都在S09完成，旧R01不再独立。PPT仍与视频同级，S10负责可编辑PPTX，S11完整验收。本文是实施规范，不表示新功能已完成或已真实联调。原始[视频建议](docs/temp/视频生成架构建议.txt)只作参考，项目采用范围与差异以下文为准。
 
 用户先选登记characterId／voiceId／sceneId，再选授权笔记、主题及费用上限。characterId为画面人物，voiceId为视频API原生声音提示的登记选择，sceneId为登记视觉场景；镜头使用稳定shotId，不能把sceneId或数组下标当镜头身份。人物／场景描述或参考图映射到实际视频能力，音色映射到实际视频原生声音能力；配置开关不能代替协议与真实效果核验。不支持所选组合明确拒绝，不能静默忽略选择。首版交付人物画面与旁白，数字人、口型同步、角色LoRA、复杂转场、BGM与专业时间线编辑列后续扩展。
 
@@ -1037,7 +1039,7 @@ S08实施说明（2026-10-04）：只缓存有限检索候选ID及精确文档�
 
 ## 9. 会话与长期记忆
 
-2026-10-04 S01 实施对应：完整历史使用 `SessionStorePort` 与 MySQL sessions/messages；AI 模块按来源重新授权后，每请求创建独立 LangChain4j `MessageWindowChatMemory`，不让 SDK 淘汰完整历史。本人会话 API、可选 sessionId/sessionVersion、短事务执行权、来源绑定摘要与偏好删除失效均已接入；实际验收和限制以[开发进展 S01 交接](docs/项目开发进展.md)及[验收报告](docs/测试验证与验收报告.md)为准。本节其他扩展记忆向量和关系实验不计 S01 已完成。完整历史与模型窗口的区别也见 [LangChain4j 官方说明](https://docs.langchain4j.dev/tutorials/chat-memory/)。
+2026-10-04 S01 实施对应：完整历史使用 `SessionStorePort` 与 MySQL sessions/messages；AI 模块按来源重新授权后，每请求创建独立 LangChain4j `MessageWindowChatMemory`，不让 SDK 淘汰完整历史。本人会话 API、可选 sessionId/sessionVersion、短事务执行权、来源绑定摘要与偏好删除失效均已接入；实际验收和限制以[开发进展 S01 交接](docs/temp/项目开发进展.md)及[验收报告](docs/temp/测试验证与验收报告.md)为准。本节其他扩展记忆向量和关系实验不计 S01 已完成。完整历史与模型窗口的区别也见 [LangChain4j 官方说明](https://docs.langchain4j.dev/tutorials/chat-memory/)。
 
 - 会话历史按 userId + sessionId 隔离，管理员也不能通过检索权限读取他人会话。保存当前知识库选择与 sourceDependencies，知识范围切换／权限变化后重建合法上下文；限制条数与 Token，保留必要工具配对。
 - LangChain4j ChatMemory／ChatMemoryStore 是上下文窗口，不等于完整审计消息表。完整消息另存；自定义持久化适配使用 contract 端口。

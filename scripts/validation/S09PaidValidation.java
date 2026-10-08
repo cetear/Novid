@@ -36,7 +36,7 @@ public final class S09PaidValidation {
         Files.createDirectories(EVIDENCE);TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
         // 凭证只读入内存，不打印、不写证据、不改.env；完整保留多段密钥。
         var defaults=new LinkedHashMap<String,Object>(LocalEnvironmentLoader.read(Path.of(".env")));
-        String privateText=Files.readString(Path.of("docs/API资源.txt"));
+        String privateText=Files.readString(Path.of("docs/temp/API资源.txt"));
         var keyMatch=java.util.regex.Pattern.compile("(?m)^.*?密钥[^：:\\r\\n]*[：:]\\s*(\\S+)\\s*$").matcher(privateText);
         if(!keyMatch.find())throw new IllegalStateException("本地百炼凭证格式未识别，未调用API");
         defaults.put("BAILIAN_API_KEY",keyMatch.group(1));
