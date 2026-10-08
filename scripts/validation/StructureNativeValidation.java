@@ -3,9 +3,9 @@ package com.example.ailab.app;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.rest_client.RestClientTransport;
-import com.example.ailab.ai.orchestration.rag.DocumentIngestionPipeline;
-import com.example.ailab.ai.orchestration.worker.ReportTaskWorker;
-import com.example.ailab.ai.orchestration.planner.PlanValidator;
+import com.example.ailab.ai.rag.DocumentIngestionPipeline;
+import com.example.ailab.ai.workflows.report.ReportTaskWorker;
+import com.example.ailab.ai.orchestration.planexecute.PlanValidator;
 import com.example.ailab.ai.aggregator.ResultAggregator;
 import com.example.ailab.ai.model.ModelGateway;
 import com.example.ailab.business.application.*;
@@ -256,7 +256,7 @@ public final class StructureNativeValidation {
     }
     /** 正式 Worker、真实单目标 SDK、SQL 页检查点与私人产物；只显式执行本任务，不运行 scan。 */
     private static void report(long documentId,boolean partial) throws Exception {
-        var lease=task(documentId);var worker=new ReportTaskWorker(context.getBean(TaskStorePort.class),context.getBean(KnowledgeCapabilityPort.class),context.getBean(ModelGateway.class),context.getBean(PlanValidator.class),context.getBean(ResultAggregator.class),context.getBean(DocumentContextPort.class),context.getBean(com.example.ailab.ai.orchestration.rag.RagProperties.class));
+        var lease=task(documentId);var worker=new ReportTaskWorker(context.getBean(TaskStorePort.class),context.getBean(KnowledgeCapabilityPort.class),context.getBean(ModelGateway.class),context.getBean(PlanValidator.class),context.getBean(ResultAggregator.class),context.getBean(DocumentContextPort.class),context.getBean(com.example.ailab.ai.rag.RagProperties.class));
         try{var run=ReportTaskWorker.class.getDeclaredMethod("run",TaskLease.class);run.setAccessible(true);run.invoke(worker,lease);}finally{worker.close();}
         var result=context.getBean(TaskStorePort.class).read(owner,lease.task().taskId());require(result.status().equals(partial?"PARTIAL":"SUCCEEDED"),"report status="+result.status()+" error="+result.errorCode());
         var coverage=result.coverage().get(0);require(coverage.complete()!=partial&&coverage.readEndOffset()==coverage.remainingStartOffset()&&coverage.remainingEndOffset()==content(documentId).text().length(),"coverage not exact");

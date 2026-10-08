@@ -1,5 +1,7 @@
 package com.example.ailab.ai.model;
 
+import com.example.ailab.ai.runtime.ExecutionBudget;
+
 import dev.langchain4j.http.client.*;
 import dev.langchain4j.http.client.sse.*;
 

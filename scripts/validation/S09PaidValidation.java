@@ -1,7 +1,12 @@
 package com.example.ailab.app;
 
+import com.example.ailab.ai.media.MediaModelGateway;
+import com.example.ailab.ai.media.MediaProperties;
+import com.example.ailab.ai.media.VideoApiProperties;
+import com.example.ailab.ai.media.VideoApiRegistry;
+
 import com.example.ailab.ai.model.*;
-import com.example.ailab.ai.orchestration.media.MediaExecution;
+import com.example.ailab.ai.workflows.media.MediaExecution;
 import com.example.ailab.contract.context.UserContext;
 import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.port.*;

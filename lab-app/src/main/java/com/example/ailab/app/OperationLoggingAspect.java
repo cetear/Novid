@@ -1,6 +1,6 @@
 package com.example.ailab.app;
 
-import com.example.ailab.ai.model.ExecutionBudget;
+import com.example.ailab.ai.runtime.ExecutionBudget;
 import com.example.ailab.contract.context.UserContext;
 import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.error.DiagnosticFailure;
@@ -29,10 +29,10 @@ public class OperationLoggingAspect {
             + " || execution(public * com.example.ailab.ai.model.ModelGateway.toolTurn(..))"
             + " || execution(public * com.example.ailab.ai.model.ModelGateway.finishToolTurn(..))"
             + " || execution(public * com.example.ailab.ai.model.ModelGateway.embed(..))"
-            + " || execution(public * com.example.ailab.ai.model.MediaModelGateway.submit(..))"
-            + " || execution(public * com.example.ailab.ai.model.MediaModelGateway.query(..))"
+            + " || execution(public * com.example.ailab.ai.media.MediaModelGateway.submit(..))"
+            + " || execution(public * com.example.ailab.ai.media.MediaModelGateway.query(..))"
             + " || execution(public * com.example.ailab.ai.tools.ToolExecutionService.execute(..))"
-            + " || execution(public * com.example.ailab.ai.orchestration.rag.DocumentIngestionPipeline.execute(..))"
+            + " || execution(public * com.example.ailab.ai.rag.DocumentIngestionPipeline.execute(..))"
             + " || execution(public * com.example.ailab.app.GovernanceMaintenance.execute(..))")
     public Object record(ProceedingJoinPoint invocation) throws Throwable {
         var previous = MDC.getCopyOfContextMap();

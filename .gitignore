@@ -25,6 +25,8 @@ replay_pid*
 
 # 项目运行数据与凭证
 **/target/
+# 各模块测试源码及资源仅保留在本地，不纳入提交。
+**/src/test/
 .mvn/repository/
 var/
 .ua/

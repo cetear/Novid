@@ -1,0 +1,103 @@
+package com.example.ailab.ai.rag;
+
+import com.example.ailab.contract.port.DocumentIngestionStorePort;
+
+import com.example.ailab.contract.error.LabException;
+
+import org.springframework.stereotype.Component;
+
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+
+import org.springframework.scheduling.annotation.Scheduled;
+
+import jakarta.annotation.PreDestroy;
+
+import java.util.UUID;
+
+import java.util.concurrent.*;
+
+/**
+ * 定时器仅扫描，可靠性来自 MySQL 状态；平台线程／队列严格有界。
+ */
+
+@Component
+
+@ConditionalOnProperty(name = {"lab.search.enabled", "lab.ingestion.worker-enabled"}, havingValue = "true")
+
+public class IngestionWorker {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(IngestionWorker.class);
+
+    private final DocumentIngestionStorePort store;
+    private final DocumentIngestionPipeline pipeline;
+
+    private final String worker = UUID.randomUUID().toString();
+
+    private final ThreadPoolExecutor pool = new ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(2), new ThreadPoolExecutor.AbortPolicy());
+
+    private final ScheduledExecutorService heartbeat = Executors.newSingleThreadScheduledExecutor();
+
+    /**
+     * 独立心跳执行器不与阻塞的模型任务争用工作线程。
+     */
+
+    public IngestionWorker(DocumentIngestionStorePort store, DocumentIngestionPipeline pipeline) {
+        this.store = store;
+        this.pipeline = pipeline;
+    }
+
+    /**
+     * 超载时停止领取，不无限积压队列。
+     */
+
+    @Scheduled(fixedDelay = 3000)
+
+    public void scan() {
+
+        if (pool.getActiveCount() + pool.getQueue().size() >= 2) return;
+
+        store.claim(worker).ifPresent(lease -> {
+
+            try {
+                pool.execute(() -> {
+
+                    var renewal = heartbeat.scheduleAtFixedRate(() -> {
+                        try {
+                            store.renew(lease);
+                        } catch (RuntimeException ignored) {
+                            LOG.warn("event=ingestion.renew_failed ingestionId={} code={}", lease.ingestionId(), com.example.ailab.contract.error.DiagnosticFailure.code(ignored));
+                        }
+                    }, 20, 20, TimeUnit.SECONDS);
+
+                    try {
+                        pipeline.execute(lease);
+                    } catch (LabException e) {
+                        LOG.warn("event=ingestion.failed ingestionId={} code={}", lease.ingestionId(), com.example.ailab.contract.error.DiagnosticFailure.code(e));
+                        store.fail(lease, e.code());
+                    } catch (RuntimeException e) {
+                        LOG.error("event=ingestion.failed ingestionId={}", lease.ingestionId(), com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));
+                        store.fail(lease, "INGESTION_FAILED");
+                    } finally {
+                        renewal.cancel(false);
+                    }
+
+                });
+            } catch (RejectedExecutionException e) {
+                LOG.warn("event=ingestion.queue_rejected ingestionId={}", lease.ingestionId());
+                store.fail(lease, "RATE_LIMITED");
+            }
+
+        });
+
+    }
+
+    /**
+     * 停止调度；未完成租约由后续进程有界恢复。
+     */
+
+    @PreDestroy
+    public void close() {
+        pool.shutdownNow();
+        heartbeat.shutdownNow();
+    }
+
+}

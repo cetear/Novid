@@ -1,3 +1,4 @@
+import com.example.ailab.ai.runtime.ExecutionBudget;
 import com.example.ailab.app.LabApplication;
 import com.example.ailab.business.application.*;
 import com.example.ailab.contract.context.UserContext;
@@ -5,9 +6,9 @@ import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.error.LabException;
 import com.example.ailab.contract.port.*;
 import com.example.ailab.ai.model.*;
-import com.example.ailab.ai.orchestration.rag.DocumentIngestionPipeline;
-import com.example.ailab.ai.orchestration.planner.PlanValidator;
-import com.example.ailab.ai.orchestration.worker.ReportTaskWorker;
+import com.example.ailab.ai.rag.DocumentIngestionPipeline;
+import com.example.ailab.ai.orchestration.planexecute.PlanValidator;
+import com.example.ailab.ai.workflows.report.ReportTaskWorker;
 import com.example.ailab.data.search.*;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
@@ -479,8 +480,8 @@ public class BackendValidation {
     /** 完整传输断言使用程序统计，不购买模型调用。 */
     private static void testSseDiagnostics() {
         check("focused_real_http_sse_complete_transfer",()->{
-            var logger=(ch.qos.logback.classic.Logger)org.slf4j.LoggerFactory.getLogger("org.springframework.security.web.access.ExceptionTranslationFilter");
-            var oldLevel=logger.getLevel();logger.setLevel(ch.qos.logback.classic.Level.TRACE);
+            var logger=(org.apache.logging.log4j.core.Logger)org.apache.logging.log4j.LogManager.getLogger("org.springframework.security.web.access.ExceptionTranslationFilter");
+            var oldLevel=logger.getLevel();logger.setLevel(org.apache.logging.log4j.Level.TRACE);
             try {
                 var builder=HttpRequest.newBuilder(URI.create(origin+"/api/v1/chat/stream")).timeout(Duration.ofSeconds(15)).header("Authorization","Bearer "+token1)
                     .header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString(toJson(Map.of("question","统计文档","scope",ScopeRequest.self())),StandardCharsets.UTF_8));
@@ -617,7 +618,7 @@ public class BackendValidation {
 
     /** 自动 Worker 关闭时，明确触发正式清理端口；每轮保持单批且总轮数有界。 */
     private static void drainCleanup(){
-        var worker=context.getBean(com.example.ailab.ai.orchestration.worker.IndexCleanupWorker.class);
+        var worker=context.getBean(com.example.ailab.ai.rag.IndexCleanupWorker.class);
         for(int batch=0;batch<40;batch++)if(!worker.executeNext())return;
         throw new AssertionError("cleanup exceeded bounded validation batches");
     }

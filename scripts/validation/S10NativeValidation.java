@@ -6,7 +6,7 @@ import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.port.*;
 import com.example.ailab.contract.error.LabException;
 import com.example.ailab.data.repository.SqlSupport;
-import com.example.ailab.ai.orchestration.media.PresentationExecution;
+import com.example.ailab.ai.workflows.media.PresentationExecution;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.boot.SpringApplication;
 import org.springframework.transaction.PlatformTransactionManager;

@@ -1,5 +1,7 @@
 package com.example.ailab.app;
 
+import com.example.ailab.ai.runtime.ExecutionBudget;
+
 import com.example.ailab.ai.model.*;
 import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.error.LabException;

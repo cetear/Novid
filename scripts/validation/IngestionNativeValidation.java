@@ -3,9 +3,9 @@ package com.example.ailab.app;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.rest_client.RestClientTransport;
-import com.example.ailab.ai.orchestration.rag.DocumentIngestionPipeline;
-import com.example.ailab.ai.orchestration.worker.ReportTaskWorker;
-import com.example.ailab.ai.orchestration.planner.PlanValidator;
+import com.example.ailab.ai.rag.DocumentIngestionPipeline;
+import com.example.ailab.ai.workflows.report.ReportTaskWorker;
+import com.example.ailab.ai.orchestration.planexecute.PlanValidator;
 import com.example.ailab.ai.aggregator.ResultAggregator;
 import com.example.ailab.ai.model.ModelGateway;
 import com.example.ailab.business.application.*;
@@ -123,7 +123,7 @@ public final class IngestionNativeValidation {
             /** 全集核验保留真实实现。 */ public void verifyGeneration(long id,int v,long r,int count){real.verifyGeneration(id,v,r,count);}
             /** 清理只沿正式固定边界。 */ public boolean cleanup(IndexCleanupLease l){return real.cleanup(l);}
         };
-        var pipeline=new DocumentIngestionPipeline(context.getBean(DocumentIngestionStorePort.class),context.getBean(KnowledgeCapabilityPort.class),context.getBean(com.example.ailab.ai.orchestration.rag.StructureParser.class),context.getBean(ModelGateway.class),faulty);
+        var pipeline=new DocumentIngestionPipeline(context.getBean(DocumentIngestionStorePort.class),context.getBean(KnowledgeCapabilityPort.class),context.getBean(com.example.ailab.ai.rag.StructureParser.class),context.getBean(ModelGateway.class),faulty);
         denied("SEARCH_UNAVAILABLE",()->pipeline.execute(lease));var store=context.getBean(DocumentIngestionStorePort.class);store.fail(lease,"SEARCH_UNAVAILABLE");
         require(jdbc.queryForObject("SELECT state FROM ingestion_batches WHERE ingestion_id=? AND ordinal=0",String.class,lease.ingestionId()).equals("INDEXED"),"first batch not persisted");
         require(jdbc.queryForObject("SELECT status FROM document_ingestions WHERE id=?",String.class,lease.ingestionId()).equals("FAILED"),"failure hidden");
@@ -150,7 +150,7 @@ public final class IngestionNativeValidation {
             /** 全集数量也保留正式实现。 */ public void verifyGeneration(long id,int v,long r,int count){restoredIndex.verifyGeneration(id,v,r,count);}
             /** 清理不扩大固定边界。 */ public boolean cleanup(IndexCleanupLease l){return restoredIndex.cleanup(l);}
         };
-        new DocumentIngestionPipeline(context.getBean(DocumentIngestionStorePort.class),context.getBean(KnowledgeCapabilityPort.class),context.getBean(com.example.ailab.ai.orchestration.rag.StructureParser.class),context.getBean(ModelGateway.class),measured).execute(resumed);
+        new DocumentIngestionPipeline(context.getBean(DocumentIngestionStorePort.class),context.getBean(KnowledgeCapabilityPort.class),context.getBean(com.example.ailab.ai.rag.StructureParser.class),context.getBean(ModelGateway.class),measured).execute(resumed);
         int secondSize=jdbc.queryForObject("SELECT item_count FROM ingestion_batches WHERE ingestion_id=? AND ordinal=1",Integer.class,lease.ingestionId());
         require(recoveryItems.get()==(lost?0:secondSize-1),"resume rewrote completed index items");
         META.put(lost?"lost_response_recovery_bulk_items":"partial_bulk_recovery_items",recoveryItems.get());
@@ -194,13 +194,13 @@ public final class IngestionNativeValidation {
         store.plan(l,List.of(plan));require(jdbc.queryForObject("SELECT COUNT(*) FROM ingestion_batches WHERE ingestion_id=?",Integer.class,l.ingestionId())==1,"duplicate batch");
         denied("INGESTION_PLAN_CONFLICT",()->store.plan(l,List.of(new IngestionBatchPlan(0,0,plan.count(),plan.batchKey(),SqlSupport.hash("changed"),plan.inputTokens()))));
         denied("INDEX_NOT_READY",()->store.activate(l,plan.count()));
-        var parsed=context.getBean(com.example.ailab.ai.orchestration.rag.StructureParser.class).parse(l);
+        var parsed=context.getBean(com.example.ailab.ai.rag.StructureParser.class).parse(l);
         denied("INGESTION_PLAN_CONFLICT",()->store.saveStructure(l,new ParsedDocument(parsed.sections(),parsed.parents(),parsed.chunks(),SqlSupport.hash("changed config"))));
     }
 
     /** 小夹具只解析和登记稳定计划，不调用付费模型。 */
     private static IngestionLease prepared() {
-        var l=fixture("S03 tiny synthetic budget fixture");var parsed=context.getBean(com.example.ailab.ai.orchestration.rag.StructureParser.class).parse(l);
+        var l=fixture("S03 tiny synthetic budget fixture");var parsed=context.getBean(com.example.ailab.ai.rag.StructureParser.class).parse(l);
         var store=context.getBean(DocumentIngestionStorePort.class);store.saveStructure(l,parsed);
         int tokens=parsed.chunks().stream().mapToInt(c->TextWindow.count(c.embeddingText())).sum();
         var summary=new StringBuilder(parsed.configHash());for(var c:parsed.chunks())summary.append('|').append(c.chunkId()).append(':').append(SqlSupport.hash(c.embeddingText()));

@@ -1,6 +1,6 @@
 package com.example.ailab.ai.tools;
 
-import com.example.ailab.ai.model.ExecutionBudget;
+import com.example.ailab.ai.runtime.ExecutionBudget;
 import com.example.ailab.contract.context.UserContext;
 import com.example.ailab.contract.dto.ScopeRequest;
 

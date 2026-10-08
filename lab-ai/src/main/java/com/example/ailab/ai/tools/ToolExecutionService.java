@@ -4,7 +4,7 @@ import com.example.ailab.contract.context.UserContext;
 import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.port.*;
 import com.example.ailab.contract.error.LabException;
-import com.example.ailab.ai.model.ExecutionBudget;
+import com.example.ailab.ai.runtime.ExecutionBudget;
 import org.springframework.stereotype.Component;
 
 import java.util.*;

@@ -1,5 +1,7 @@
 package com.example.ailab.ai.gateway;
 
+import com.example.ailab.ai.runtime.ExecutionBudget;
+
 import com.example.ailab.contract.context.UserContext;
 import com.example.ailab.contract.context.RequestCancellation;
 import com.example.ailab.contract.dto.*;
@@ -10,7 +12,7 @@ import com.example.ailab.ai.tools.ToolExecutionService;
 import com.example.ailab.ai.memory.ProfileMemoryService;
 import com.example.ailab.ai.memory.SessionHistoryService;
 import com.example.ailab.ai.aggregator.ResultAggregator;
-import com.example.ailab.ai.orchestration.rag.RagProperties;
+import com.example.ailab.ai.rag.RagProperties;
 import org.springframework.stereotype.Component;
 
 import java.time.*;
@@ -158,7 +160,7 @@ public class AiGateway implements AiGatewayPort {
                 structuredStatus = extracted.value().status();
                 structuredAnswer = extracted.value().answer();
             } else if ("READ_ONLY".equals(request.toolMode())) {
-                var loop = new com.example.ailab.ai.orchestration.BoundedToolLoop(models, tools).run(actor, request.scope(), selection, input, budget, () -> {
+                var loop = new com.example.ailab.ai.orchestration.react.BoundedToolLoop(models, tools).run(actor, request.scope(), selection, input, budget, () -> {
                     cancellation.check();
                     tools.verify(actor, effective.scope(), originalEvidence);
                     if (activeLease != null) history.verify(actor, activeLease, context.dependencies());

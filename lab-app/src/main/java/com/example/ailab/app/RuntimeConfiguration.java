@@ -28,7 +28,7 @@ public class RuntimeConfiguration {
      * 单一 RAG 参数源经框架无关契约交给数据端，正式装配不引入反向依赖。
      */
     @Bean
-    public com.example.ailab.contract.dto.ContextPolicy contextPolicy(com.example.ailab.ai.orchestration.rag.RagProperties config) {
+    public com.example.ailab.contract.dto.ContextPolicy contextPolicy(com.example.ailab.ai.rag.RagProperties config) {
         return config.contextPolicy();
     }
 
@@ -57,7 +57,7 @@ public class RuntimeConfiguration {
     @Bean
     public ApplicationRunner maintenance(org.springframework.core.env.Environment env,
                                          com.example.ailab.contract.port.KnowledgeIndexPort index,
-                                         com.example.ailab.ai.orchestration.worker.IndexCleanupWorker cleanup,
+                                         com.example.ailab.ai.rag.IndexCleanupWorker cleanup,
                                          com.example.ailab.contract.port.FeeStorePort fees,
                                          com.example.ailab.contract.port.GovernanceStorePort governance,
                                          org.springframework.context.ConfigurableApplicationContext context) {

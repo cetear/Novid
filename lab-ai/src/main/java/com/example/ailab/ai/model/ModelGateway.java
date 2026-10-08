@@ -1,5 +1,8 @@
 package com.example.ailab.ai.model;
 
+import com.example.ailab.ai.runtime.ExecutionBudget;
+import com.example.ailab.ai.fees.FeeAccounting;
+
 import com.example.ailab.contract.error.LabException;
 import dev.langchain4j.model.openai.*;
 import dev.langchain4j.data.message.*;
