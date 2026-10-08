@@ -4,8 +4,6 @@ import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.rest_client.RestClientTransport;
 import com.example.ailab.ai.rag.DocumentIngestionPipeline;
-import com.example.ailab.ai.workflows.report.ReportTaskWorker;
-import com.example.ailab.ai.orchestration.planexecute.PlanValidator;
 import com.example.ailab.ai.aggregator.ResultAggregator;
 import com.example.ailab.ai.model.ModelGateway;
 import com.example.ailab.business.application.*;
@@ -34,6 +32,7 @@ import java.util.*;
 
 /** S02 真实依赖专项，仅自己创建的随机资料；关闭扫描，不领取用户队列，凭证不进入证据。 */
 public final class StructureNativeValidation {
+    private static void requireCurrentValidation() { throw new UnsupportedOperationException("包含旧报告生成的S02综合专项已停用；结构能力由当前自动回归验证"); }
     private static final ObjectMapper JSON=new ObjectMapper();
     private static final HttpClient HTTP=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
     private static final List<Map<String,Object>> RESULTS=new ArrayList<>();
@@ -60,6 +59,7 @@ public final class StructureNativeValidation {
 
     /** 真实资源只用于合成资料；所有清理按确定 ID，日志只保存错误码和测试名。 */
     public static void main(String[] args) throws Exception {
+        requireCurrentValidation();
         TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
         defaults=new LinkedHashMap<>(LocalEnvironmentLoader.read(Path.of(args.length==0?".env":args[0])));
         configuredUrl=configuration("DB_URL");
@@ -255,18 +255,9 @@ public final class StructureNativeValidation {
         long fence=jdbc.queryForObject("SELECT fencing_token FROM ai_tasks WHERE id=?",Long.class,resumeLease.task().taskId());resumeLease=new TaskLease(tasks.read(owner,resumeLease.task().taskId()),resumeLease.request(),owner,"s02-explicit",fence);
     }
     /** 正式 Worker、真实单目标 SDK、SQL 页检查点与私人产物；只显式执行本任务，不运行 scan。 */
-    private static void report(long documentId,boolean partial) throws Exception {
-        var lease=task(documentId);var worker=new ReportTaskWorker(context.getBean(TaskStorePort.class),context.getBean(KnowledgeCapabilityPort.class),context.getBean(ModelGateway.class),context.getBean(PlanValidator.class),context.getBean(ResultAggregator.class),context.getBean(DocumentContextPort.class),context.getBean(com.example.ailab.ai.rag.RagProperties.class));
-        try{var run=ReportTaskWorker.class.getDeclaredMethod("run",TaskLease.class);run.setAccessible(true);run.invoke(worker,lease);}finally{worker.close();}
-        var result=context.getBean(TaskStorePort.class).read(owner,lease.task().taskId());require(result.status().equals(partial?"PARTIAL":"SUCCEEDED"),"report status="+result.status()+" error="+result.errorCode());
-        var coverage=result.coverage().get(0);require(coverage.complete()!=partial&&coverage.readEndOffset()==coverage.remainingStartOffset()&&coverage.remainingEndOffset()==content(documentId).text().length(),"coverage not exact");
-        require(result.modelAttempts()<=10&&jdbc.queryForObject("SELECT model_turns FROM ai_tasks WHERE id=?",Integer.class,result.taskId())<=6,"report persistent budget exceeded");
-        var response=request("GET","/artifacts/"+result.artifactId(),ownerToken,null,null);require(response.statusCode()==200&&response.body().contains("覆盖说明")&&response.body().contains("[D"+documentId+"v1]"),"report download or citation missing");
-        expect(403,request("GET","/artifacts/"+result.artifactId(),adminToken,null,null));
-        META.put(partial?"real_long_report_pages":"real_short_report_pages",coverage.completedPages());
-        META.put(partial?"real_long_report_remaining_utf16":"real_short_report_remaining_utf16",coverage.remainingEndOffset()-coverage.remainingStartOffset());
-        META.put(partial?"real_long_report_turns":"real_short_report_turns",jdbc.queryForObject("SELECT model_turns FROM ai_tasks WHERE id=?",Integer.class,result.taskId()));
-        Files.writeString(Path.of(partial?"var/stage-S02/real-long-report.md":"var/stage-S02/real-short-report.md"),response.body());
+
+    private static void report(long documentId,boolean partial) {
+        throw new UnsupportedOperationException("旧报告生成专项已移除，不能作为学习工作流验收");
     }
     /** 固定根章节用于全文分页，不把标题名当作 ID。 */
     private static String detail(long id,int after){return "/documents/"+id+"/sections/d"+id+"v1r1s0?documentVersion=1&processingRevision=1&afterOffset="+after+"&maxTokens=300";}

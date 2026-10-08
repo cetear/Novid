@@ -5,8 +5,6 @@ import com.example.ailab.ai.runtime.ExecutionBudget;
 import com.example.ailab.ai.model.*;
 import com.example.ailab.ai.tools.*;
 import com.example.ailab.ai.orchestration.react.BoundedToolLoop;
-import com.example.ailab.ai.workflows.report.ReportTaskWorker;
-import com.example.ailab.ai.orchestration.planexecute.PlanValidator;
 import com.example.ailab.contract.context.*;
 import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.port.*;
@@ -80,32 +78,7 @@ public final class S06NativeValidation {
                 check(nodes.stream().filter(n->n.type().equals("MODEL")).allMatch(n->n.usageSource().equals("PROVIDER") || n.usageSource().equals("UNKNOWN")),target+"_real_usage_not_zero_filled");
             }
         }
-        // 正式ReportTaskWorker真线程与真实模型；任务端口是合成夹具，故单列，不冒称真实持久调度。
-        var request=new TaskRequest("RESEARCH_REPORT","独立研究合成文档与统计，两角色互不依赖，各写一句话，报告保留引用。",ScopeRequest.self(),List.of(10L),"s06-native","FIXED");
-        var lease=new TaskLease(new TaskSnapshot(1,1,"RESEARCH_REPORT","RUNNING",1,0,0,null,null),request,actor,"synthetic",1);
-        var saved=new CopyOnWriteArrayList<TaskCheckpoint>(); var published=new CompletableFuture<Void>();var graph=new CompletableFuture<List<TraceNode>>();var claimed=new AtomicBoolean();
-        var tasks=(TaskStorePort)java.lang.reflect.Proxy.newProxyInstance(TaskStorePort.class.getClassLoader(),new Class<?>[]{TaskStorePort.class},(proxy,method,arguments)->{
-            switch(method.getName()) {
-                case "claim": return claimed.compareAndSet(false,true)?Optional.of(lease):Optional.empty();
-                case "renew": return true;
-                case "checkpoints": return List.copyOf(saved);
-                case "checkpoint": saved.add((TaskCheckpoint)arguments[1]);return null;
-                case "publish": published.complete(null);return null;
-                case "fail": published.completeExceptionally(new LabException((String)arguments[1],"合成任务失败"));return null;
-                case "plan": return Optional.empty();
-                default: if(method.getReturnType()==void.class)return null; throw new IllegalStateException("未声明夹具方法");
-            }
-        });
-        var worker=new ReportTaskWorker(tasks,knowledge,gateway,new PlanValidator());
-        try {
-            worker.tracing((id,user,session,task,ingestion)->new TraceContext(2000,(nodes,incomplete)->graph.complete(nodes)));
-            worker.scan();published.get(120,TimeUnit.SECONDS);var nodes=graph.get(5,TimeUnit.SECONDS);MODEL_GRAPHS.add(nodes);
-            var research=role(nodes,"ResearchWorker");var analysis=role(nodes,"AnalysisWorker");var report=role(nodes,"ReportWriter");
-            check(research.startedAt().isBefore(analysis.endedAt()) && analysis.startedAt().isBefore(research.endedAt()),"real_worker_parallel_overlap");
-            check(report.dependsOn().containsAll(List.of(research.spanId(),analysis.spanId())) && !report.startedAt().isBefore(research.endedAt()) && !report.startedAt().isBefore(analysis.endedAt()),"real_worker_actual_join");
-            check(nodes.stream().filter(n->n.type().equals("MODEL")).count()==3,"real_worker_three_model_leaves");
-            check(nodes.stream().filter(n->n.type().equals("MODEL")).allMatch(n->n.agentId()!=null && n.modelId()!=null && n.profile()!=null),"real_worker_agent_route_association");
-        } finally { worker.close(); }
+        // 旧报告并行角色专项已移除；当前仅验证共享模型与工具追踪。
     }
     /** 固定合成知识事实，不使用现有资料、ES或原文文件。 */
     private static KnowledgeCapabilityPort knowledge() {

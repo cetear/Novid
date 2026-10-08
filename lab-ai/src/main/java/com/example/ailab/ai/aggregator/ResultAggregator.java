@@ -1,7 +1,6 @@
 package com.example.ailab.ai.aggregator;
 
 import com.example.ailab.contract.dto.EvidenceBundle;
-import com.example.ailab.contract.dto.SourceDependency;
 import com.example.ailab.contract.error.LabException;
 import org.springframework.stereotype.Component;
 
@@ -14,26 +13,6 @@ import java.util.regex.*;
 @Component
 public class ResultAggregator {
     private static final Pattern CITATION = Pattern.compile("\\[(E[0-9]+)\\]");
-    private static final Pattern REPORT_CITATION = Pattern.compile("\\[D([0-9]+)v([0-9]+)\\]");
-
-    /**
-     * 报告使用类型化版本来源，禁止汇聚新增未交付的 D 引用。
-     */
-    public String validateReport(String text, List<SourceDependency> sources, boolean mock, boolean requireCitation) {
-        validate(text, List.of(), mock);
-        var allowed = new HashSet<String>();
-        sources.forEach(s -> allowed.add(s.documentId() + ":" + s.documentVersion()));
-        var matcher = REPORT_CITATION.matcher(text);
-        int count = 0;
-        while (matcher.find()) {
-            if (!allowed.contains(matcher.group(1) + ":" + matcher.group(2)))
-                throw new LabException("CONTEXT_MAPPING_INVALID", "报告包含未交付的版本引用");
-            count++;
-        }
-        if (!mock && requireCitation && !sources.isEmpty() && count == 0)
-            throw new LabException("MODEL_INVALID_OUTPUT", "报告缺少有效来源引用");
-        return text;
-    }
 
     /**
      * 只允许引用实际交给模型的证据，空回答／假保存事实拒绝。

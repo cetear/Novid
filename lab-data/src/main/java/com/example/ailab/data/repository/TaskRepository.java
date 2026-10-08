@@ -49,11 +49,13 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
      */
     @Transactional
     public TaskSnapshot create(UserContext actor, TaskRequest request) {
+        if (TaskRequest.retired(request.taskType())) throw new LabException("WORKFLOW_RETIRED", "此工作流已移除");
+        if (!TaskRequest.supported(request.taskType())) throw LabException.invalid("未登记的任务类型");
         sql.actor(actor, true);
         // FIXED保留S04之前的规范JSON，旧幂等键不能因增加可选字段而参数冲突。
         var canonical = json.valueToTree(new TaskRequest(request.taskType(), request.topic(), request.scope(), request.documentIds().stream().distinct().sorted().toList(), request.idempotencyKey(), request.strategy(), request.presentationOptions(), request.videoOptions(), request.quizOptions(), request.compilationOptions()));
         if (request.strategy().equals("FIXED")) ((com.fasterxml.jackson.databind.node.ObjectNode) canonical).remove("strategy");
-        // 老FAQ／报告幂等JSON不因新增媒体可选字段变化。
+        // 学习任务不保存媒体选项，媒体保留既有幂等JSON。
         if (!media(request.taskType())) ((com.fasterxml.jackson.databind.node.ObjectNode)canonical).remove(java.util.List.of("presentationOptions","videoOptions"));
         if (!Learning.supports(request.taskType())) ((com.fasterxml.jackson.databind.node.ObjectNode)canonical).remove(java.util.List.of("quizOptions", "compilationOptions"));
         String serialized = encode(canonical), hash = SqlSupport.hash(serialized);
@@ -97,6 +99,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
                 yield "PAUSED";
             }
             case "resume" -> {
+                if (TaskRequest.retired(t.taskType())) throw new LabException("WORKFLOW_RETIRED", "此历史任务不可恢复执行");
                 if (!t.status().equals("PAUSED")&&!(media(t.taskType())&&Set.of("FAILED","NEEDS_RECONCILIATION").contains(t.status()))) throw new LabException("OPERATION_CONFLICT", "当前状态不能恢复");
                 if(media(t.taskType())&&sql.scalar(mapper.actionMediaOperationsSelect(new Object[]{id}), Integer.class)>0)throw new LabException("MEDIA_SUBMISSION_UNKNOWN","无原ID的未知提交禁止自动重购");
                 if(media(t.taskType()))mapper.actionMediaOperationsWrite(new Object[]{id});
@@ -447,6 +450,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
      * fencing/worker/租约/用户/工作流/累计期限全都必须满足。
      */
     void valid(TaskLease lease) {
+        if (TaskRequest.retired(lease.request().taskType())) throw new LabException("WORKFLOW_RETIRED", "此工作流已停止执行");
         sql.actor(lease.actor(), true);
         int count = sql.scalar(mapper.validAiTasksSelect(new Object[]{lease.task().taskId(), lease.actor().userId(), lease.workerId(), lease.fencingToken()}), Integer.class);
         if (count != 1) throw new LabException("STALE_EXECUTION", "任务执行权或累计期限已失效");

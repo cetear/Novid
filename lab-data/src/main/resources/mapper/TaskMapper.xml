@@ -70,7 +70,7 @@
     </update>
 
     <select id="claimInternalAiTasksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
-        SELECT t.id FROM ai_tasks t JOIN users u ON u.id=t.requester_user_id WHERE u.enabled=TRUE AND u.password_change_required=FALSE AND (t.status='QUEUED' OR t.status='RUNNING' AND t.attempt&lt;3 AND t.lease_until&lt;CURRENT_TIMESTAMP(6) OR t.status='WAITING_EXTERNAL' AND EXISTS(SELECT 1 FROM media_operations m WHERE m.task_id=t.id AND m.state IN ('WAITING_EXTERNAL','SENDING','REMOTE_READY') AND m.next_poll_at&lt;=CURRENT_TIMESTAMP(6))) AND <choose><when test="mediaQueue">t.task_type IN ('NOTES_PPT','NOTES_VIDEO')</when><otherwise>t.task_type NOT IN ('NOTES_PPT','NOTES_VIDEO')</otherwise></choose> ORDER BY t.id LIMIT 1 FOR UPDATE SKIP LOCKED
+        SELECT t.id FROM ai_tasks t JOIN users u ON u.id=t.requester_user_id WHERE u.enabled=TRUE AND u.password_change_required=FALSE AND (t.status='QUEUED' OR t.status='RUNNING' AND t.attempt&lt;3 AND t.lease_until&lt;CURRENT_TIMESTAMP(6) OR t.status='WAITING_EXTERNAL' AND EXISTS(SELECT 1 FROM media_operations m WHERE m.task_id=t.id AND m.state IN ('WAITING_EXTERNAL','SENDING','REMOTE_READY') AND m.next_poll_at&lt;=CURRENT_TIMESTAMP(6))) AND <choose><when test="mediaQueue">t.task_type IN ('NOTES_PPT','NOTES_VIDEO')</when><otherwise>t.task_type IN ('QUIZ_GENERATION','KNOWLEDGE_COMPILATION')</otherwise></choose> ORDER BY t.id LIMIT 1 FOR UPDATE SKIP LOCKED
     </select>
 
     <update id="claimInternalAiTasksWrite3">

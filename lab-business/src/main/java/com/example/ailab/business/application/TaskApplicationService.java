@@ -10,7 +10,7 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 
 /**
- * 可靠 FAQ/研究报告任务，上传与任务去重均隔离到本人。
+ * 学习与媒体任务用例，任务与产物均隔离到本人。
  */
 @Service
 public class TaskApplicationService {
@@ -39,15 +39,16 @@ public class TaskApplicationService {
     }
 
     /**
-     * 明确支持 FAQ/RESEARCH_REPORT；没有真实媒体能力时拒绝而非伪视频成功。
+     * 只创建登记中的学习或媒体任务，已移除的工作流不映射为新功能。
      */
     public TaskSnapshot create(UserContext actor, TaskRequest r) {
+        if (TaskRequest.retired(r.taskType())) throw new LabException("WORKFLOW_RETIRED", "旧FAQ与研究报告已移除，请使用学习自测或资料整编");
         boolean mediaType = Set.of("NOTES_PPT", "NOTES_VIDEO").contains(r.taskType());
-        if (!Set.of("FAQ", "RESEARCH_REPORT", "NOTES_PPT", "NOTES_VIDEO", "QUIZ_GENERATION", "KNOWLEDGE_COMPILATION").contains(r.taskType()) || r.topic() == null || r.topic().isBlank() || r.topic().length() > 1000 || r.documentIds().isEmpty() || r.documentIds().size() > 6 || r.documentIds().stream().anyMatch(id -> id == null || id <= 0))
-            throw LabException.invalid("支持FAQ、研究报告、PPT、视频、自测和资料整编，指定1～6份资料和有限主题");
-        // 动态计划仅研究报告显式启用，FAQ与旧请求继续固定五步。
-        if (!Set.of("FIXED", "PLANNED").contains(r.strategy()) || r.strategy().equals("PLANNED") && !r.taskType().equals("RESEARCH_REPORT") && !mediaType)
-            throw LabException.invalid("strategy须为FIXED，或研究报告的PLANNED");
+        if (!TaskRequest.supported(r.taskType()) || r.topic() == null || r.topic().isBlank() || r.topic().length() > 1000 || r.documentIds().isEmpty() || r.documentIds().size() > 6 || r.documentIds().stream().anyMatch(id -> id == null || id <= 0))
+            throw LabException.invalid("支持PPT、视频、自测和资料整编，指定1～6份资料和有限主题");
+        // 学习任务固定执行；媒体兼容原strategy参数，实际架构由服务端选择。
+        if (!Set.of("FIXED", "PLANNED").contains(r.strategy()) || r.strategy().equals("PLANNED") && !mediaType)
+            throw LabException.invalid("学习任务strategy须为FIXED，媒体保留FIXED或PLANNED");
         if (Learning.supports(r.taskType())) {
             if (!r.strategy().equals("FIXED")) throw LabException.invalid("学习工作流由服务端固定分配FIXED架构");
             if (r.taskType().equals("QUIZ_GENERATION")) r.quizOptions().validate();
@@ -63,7 +64,7 @@ public class TaskApplicationService {
             if (media == null) throw new LabException("MEDIA_CAPABILITY_UNAVAILABLE", "媒体未装配");
             media.validate(actor, r);
         } else if (r.presentationOptions() != null || r.videoOptions() != null)
-            throw LabException.invalid("普通报告不能携带媒体选项");
+            throw LabException.invalid("学习任务不能携带媒体选项");
         return tasks.create(actor, r);
     }
 

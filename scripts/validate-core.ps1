@@ -28,7 +28,7 @@ try {
         }
     } finally { $archive.Dispose() }
     $classpath = "$runtime/classes;$runtime/*;$runtime"
-    $sources = @('ValidationSql','S11Inventory','S07NativeValidation','TaskProgressRollbackValidation','S08NativeValidation','S09NativeValidation','S10NativeValidation','BackendValidation') | ForEach-Object { Join-Path $PSScriptRoot "validation/$_.java" }
+    $sources = @('ValidationSql','S11Inventory','S07NativeValidation','S08NativeValidation','S09NativeValidation','S10NativeValidation','BackendValidation') | ForEach-Object { Join-Path $PSScriptRoot "validation/$_.java" }
     & javac -encoding UTF-8 -cp $classpath -d $runtime @sources
     if ($LASTEXITCODE -ne 0) { throw '专项编译失败' }
     & (Join-Path $PSScriptRoot 'start-api.ps1') -LoadEnvironmentOnly
@@ -65,7 +65,7 @@ try {
         if ($inventoryCode -ne 0) { throw '未建立保护快照，停止数据库验收' }
         $null = Invoke-CoreProbe 'isolated-backend' 'BackendValidation' @('--offline') (Join-Path $workspace 'var/backend-review/results.json')
         $null = Invoke-CoreProbe 'fees' 'com.example.ailab.app.S07NativeValidation' @('--database-only') (Join-Path $workspace 'var/stage-S07/database-native-results.json')
-        $null = Invoke-CoreProbe 'task-progress' 'TaskProgressRollbackValidation' @() ''
+        $cases.Add([pscustomobject]@{name='learning-task-progress'; status='NOT_RUN'; reason='旧报告五步进度专项已移除；学习六阶段的真实数据库验收尚未补充'})
         $null = Invoke-CoreProbe 'governance' 'com.example.ailab.app.S08NativeValidation' @() (Join-Path $workspace 'var/stage-S08/native-results.json')
         $null = Invoke-CoreProbe 'media' 'com.example.ailab.app.S09NativeValidation' @() (Join-Path $workspace 'var/stage-S09/native-results.json')
         $null = Invoke-CoreProbe 'presentation' 'com.example.ailab.app.S10NativeValidation' @() (Join-Path $presentationRoot 'native-results.json')

@@ -17,10 +17,12 @@ import java.util.*;
 /** 真实 MySQL 短事务内验证合成任务后回滚，不调用外部模型，不要求建库权限。 */
 public class TaskProgressRollbackValidation {
     private static int passed;
+    private static void requireCurrentValidation() { throw new UnsupportedOperationException("旧报告五步进度专项已停用，请使用学习六阶段回归"); }
     private static final String PASSWORD = "progress-validation-password";
 
     /** 正式启动应用迁移 V4；后台队列关闭，合成资料最终全部回滚。 */
     public static void main(String[] args) {
+        requireCurrentValidation();
         TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
         try (var context = SpringApplication.run(LabApplication.class,
                 "--lab.search.enabled=false", "--lab.bootstrap.enabled=false", "--lab.task.worker-enabled=false",

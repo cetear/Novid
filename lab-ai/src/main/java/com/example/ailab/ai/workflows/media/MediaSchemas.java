@@ -1,7 +1,5 @@
 package com.example.ailab.ai.workflows.media;
 
-import com.example.ailab.ai.orchestration.planexecute.PlanSchema;
-
 import com.example.ailab.ai.model.StructuredSchema;
 import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.error.LabException;

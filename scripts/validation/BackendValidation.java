@@ -7,8 +7,6 @@ import com.example.ailab.contract.error.LabException;
 import com.example.ailab.contract.port.*;
 import com.example.ailab.ai.model.*;
 import com.example.ailab.ai.rag.DocumentIngestionPipeline;
-import com.example.ailab.ai.orchestration.planexecute.PlanValidator;
-import com.example.ailab.ai.workflows.report.ReportTaskWorker;
 import com.example.ailab.data.search.*;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
@@ -117,6 +115,8 @@ public class BackendValidation {
 
     /** 随机独立库才启动应用；零购买模式关闭全部扫描和媒体外发。 */
     public static void main(String[] args) throws Exception {
+        if (Arrays.stream(args).noneMatch(a -> a.equals("--offline") || a.equals("--inspect-database")))
+            throw new IllegalStateException("旧报告在线专项已停用；请使用当前学习工作流验收。--offline仍可执行共享检查。");
         configuredUrl=System.getenv("DB_URL");
         if(args.length>0&&args[0].equals("--inspect-database")){inspectDatabase();return;}
         focused=args.length>0&&args[0].equals("--focused");
@@ -448,34 +448,13 @@ public class BackendValidation {
         });
         check("notes_video_reports_unavailable",()->denied("MEDIA_CAPABILITY_UNAVAILABLE",()->taskApplication.create(user1,new TaskRequest("NOTES_VIDEO","review",ScopeRequest.self(),List.of(document1.id()),"video"))));
     }
-    private static void testRealReport() throws Exception {
-        check("real_faq_multi_role_worker_and_private_artifact",()->{
-            var task=taskApplication.create(user1,taskRequest("real-faq"));
-            var worker=new ReportTaskWorker(taskStore,context.getBean(KnowledgeCapabilityPort.class),context.getBean(ModelGateway.class),context.getBean(PlanValidator.class));
-            try{worker.scan();long deadline=System.nanoTime()+Duration.ofSeconds(120).toNanos();TaskSnapshot state;
-                do{Thread.sleep(500);state=taskApplication.read(user1,task.taskId());}while(Set.of("QUEUED","RUNNING").contains(state.status())&&System.nanoTime()<deadline);
-                require(state.status().equals("SUCCEEDED"),"FAQ state="+state.status()+", code="+state.errorCode());require(state.completedSteps()==3&&state.modelAttempts()>=3,"role checkpoints incomplete");
-                var artifact=taskApplication.artifact(user1,state.artifactId());require(!artifact.content().isBlank(),"artifact blank");
-                denied("ACCESS_DENIED",()->taskApplication.artifact(admin,artifact.artifactId()));
-                require(request("GET","/artifacts/"+artifact.artifactId(),token1,null,null).statusCode()==200,"artifact download failed");
-                base1=bases.update(user1,base1.id(),base1.version(),base1.name(),base1.description(),false);
-                denied("ACCESS_DENIED",()->taskApplication.artifact(user1,artifact.artifactId()));
-                base1=bases.update(user1,base1.id(),base1.version(),base1.name(),base1.description(),true);
-            }finally{worker.close();}
-        });
+
+    private static void testRealReport() {
+        check("legacy_report_creation_is_retired",()->denied("WORKFLOW_RETIRED",()->taskApplication.create(user1,new TaskRequest("FAQ","历史",ScopeRequest.self(),List.of(document1.id()),"legacy-retired"))));
     }
+
     private static void testResearchReport() {
-        check("real_research_report_multi_role_worker_and_artifact",()->{
-            var request=new TaskRequest("RESEARCH_REPORT","说明晨星项目备份规则",ScopeRequest.self(),List.of(document1.id()),"focused-research");
-            var task=taskApplication.create(user1,request);
-            var worker=new ReportTaskWorker(taskStore,context.getBean(KnowledgeCapabilityPort.class),context.getBean(ModelGateway.class),context.getBean(PlanValidator.class));
-            try{worker.scan();long deadline=System.nanoTime()+Duration.ofSeconds(120).toNanos();TaskSnapshot state;
-                do{Thread.sleep(500);state=taskApplication.read(user1,task.taskId());}while(Set.of("QUEUED","RUNNING").contains(state.status())&&System.nanoTime()<deadline);
-                require(state.status().equals("SUCCEEDED"),"research state="+state.status()+", code="+state.errorCode());
-                require(state.completedSteps()==3&&state.modelAttempts()>=3,"research roles incomplete");
-                require(!taskApplication.artifact(user1,state.artifactId()).content().isBlank(),"research artifact blank");
-            } finally {worker.close();}
-        });
+        check("legacy_research_creation_is_retired",()->denied("WORKFLOW_RETIRED",()->taskApplication.create(user1,new TaskRequest("RESEARCH_REPORT","历史",ScopeRequest.self(),List.of(document1.id()),"legacy-research-retired"))));
     }
     /** 完整传输断言使用程序统计，不购买模型调用。 */
     private static void testSseDiagnostics() {
@@ -555,22 +534,7 @@ public class BackendValidation {
             store.finish(next,false);drainCleanup();
             require(jdbc.queryForObject("SELECT status FROM outbox_events WHERE id=?",String.class,first.eventId()).equals("DONE"),"recovered cleanup not completed");
         });
-        check("regression_report_source_consistent_after_document_revision",()->{
-            var task=taskApplication.create(user1,taskRequest("source-revision"));var lease=taskStore.claim("source-worker").orElseThrow();
-            taskStore.checkpoint(lease,new TaskCheckpoint("research","旧版本备份规则是每周三",List.of(new SourceDependency(base1.id(),document1.id(),1)),false));
-            documents.revise(user1,document1.id(),1,"review.md",FIXTURE.replace("每周三","每周五"));
-            taskStore.action(user1,task.taskId(),"pause");taskStore.action(user1,task.taskId(),"resume");
-            var worker=new ReportTaskWorker(taskStore,context.getBean(KnowledgeCapabilityPort.class),context.getBean(ModelGateway.class),context.getBean(PlanValidator.class));
-            try {
-                worker.scan();long deadline=System.nanoTime()+Duration.ofSeconds(120).toNanos();TaskSnapshot state;
-                do{Thread.sleep(500);state=taskApplication.read(user1,task.taskId());}while(Set.of("QUEUED","RUNNING").contains(state.status())&&System.nanoTime()<deadline);
-                require(state.status().equals("SUCCEEDED"),"resumed report state="+state.status()+", code="+state.errorCode());
-                var artifact=taskApplication.artifact(user1,state.artifactId());
-                META.put("resumed_report_source_versions",artifact.sourceDependencies().stream().map(SourceDependency::documentVersion).toList());
-                // 汇合使用了 v1 检查点，所以最终产物必须保留这项实际来源。
-                require(artifact.sourceDependencies().stream().anyMatch(s->s.documentId()==document1.id()&&s.documentVersion()==1),"resumed report uses v1 checkpoint but artifact records only v2 sources");
-            } finally {worker.close();}
-        });
+        check("legacy_research_creation_is_retired",()->denied("WORKFLOW_RETIRED",()->taskApplication.create(user1,new TaskRequest("RESEARCH_REPORT","历史",ScopeRequest.self(),List.of(document1.id()),"legacy-research-retired"))));
         check("regression_malformed_nested_id_returns_400",()->expect(400,request("POST","/tasks",token1,Map.of("taskType","FAQ","topic","review","documentIds",Arrays.asList((Object)null)),"null-document")));
         check("regression_deleted_es_chunks_are_cleaned_by_outbox",()->{
             documents.delete(user1,document1.id(),2);

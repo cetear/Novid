@@ -4,8 +4,6 @@ import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.rest_client.RestClientTransport;
 import com.example.ailab.ai.rag.DocumentIngestionPipeline;
-import com.example.ailab.ai.workflows.report.ReportTaskWorker;
-import com.example.ailab.ai.orchestration.planexecute.PlanValidator;
 import com.example.ailab.ai.aggregator.ResultAggregator;
 import com.example.ailab.ai.model.ModelGateway;
 import com.example.ailab.business.application.*;

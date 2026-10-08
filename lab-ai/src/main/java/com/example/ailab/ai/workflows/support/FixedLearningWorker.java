@@ -16,7 +16,7 @@ import jakarta.annotation.PreDestroy;
 import java.time.Duration;
 import java.util.concurrent.*;
 
-/** 共用普通任务队列的固定学习流程；独立业务执行，旧报告Worker只负责分派。 */
+/** 普通任务队列分派的固定学习流程，独立管理业务执行、心跳与检查点。 */
 @Component
 public final class FixedLearningWorker {
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(FixedLearningWorker.class);

@@ -8,7 +8,7 @@ public record TaskProgress(String stage, String message, boolean workerEnabled, 
                            int completedSteps, int totalSteps, int percent, List<String> currentSteps,
                            List<TaskStepSnapshot> steps, Instant startedAt, Instant updatedAt,
                            Instant lastHeartbeatAt, long elapsedExecutionSeconds, int pollAfterMillis) {
-    /** FAQ/研究报告共享五个确定步骤，两个分析角色允许并行。 */
+    /** 保留媒体与历史任务的五步进度形状，新学习任务使用独立六阶段。 */
     public static List<String> stepIds() {
         return List.of("prepare", "research", "analysis", "report", "publish");
     }
@@ -27,9 +27,9 @@ public record TaskProgress(String stage, String message, boolean workerEnabled, 
             case "review" -> "质检与局部修复";
             case "research" -> "整理资料要点";
             case "analysis" -> "统计与分析";
-            case "report" -> "生成 FAQ／报告";
+            case "report" -> "生成内容";
             case "publish" -> "校验并发布结果";
-            default -> throw new IllegalArgumentException("未知报告步骤");
+            default -> throw new IllegalArgumentException("未知任务步骤");
         };
     }
 
@@ -71,7 +71,7 @@ public record TaskProgress(String stage, String message, boolean workerEnabled, 
             case "QUEUED" -> {
                 stage = workerEnabled ? "QUEUED" : "WAITING_FOR_WORKER";
                 message = workerEnabled ? "任务已登记，等待后台领取"
-                        : "任务已登记，但报告 Worker 未启用，尚未开始处理";
+                        : "任务已登记，但任务 Worker 未启用，尚未开始处理";
             }
             case "RUNNING" -> {
                 if (!active) {

@@ -11,6 +11,12 @@ public record TaskRequest(String taskType, String topic, ScopeRequest scope, Lis
                           String idempotencyKey, String strategy, Media.PresentationOptions presentationOptions,
                           Media.VideoOptions videoOptions, Learning.QuizOptions quizOptions,
                           Learning.CompilationOptions compilationOptions) {
+    public static boolean supported(String type) {
+        return type != null && java.util.Set.of("NOTES_PPT", "NOTES_VIDEO", "QUIZ_GENERATION", "KNOWLEDGE_COMPILATION").contains(type);
+    }
+    public static boolean retired(String type) {
+        return "FAQ".equals(type) || "RESEARCH_REPORT".equals(type);
+    }
     /** 旧媒体与报告构造保留原参数和JSON语义。 */
     public TaskRequest(String type, String topic, ScopeRequest scope, List<Long> ids, String key, String strategy,
                        Media.PresentationOptions ppt, Media.VideoOptions video) {

@@ -1,5 +1,7 @@
 param([switch]$ModelsOnly, [switch]$DatabaseOnly, [string]$EnvFile = '.env')
 $ErrorActionPreference = 'Stop'
+if ($DatabaseOnly) { throw '旧报告计划数据库专项已移除；当前仅保留共享只读工具模型专项' }
+$ModelsOnly = $true
 $workspace = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $workspace
 if ($ModelsOnly -and $DatabaseOnly) { throw '专项开关不能同时指定' }

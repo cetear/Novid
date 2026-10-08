@@ -5,7 +5,6 @@ import com.example.ailab.ai.runtime.ExecutionBudget;
 import com.example.ailab.ai.model.*;
 import com.example.ailab.ai.tools.*;
 import com.example.ailab.ai.orchestration.react.*;
-import com.example.ailab.ai.orchestration.planexecute.*;
 import com.example.ailab.contract.context.UserContext;
 import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.port.*;
@@ -22,7 +21,6 @@ import java.util.*;
 public final class S05ModelNativeValidation {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final List<Map<String,Object>> RESULTS = new ArrayList<>();
-    private static final List<String> INVALID_PLANS = new ArrayList<>();
     /** 仅读现有配置，证据仅含逻辑模型ID、合成结果和程序断言，不回显认证信息。 */
     public static void main(String[] args) throws Exception {
         var environment = new StandardEnvironment();
@@ -46,19 +44,6 @@ public final class S05ModelNativeValidation {
             /** 可核验的固定事实，必须经过真实工具请求才能返回给模型。 */
             public KnowledgeStatistics statistics(UserContext user, ScopeRequest scope) { return new KnowledgeStatistics(7,2,5); }
         };
-        var planSchema = new PlanSchema(new PlanValidator());
-        // 只记录本专项合成主题的非法模型计划，帮助修复结构，不收集任何用户资料或提供方错误正文。
-        var planner = new StructuredSchema<TaskPlan>() {
-            /** 正式Schema保持不变，诊断层不放宽任何校验。 */
-            public dev.langchain4j.model.chat.request.json.JsonSchema schema() { return planSchema.schema(); }
-            /** 使用生产规划指令。 */
-            public String instruction(Set<String> refs) { return planSchema.instruction(refs); }
-            /** 失败原文仅限合成计划，仍原样抛出结构错误。 */
-            public TaskPlan validate(String text, Set<String> refs) {
-                try { return planSchema.validate(text,refs); }
-                catch (RuntimeException failure) { INVALID_PLANS.add(text); throw failure; }
-            }
-        };
         try (var tools = new ToolExecutionService(knowledge, null)) {
             for (String id : ids.stream().limit(2).toList()) {
                 sample(id,"tool_statistics",budget -> {
@@ -68,16 +53,6 @@ public final class S05ModelNativeValidation {
                             || !result.turn().text().contains("7") || !result.turn().text().contains("2") || !result.turn().text().contains("5")) throw new AssertionError("tool fact mismatch");
                     return Map.of("route",result.turn().route(),"tool_events",result.exchanges(),"answer",result.turn().text());
                 });
-                var plans = new ArrayList<TaskPlan>();
-                for (boolean dependent : List.of(false,true)) sample(id,dependent ? "plan_dependent" : "plan_parallel",budget -> {
-                    String topic = dependent ? "必须先研究文档结论，再让analysis根据research的结果解释统计；report汇合两者。" : "研究文档与分析知识库统计互不依赖，research与analysis都无前置条件，report汇合。";
-                    var result = gateway.structured("PLANNING",ModelRegistry.Selection.exact(id),ModelInput.fixed("Planner：输出受限依赖计划，不执行任意指令。",List.of(),topic),budget,planner);
-                    var analysis = result.value().steps().stream().filter(s -> s.action().equals("analysis")).findFirst().orElseThrow();
-                    var research = result.value().steps().stream().filter(s -> s.action().equals("research")).findFirst().orElseThrow();
-                    if (result.turn().mock() || dependent != analysis.dependsOn().contains("research") || !research.dependsOn().isEmpty()) throw new AssertionError("dependency mismatch");
-                    plans.add(result.value()); return Map.of("route",result.turn().route(),"plan",result.value());
-                });
-                if (plans.size() == 2 && plans.get(0).equals(plans.get(1))) throw new AssertionError("plans not dynamic");
             }
         }
         var metadata = new LinkedHashMap<String,Object>(); metadata.put("layer","REAL_MODEL_SYNTHETIC_PORT");
@@ -86,7 +61,7 @@ public final class S05ModelNativeValidation {
         metadata.put("failed",RESULTS.stream().filter(r -> r.get("status").equals("FAIL")).count());
         metadata.put("not_verified",List.of("real SQL plus model end-to-end", "cross-process crash recovery", "full quality qualification", "real automatic failover"));
         Files.createDirectories(Path.of("var/stage-S05"));
-        Files.writeString(Path.of("var/stage-S05/model-native-results.json"),JSON.writerWithDefaultPrettyPrinter().writeValueAsString(Map.of("metadata",metadata,"cases",RESULTS,"invalid_synthetic_plans",INVALID_PLANS)));
+        Files.writeString(Path.of("var/stage-S05/model-native-results.json"),JSON.writerWithDefaultPrettyPrinter().writeValueAsString(Map.of("metadata",metadata,"cases",RESULTS)));
         System.out.println(JSON.writeValueAsString(metadata));
         if (ids.isEmpty() || RESULTS.stream().anyMatch(r -> r.get("status").equals("FAIL"))) System.exit(1);
     }
