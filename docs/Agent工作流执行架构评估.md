@@ -1,5 +1,7 @@
 # Agent 工作流执行架构评估
 
+实施状态（2026-10-09）：已落地 PPT 固定绑定 ReAct、结构化下一动作选择、动作观察持久化、一次局部返工及历史任务兼容。新 PPT 不调用 Planner；新增学习自测和资料整编，分别固定绑定 `learning-quiz@1 / FIXED / quiz-fixed-v1`、`knowledge-compilation@1 / FIXED / compilation-fixed-v1`，使用固定 Graph/Workflow + Skill，不调用 Planner。多阶段模型调用按预定义顺序执行，不等同于自主多 Agent 协作；其他新架构路由暂未登记，旧 FAQ／研究报告／视频保持兼容实现。实际类、限制及恢复规则见 [AI 模块说明](../lab-ai/README.md)。以下保留实施前的研究结论与取舍，不作为当前功能清单。
+
 研究日期：2026-10-09。范围：ReAct、Plan & Execute、固定工作流、多 Agent 协作，以及按业务工作流固定选择执行策略的可行性。以下“来源事实”来自一手资料；“项目建议”属于设计推断，不能视为框架对当前项目的保证。
 
 ## 结论

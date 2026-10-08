@@ -168,13 +168,26 @@ public final class SkillCatalog {
      * 新任务固定目录契约，所需别名不存在时在首次模型调用前失败。
      */
     public TaskExecutionBinding pptBinding(Map<String, String> contracts) {
-        var skill = skills.get(pptSkill);
-        if (skill == null) throw new LabException("SKILL_UNAVAILABLE", "PPT Skill未启用");
+        return binding(pptSkill, "ppt-actions-v1", contracts);
+    }
+
+    public TaskExecutionBinding learningBinding(String type, Map<String, String> contracts) {
+        String id = switch (type) {
+            case "QUIZ_GENERATION" -> "learning-quiz";
+            case "KNOWLEDGE_COMPILATION" -> "knowledge-compilation";
+            default -> throw new IllegalArgumentException("未知学习工作流");
+        };
+        return binding(id, "fixed-learning-v1", contracts);
+    }
+
+    private TaskExecutionBinding binding(String id, String policy, Map<String, String> contracts) {
+        var skill = skills.get(id);
+        if (skill == null) throw new LabException("SKILL_UNAVAILABLE", "任务所需Skill未启用");
         if (!contracts.keySet().containsAll(skill.allowedTools()))
             throw new LabException("SKILL_TOOL_UNAVAILABLE", "Skill依赖的工具未注册");
         var selected = new TreeMap<String, String>();
         skill.allowedTools().forEach(name -> selected.put(name, contracts.get(name)));
-        return new TaskExecutionBinding(1, skill.id(), skill.version(), hash(skill.resources(), skill.allowedTools()), skill.resources(), skill.allowedTools(), selected, "ppt-actions-v1");
+        return new TaskExecutionBinding(1, skill.id(), skill.version(), hash(skill.resources(), skill.allowedTools()), skill.resources(), skill.allowedTools(), selected, policy);
     }
 
     private static String hash(Map<String, String> resources, Set<String> allowed) {
@@ -182,7 +195,7 @@ public final class SkillCatalog {
     }
 
     public static void verify(TaskExecutionBinding binding) {
-        if (binding.schemaVersion() != 1 || !"ppt-actions-v1".equals(binding.actionPolicyVersion())
+        if (binding.schemaVersion() != 1 || !Set.of("ppt-actions-v1", "fixed-learning-v1").contains(binding.actionPolicyVersion())
                 || !binding.skillHash().equals(hash(binding.resources(), binding.allowedTools())) || !binding.resources().containsKey("SKILL.md")
                 || !binding.toolContracts().keySet().equals(binding.allowedTools()))
             throw new LabException("SKILL_SNAPSHOT_INVALID", "Skill快照不完整或版本不兼容");

@@ -105,7 +105,16 @@ public class ReportTaskWorker {
     /**
      * 失败与暂停都在安全边界停止，既有成功检查点不重放。
      */
+    private com.example.ailab.ai.workflows.support.FixedLearningWorker learning;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void learning(com.example.ailab.ai.workflows.support.FixedLearningWorker learning) { this.learning = learning; }
+
     private void run(TaskLease lease) {
+        if (Learning.supports(lease.request().taskType())) {
+            if (learning == null) tasks.fail(lease, "WORKFLOW_EXECUTOR_UNAVAILABLE");
+            else learning.run(lease);
+            return;
+        }
         WorkerLogging.run(lease, runId -> runObserved(lease, runId));
     }
 

@@ -10,7 +10,7 @@
     </select>
 
     <insert id="createAiTasksInsert" useGeneratedKeys="true" keyProperty="insert.id" keyColumn="id">
-        INSERT INTO ai_tasks(requester_user_id,task_type,request_json,request_hash,tool_calls,model_repairs) VALUES(#{insert.args[0]},#{insert.args[1]},#{insert.args[2]},#{insert.args[3]},0,0)
+        INSERT INTO ai_tasks(requester_user_id,task_type,request_json,request_hash,tool_calls,model_repairs,model_turn_limit,model_attempt_limit,tool_call_limit) VALUES(#{insert.args[0]},#{insert.args[1]},#{insert.args[2]},#{insert.args[3]},0,0,#{insert.args[4]},#{insert.args[5]},#{insert.args[6]})
     </insert>
 
     <insert id="createTaskStepProgressWrite">
@@ -62,7 +62,7 @@
     </update>
 
     <update id="claimInternalAiTasksWrite2">
-        UPDATE ai_tasks SET status='FAILED',error_code='BUDGET_EXCEEDED',fencing_token=fencing_token+1,state_version=state_version+1,worker_id=NULL,lease_until=NULL WHERE status IN ('QUEUED','RUNNING') AND (total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6)))&gt;=1200 OR status='RUNNING' AND attempt&gt;=3 AND lease_until&lt;CURRENT_TIMESTAMP(6) OR task_type NOT IN ('NOTES_PPT','NOTES_VIDEO') AND (model_attempts&gt;=10 OR model_turns&gt;=6) AND completed_steps&lt;3 AND (status='QUEUED' OR lease_until&lt;CURRENT_TIMESTAMP(6)))
+        UPDATE ai_tasks SET status='FAILED',error_code='BUDGET_EXCEEDED',fencing_token=fencing_token+1,state_version=state_version+1,worker_id=NULL,lease_until=NULL WHERE status IN ('QUEUED','RUNNING') AND (total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6)))&gt;=1200 OR status='RUNNING' AND attempt&gt;=3 AND lease_until&lt;CURRENT_TIMESTAMP(6) OR task_type NOT IN ('NOTES_PPT','NOTES_VIDEO','QUIZ_GENERATION','KNOWLEDGE_COMPILATION') AND (model_attempts&gt;=model_attempt_limit OR model_turns&gt;=model_turn_limit) AND completed_steps&lt;3 AND (status='QUEUED' OR lease_until&lt;CURRENT_TIMESTAMP(6)))
     </update>
 
     <update id="claimInternalTaskStepProgressWrite2">
@@ -102,11 +102,11 @@
     </update>
 
     <update id="reserveModelAttemptAiTasksWrite">
-        UPDATE ai_tasks SET model_attempts=model_attempts+1 WHERE id=#{args[0]} AND model_attempts&lt;IF(task_type IN ('NOTES_PPT','NOTES_VIDEO'),36,10)
+        UPDATE ai_tasks SET model_attempts=model_attempts+1 WHERE id=#{args[0]} AND model_attempts&lt;model_attempt_limit
     </update>
 
     <update id="reserveModelTurnAiTasksWrite">
-        UPDATE ai_tasks SET model_turns=model_turns+1 WHERE id=#{args[0]} AND model_turns&lt;IF(task_type IN ('NOTES_PPT','NOTES_VIDEO'),24,6)
+        UPDATE ai_tasks SET model_turns=model_turns+1 WHERE id=#{args[0]} AND model_turns&lt;model_turn_limit
     </update>
 
     <select id="checkpointTaskStepsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
@@ -166,7 +166,7 @@
     </insert>
 
     <update id="reserveToolCallAiTasksWrite">
-        UPDATE ai_tasks SET tool_calls=tool_calls+1 WHERE id=#{args[0]} AND tool_calls&lt;CASE task_type WHEN 'NOTES_PPT' THEN 40 WHEN 'NOTES_VIDEO' THEN 24 ELSE 8 END
+        UPDATE ai_tasks SET tool_calls=tool_calls+1 WHERE id=#{args[0]} AND tool_calls&lt;tool_call_limit
     </update>
 
     <update id="reserveModelRepairAiTasksWrite">
@@ -202,7 +202,7 @@
     </update>
 
     <select id="artifactArtifactsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
-        SELECT a.* FROM artifacts a JOIN ai_tasks t ON t.id=a.task_id WHERE a.id=#{args[0]} AND a.requester_user_id=#{args[1]} AND a.published=TRUE AND t.status IN ('SUCCEEDED','PARTIAL','MEDIA_READY','WAITING_MEDIA_REVIEW')
+        SELECT a.*,f.baseline_json AS fixed_baseline,f.baseline_hash AS fixed_baseline_hash FROM artifacts a JOIN ai_tasks t ON t.id=a.task_id LEFT JOIN task_fixed_workflow_runs f ON f.task_id=t.id WHERE a.id=#{args[0]} AND a.requester_user_id=#{args[1]} AND a.published=TRUE AND t.status IN ('SUCCEEDED','PARTIAL','MEDIA_READY','WAITING_MEDIA_REVIEW')
     </select>
 
     <select id="validAiTasksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
@@ -210,6 +210,6 @@
     </select>
 
     <select id="taskTaskStepProgressSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
-        SELECT * FROM task_step_progress WHERE task_id=#{args[0]} ORDER BY FIELD(step_id,'prepare','research','analysis','report','publish')
+        SELECT * FROM task_step_progress WHERE task_id=#{args[0]} ORDER BY FIELD(step_id,'prepare','research','analysis','report','extract','organize','generate','review','publish')
     </select>
 </mapper>

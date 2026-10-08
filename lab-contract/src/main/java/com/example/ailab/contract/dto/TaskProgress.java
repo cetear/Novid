@@ -13,10 +13,18 @@ public record TaskProgress(String stage, String message, boolean workerEnabled, 
         return List.of("prepare", "research", "analysis", "report", "publish");
     }
 
+    public static List<String> stepIds(String type) {
+        return Learning.supports(type) ? List.of("prepare", "extract", "organize", "generate", "review", "publish") : stepIds();
+    }
+
     /** 标签由程序生成，客户端和模型均不能指定用户可见执行步骤。 */
     public static String label(String id) {
         return switch (id) {
             case "prepare" -> "读取并核验资料";
+            case "extract" -> "提取考点与知识内容";
+            case "organize" -> "组织考点或统一目录";
+            case "generate" -> "生成题目或整编章节";
+            case "review" -> "质检与局部修复";
             case "research" -> "整理资料要点";
             case "analysis" -> "统计与分析";
             case "report" -> "生成 FAQ／报告";
@@ -71,6 +79,10 @@ public record TaskProgress(String stage, String message, boolean workerEnabled, 
                     message = "执行租约已过期，等待后台恢复；已完成步骤保留";
                 } else {
                     stage = current.contains("publish") ? "PUBLISHING"
+                            : current.contains("review") ? "REVIEWING"
+                            : current.contains("generate") ? "GENERATING"
+                            : current.contains("organize") ? "ORGANIZING"
+                            : current.contains("extract") ? "EXTRACTING"
                             : current.contains("report") ? "GENERATING_REPORT"
                             : current.contains("research") || current.contains("analysis") ? "ANALYZING"
                             : current.contains("prepare") ? "PREPARING" : "STARTING";

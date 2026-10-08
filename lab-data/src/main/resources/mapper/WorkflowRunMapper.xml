@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.ailab.data.persistence.mapper.WorkflowRunMapper">
+    <select id="eligible" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT workflow_binding_eligible FROM ai_tasks WHERE id=#{args[0]}
+    </select>
+    <select id="binding" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT binding_hash,binding_json FROM task_workflow_bindings WHERE task_id=#{args[0]}
+    </select>
+    <insert id="bind">
+        INSERT INTO task_workflow_bindings(task_id,binding_hash,binding_json) VALUES(#{args[0]},#{args[1]},#{args[2]})
+    </insert>
+    <select id="actions" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT action_hash,action_json FROM task_workflow_actions WHERE task_id=#{args[0]} ORDER BY action_sequence
+    </select>
+    <insert id="start">
+        INSERT INTO task_workflow_actions(task_id,action_sequence,action_hash,action_json) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]})
+    </insert>
+    <update id="complete">
+        UPDATE task_workflow_actions SET action_hash=#{args[0]},action_json=#{args[1]},completed_at=CURRENT_TIMESTAMP(6)
+        WHERE task_id=#{args[2]} AND action_sequence=#{args[3]} AND action_hash=#{args[4]} AND completed_at IS NULL
+    </update>
+    <update id="consumeRework">
+        UPDATE ai_tasks SET media_reworks=media_reworks+1 WHERE id=#{args[0]} AND media_reworks&lt;1
+    </update>
+    <update id="executing">
+        UPDATE ai_tasks SET media_phase='EXECUTING_AGENTS' WHERE id=#{args[0]}
+    </update>
+</mapper>

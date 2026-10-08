@@ -1,17 +1,35 @@
 # AI 模块目录与维护说明
 
-本模块按“执行机制、业务工作流、共享能力”组织 Java 包，测试目录与对应职责一致。目录整理不改变现有任务策略、审批、费用、模型调用及恢复规则。
+## 固定学习工作流（2026-10-09）
+
+普通任务队列由 `ReportTaskWorker` 领取，按类型分派到 `FixedLearningWorker.run()`。Java 在首次模型调用前绑定架构、Skill、授权原文区间、来源版本／处理代次与预算；通用 `FixedWorkflowExecutor` 负责节点输入摘要、结果校验与复用，业务固定步骤在 `QuizWorkflow`、`KnowledgeCompilationWorkflow` 中定义。两者不进入旧 `FixedReportPlan`／Planner 或 DAG 调度器，顺序执行，无运行时自动角色发现。
+
+共用六阶段：准备 → 分批提取 → 组织 → 生成 → 质检 → 发布。自测组织阶段生成固定题目 ID 和知识点映射，生成答案及解析；整编生成目录与 `MERGE / COMPLEMENT / CONFLICT` 分组，每个提取条目恰好分配一组，再逐章生成。质检使用完整原文、条目和生成结果；自测附加本地重复题／选项检查。最多一次受影响题目或章节局部重写后重新质检，不通过则失败，不发布降级结果。
+
+`LearningSourceReader` 完整读取 1～6 文档，最多 24,000 UTF-8 字节、12 批、64 个提取条目，原文区间为 UTF-16 左闭右开。超限／空白资料在模型调用前拒绝；模型容量不足同样失败，不静默截断。条目引文必须是对应批次原文子串；整编程序检查条目分配完整，但不能机械保证提取覆盖所有知识，教学准确性仍需人工确认。
+
+`FixedWorkflowRepository` 在任务租约锁下保存不可变基线与节点、幂等唯一返工额度，发布事务同时核验全部原文读取节点、来源和结果检查点。完成批次／章节恢复时直接复用；待完成模型调用可能再次执行，恢复不重置持久额度。查询结构化结果和下载 Markdown 都重新验证本人权限、原文版本、处理代次及摘要。
+
+V20 增加两张固定流程检查点表和任务额度列。自测预算 24 轮／36 尝试／32 工具，整编 32／48／32 工具，截止均为整任务 20 分钟。结果接口为 `GET /api/v1/tasks/{id}/result`，产物沿用私人下载；`qualityStatus` 为模型质检通过但人工待验，`fullSourceRead` 仅表明完整读取。旧 TaskRequest JSON／幂等摘要与 PPT 观察摘要排除新增空选项，避免影响历史任务恢复。
+
+契约在 `lab-contract/dto/Learning.java` 和 `FixedWorkflowStorePort`；创建参数在 `TaskApplicationService` 校验，HTTP 在 `TaskController`；V20、Mapper 及持久化在 `lab-data`。首版不含评分／错题本或 Word／PDF 导出。实际接口见 [联调说明](../docs/前端接口与联调说明.md)。
+
+本模块按“执行机制、业务工作流、共享能力”组织 Java 包，测试目录与对应职责一致。PPT 内容制作按服务端登记的 ReAct 架构执行，审批、生图、导出沿用原媒体链路；学习自测和资料整编按固定 Graph/Workflow + Skill 执行。
 
 ```text
 com.example.ailab.ai/
 ├─ orchestration/               执行机制，可由不同业务工作流组合使用
+│  ├─ WorkflowRouter.java       工作流固定绑定架构与执行器版本
 │  ├─ react/                    受限动作与工具反馈循环
 │  ├─ planexecute/              模型计划的角色登记、Schema 和校验
 │  ├─ fixed/                    程序定义的固定流程
 │  ├─ multiagent/               多角色依赖调度与结果汇合
 │  └─ support/                  编排共用的 Worker 日志上下文
 ├─ workflows/                   业务资料、角色输入、检查点和生命周期
-│  ├─ report/                   FAQ／研究报告工作流
+│  ├─ report/                   旧 FAQ／研究报告与普通任务队列分派
+│  ├─ quiz/                     学习自测蓝图、题目、质检及局部修复
+│  ├─ compilation/              分类目录、章节融合及局部修复
+│  ├─ support/                  固定学习 Worker、原文、协议和 Markdown
 │  └─ media/                    PPT／视频工作流、预览与本地执行
 ├─ model/                       Chat／Embedding 网关、模型路由、结构化输出
 ├─ media/                       外部图片／视频协议及能力配置
@@ -32,7 +50,15 @@ com.example.ailab.ai/
 | 职责 | 类与方法 | 当前位置 |
 |---|---|---|
 | ReAct 风格工具循环 | `BoundedToolLoop.run()` | `orchestration/react/BoundedToolLoop.java` |
+| 工作流架构登记 | `WorkflowRouter.route()`、`verify()` | `orchestration/WorkflowRouter.java` |
+| 受控动作循环 | `ReActExecutor.run()`、`ReActActionSchema` | `orchestration/react/` |
+| PPT ReAct 内容制作 | `PptReActWorkflow.run()` | `workflows/media/PptReActWorkflow.java` |
 | 计划协议与校验 | `AgentRegistry`、`PlanSchema`、`PlanValidator` | `orchestration/planexecute/` |
+| 固定节点执行与复用 | `FixedWorkflowExecutor.node()` | `orchestration/fixed/FixedWorkflowExecutor.java` |
+| 学习任务协调 | `FixedLearningWorker.run()`、`LearningSession.extract()`、`publish()` | `workflows/support/` |
+| 学习自测 | `QuizWorkflow.run()` | `workflows/quiz/QuizWorkflow.java` |
+| 资料整编 | `KnowledgeCompilationWorkflow.run()` | `workflows/compilation/KnowledgeCompilationWorkflow.java` |
+| 学习结构化协议与渲染 | `LearningSchemas`、`LearningRenderer`、`RecordSchema` | `workflows/support/`、`model/` |
 | 固定报告步骤 | `FixedReportPlan.steps()` | `orchestration/fixed/FixedReportPlan.java` |
 | 多角色协作 | `AgentDagExecutor.submit()`、`await()` | `orchestration/multiagent/AgentDagExecutor.java` |
 | 报告任务协调 | `ReportTaskWorker` | `workflows/report/ReportTaskWorker.java` |
@@ -48,11 +74,19 @@ com.example.ailab.ai/
 
 ## 当前实现与后续扩展
 
-当前报告保留原 `FIXED`／`PLANNED` 分支；PPT 保留模型规划、角色协作及研究环节的工具循环。目录中存在某种模式的代码，不表示已经实现工作流路由器或完整、可恢复的 PPT ReAct 执行器。本次整理没有移除 PPT Planner，也没有改变外部 `TaskRequest.strategy`。
+`NOTES_PPT` 新任务固定绑定 `notes-ppt@1 / REACT / ppt-react-v1`。绑定及 Skill 快照在资料摘要的首次模型调用前保存；恢复只验证已保存版本，不按最新配置重新分配架构。另登记 `QUIZ_GENERATION → learning-quiz@1 / FIXED / quiz-fixed-v1`、`KNOWLEDGE_COMPILATION → knowledge-compilation@1 / FIXED / compilation-fixed-v1`。其余架构保留枚举及原目录，视频与旧 FAQ／研究报告沿原实现执行。
+
+PPT 控制器每轮读取当前观察，结构化选择 `research/content/layout/visual/review/repair/finish` 中的当前可用动作，再由共用角色实现执行。程序强制内容、布局及最新质检齐全，必要事实图研究完成后才允许质检；本地版式预检可以把模型自报 ACCEPT 改为 REPAIR。最多 12 个动作、一次语义返工，继续共享原 24 逻辑轮、36 尝试及整任务截止，不重新分配额度。
+
+`repair` 按问题步骤使旧观察及下游失效，未受影响的观察保留。新 PPT 不调用初始 Planner 或返工 Planner，不写 `media_plans`；只声明内存中的角色结果协议，实际次序保存在动作日志。旧 `GET /api/v1/tasks/{id}/media-plans` 查询对新 ReAct 任务返回空，不伪造模型计划。预览的旧字段 `planVersion` 对新 PPT 表示初版／返工内容版本（1／2）；请求仍兼容 `strategy=PLANNED`，这个旧字段不选择执行架构。
+
+V19 新增工作流绑定与动作表，并以新增任务标记隔离历史任务。V19 前创建的 PPT 保留原 Planner 及检查点；新任务若已存在旧 Skill／计划事实也固定 legacy 执行器。原批准、生图及导出路径继续复用原操作，不由 ReAct 控制器发起支付。
+
+动作决策先保存为 PENDING，再执行并保存 COMPLETED 观察。恢复重放已完成观察，未完成动作沿原决策继续，不重复调用控制器。完成记录提交前中断的模型请求或只读工具可能再次执行，仍消费原持久预算；不承诺远程模型调用恰好一次。数据仓库 `WorkflowRunRepository` 核验租约、fencing、连续序号和摘要，返工额度与 repair 决策同事务消费。
 
 新增工作流时，业务输入、角色指令和状态迁移放入 `workflows/<业务名>`；动作循环、计划调度等可复用机制放入对应 `orchestration` 子包。模型、工具、Skill、预算和费用保持共用，不能为每种模式复制一份。
 
-未来的执行策略路由入口应独立登记工作流版本、执行模式和执行器版本，再调用对应机制；它不属于某一个具体模式。可靠 ReAct 仍需增加动作级运行记录、PPT 受控动作及旧任务兼容，方案见项目文档 `docs/Agent工作流执行架构评估.md`。
+新增架构时先增加真实执行器，再在 `WorkflowRouter` 登记工作流版本；保留旧执行器版本以恢复历史任务。不要只新增枚举就声称该架构可执行。原始设计评估见 `docs/Agent工作流执行架构评估.md`。
 
 ## 维护约定
 

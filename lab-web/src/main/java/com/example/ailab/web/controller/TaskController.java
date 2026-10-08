@@ -21,7 +21,12 @@ import java.net.URI;
 public class TaskController {
     public record Create(@NotBlank String taskType, @NotBlank @Size(max = 1000) String topic, ScopeRequest scope,
                          @NotEmpty @Size(max = 6) List<@NotNull @Positive Long> documentIds, String strategy,
-                         Media.PresentationOptions presentationOptions, Media.VideoOptions videoOptions) {
+                         Media.PresentationOptions presentationOptions, Media.VideoOptions videoOptions,
+                         Learning.QuizOptions quizOptions, Learning.CompilationOptions compilationOptions) {
+        public Create(String type, String topic, ScopeRequest scope, List<Long> ids, String strategy,
+                       Media.PresentationOptions ppt, Media.VideoOptions video) {
+            this(type, topic, scope, ids, strategy, ppt, video, null, null);
+        }
         /**
          * 旧五参数JSON／测试构造继续使用普通任务语义。
          */
@@ -54,7 +59,7 @@ public class TaskController {
      */
     @PostMapping("/tasks")
     public ResponseEntity<TaskSnapshot> create(Authentication a, @Valid @RequestBody Create r, @RequestHeader("Idempotency-Key") String key) {
-        var task = service.create(CurrentUser.from(a), new TaskRequest(r.taskType(), r.topic(), r.scope() == null ? ScopeRequest.self() : r.scope(), r.documentIds(), key, r.strategy(), r.presentationOptions(), r.videoOptions()));
+        var task = service.create(CurrentUser.from(a), new TaskRequest(r.taskType(), r.topic(), r.scope() == null ? ScopeRequest.self() : r.scope(), r.documentIds(), key, r.strategy(), r.presentationOptions(), r.videoOptions(), r.quizOptions(), r.compilationOptions()));
         // 立即返回任务和真实进度入口，客户端不要阻塞等待最终产物或重复创建任务。
         return ResponseEntity.accepted().location(URI.create("/api/v1/tasks/" + task.taskId()))
                 .header("Retry-After", "2").header("Cache-Control", "no-store").body(task);
@@ -76,6 +81,12 @@ public class TaskController {
         return service.plan(CurrentUser.from(a), id)
                 .map(p -> ResponseEntity.ok().header("Cache-Control", "no-store").body(p))
                 .orElseGet(() -> ResponseEntity.noContent().header("Cache-Control", "no-store").build());
+    }
+
+    /** 仅发布成功后的结构化学习结果；答案属于本人私人结果，不作为考试保密接口。 */
+    @GetMapping(value="/tasks/{id}/result", produces=MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<String> result(Authentication a, @PathVariable long id) {
+        return ResponseEntity.ok().header("Cache-Control", "no-store").body(service.result(CurrentUser.from(a), id));
     }
 
     /**

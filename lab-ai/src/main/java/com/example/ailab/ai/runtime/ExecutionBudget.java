@@ -29,6 +29,15 @@ public final class ExecutionBudget {
         return this;
     }
 
+    /** 固定学习工作流共享持久额度，恢复不获得新预算。 */
+    public ExecutionBudget learning(String type) {
+        if (!com.example.ailab.contract.dto.Learning.supports(type)) throw new IllegalArgumentException("未知学习工作流");
+        var limits = com.example.ailab.contract.dto.Learning.Limits.forType(type);
+        if (maxAttempts != limits.attempts()) throw new IllegalArgumentException("固定工作流尝试预算不匹配");
+        maxTurns = limits.turns(); maxTools = limits.tools(); maximumWaitSeconds = 120;
+        return this;
+    }
+
     private Runnable toolJournal = () -> {
     }, repairJournal = () -> {
     };

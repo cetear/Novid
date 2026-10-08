@@ -1,5 +1,6 @@
 SKILL.md
 references/planning.md
+references/react.md
 references/content.md
 references/layout.md
 references/review.md

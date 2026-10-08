@@ -1,1 +1,3 @@
 ppt-generation
+learning-quiz
+knowledge-compilation

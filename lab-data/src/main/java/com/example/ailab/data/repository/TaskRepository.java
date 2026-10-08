@@ -51,10 +51,11 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     public TaskSnapshot create(UserContext actor, TaskRequest request) {
         sql.actor(actor, true);
         // FIXED保留S04之前的规范JSON，旧幂等键不能因增加可选字段而参数冲突。
-        var canonical = json.valueToTree(new TaskRequest(request.taskType(), request.topic(), request.scope(), request.documentIds().stream().distinct().sorted().toList(), request.idempotencyKey(), request.strategy(), request.presentationOptions(), request.videoOptions()));
+        var canonical = json.valueToTree(new TaskRequest(request.taskType(), request.topic(), request.scope(), request.documentIds().stream().distinct().sorted().toList(), request.idempotencyKey(), request.strategy(), request.presentationOptions(), request.videoOptions(), request.quizOptions(), request.compilationOptions()));
         if (request.strategy().equals("FIXED")) ((com.fasterxml.jackson.databind.node.ObjectNode) canonical).remove("strategy");
         // 老FAQ／报告幂等JSON不因新增媒体可选字段变化。
         if (!media(request.taskType())) ((com.fasterxml.jackson.databind.node.ObjectNode)canonical).remove(java.util.List.of("presentationOptions","videoOptions"));
+        if (!Learning.supports(request.taskType())) ((com.fasterxml.jackson.databind.node.ObjectNode)canonical).remove(java.util.List.of("quizOptions", "compilationOptions"));
         String serialized = encode(canonical), hash = SqlSupport.hash(serialized);
         var old = sql.project(mapper.createRequestDeduplicationsSelect(new Object[]{actor.userId(), request.idempotencyKey()}), (r, n) -> Map.entry(r.string(1), r.longValue(2)));
         if (!old.isEmpty()) {
@@ -63,9 +64,11 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
         }
         if (sql.scalar(mapper.createAiTasksSelect(new Object[]{actor.userId()}), Long.class) >= 20)
             throw new LabException("RATE_LIMITED", "未完成任务数量超过限额");
-        long id = sql.insert(command -> mapper.createAiTasksInsert(command), actor.userId(), request.taskType(), serialized, hash);
+        var limits = Learning.Limits.forType(request.taskType());
+        long id = sql.insert(command -> mapper.createAiTasksInsert(command), actor.userId(), request.taskType(), serialized, hash,
+                limits.turns(), limits.attempts(), limits.tools());
         // 与任务创建同事务初始化步骤，202 返回时就有完整的待执行列表。
-        for (String step : TaskProgress.stepIds())
+        for (String step : TaskProgress.stepIds(request.taskType()))
             mapper.createTaskStepProgressWrite(new Object[]{id, step});
         mapper.createRequestDeduplicationsWrite(new Object[]{actor.userId(), request.idempotencyKey(), hash, id});
         return read(actor, id);
@@ -162,7 +165,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public void beginStep(TaskLease lease, String stepId) {
         valid(lease);
-        if (!TaskProgress.stepIds().contains(stepId)) throw LabException.invalid("未知任务步骤");
+        if (!TaskProgress.stepIds(lease.request().taskType()).contains(stepId)) throw LabException.invalid("未知任务步骤");
         int changed = mapper.beginStepTaskStepProgressWrite(new Object[]{lease.task().taskId(), stepId});
         if (changed > 0) progressChanged(lease);
     }
@@ -176,7 +179,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     }
 
     /** 调用方处于有效短事务内，进度变化递增版本用于客户端识别新事实。 */
-    private void progressChanged(TaskLease lease) {
+    void progressChanged(TaskLease lease) {
         mapper.progressChangedAiTasksWrite(new Object[]{lease.task().taskId()});
     }
 
@@ -296,7 +299,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public int remainingModelTurns(TaskLease lease) {
         valid(lease);
-        return (media(lease.request().taskType())?24:6)-sql.scalar(mapper.remainingModelTurnsAiTasksSelect(new Object[]{lease.task().taskId()}), Integer.class);
+        return Learning.Limits.forType(lease.request().taskType()).turns()-sql.scalar(mapper.remainingModelTurnsAiTasksSelect(new Object[]{lease.task().taskId()}), Integer.class);
     }
 
     /** 当前租约下恢复唯一计划；已成功节点仍由原检查点复用。 */
@@ -418,7 +421,9 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
      */
     public ArtifactSnapshot artifact(UserContext actor, long id) {
         sql.actor(actor, false);
-        var result = sql.project(mapper.artifactArtifactsSelect(new Object[]{id, actor.userId()}), (r, n) -> new ArtifactSnapshot(r.longValue("id"), actor.userId(), r.longValue("task_id"), r.string("filename"), r.string("mime"), r.string("content"), sources(r.string("source_json")),r.string("kind"),(Long)r.value("byte_size"),r.string("checksum"),r.string("storage_key"),r.string("media_operation_id"),r.intValue("revision"),(Integer)r.value("preview_version"))).stream().findFirst().orElseThrow(LabException::denied);
+        var result = sql.project(mapper.artifactArtifactsSelect(new Object[]{id, actor.userId()}), (r, n) -> {
+            FixedWorkflowRepository.verifyArtifactBaseline(r, actor, docs);
+            return new ArtifactSnapshot(r.longValue("id"), actor.userId(), r.longValue("task_id"), r.string("filename"), r.string("mime"), r.string("content"), sources(r.string("source_json")),r.string("kind"),(Long)r.value("byte_size"),r.string("checksum"),r.string("storage_key"),r.string("media_operation_id"),r.intValue("revision"),(Integer)r.value("preview_version")); }).stream().findFirst().orElseThrow(LabException::denied);
         docs.verifySources(all(actor), result.sourceDependencies());
         return result;
     }
@@ -455,7 +460,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
         var steps = sql.project(mapper.taskTaskStepProgressSelect(new Object[]{id}), (step, row) ->
                 new TaskStepSnapshot(step.string("step_id"), TaskProgress.label(step.string("step_id")),
                         step.string("status"), instant(step, "started_at"), instant(step, "completed_at"), step.string("error_code")));
-        if (steps.size() != TaskProgress.stepIds().size()) throw new IllegalStateException("任务步骤进度不完整");
+        if (steps.size() != TaskProgress.stepIds(r.string("task_type")).size()) throw new IllegalStateException("任务步骤进度不完整");
         Instant now = instant(r, "server_now"), leaseUntil = instant(r, "lease_until"), claimedAt = instant(r, "claimed_at");
         boolean leaseActive = leaseUntil != null && leaseUntil.isAfter(now);
         // 自动失败/撤销的历史行可能仍有 claimed_at，终止后用更新时间冻结计时。
@@ -464,7 +469,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
                 : Math.max(0, Duration.between(claimedAt, measuredAt).getSeconds()));
         var progress = media(r.string("task_type")) ? TaskProgress.media(r.string("status"), r.string("media_phase"), mediaWorkerEnabled, leaseActive, steps, instant(r,"started_at"), instant(r,"updated_at"), instant(r,"heartbeat_at"), elapsed) : TaskProgress.from(r.string("status"), workerEnabled, leaseActive, steps,
                 instant(r, "started_at"), instant(r, "updated_at"), instant(r, "heartbeat_at"), elapsed);
-        return new TaskSnapshot(id, r.longValue("requester_user_id"), r.string("task_type"), r.string("status"), r.longValue("state_version"), r.intValue("model_attempts"), r.intValue("completed_steps"), r.string("error_code"), (Long) r.value("artifact_id"), progress,coverage(id));
+        return new TaskSnapshot(id, r.longValue("requester_user_id"), r.string("task_type"), r.string("status"), r.longValue("state_version"), r.intValue("model_attempts"), Learning.supports(r.string("task_type")) ? progress.completedSteps() : r.intValue("completed_steps"), r.string("error_code"), (Long) r.value("artifact_id"), progress,coverage(id));
     }
 
     /** JDBC 使用 UTC 时区转换 TIMESTAMP，历史缺失时间保持 null。 */
