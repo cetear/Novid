@@ -44,13 +44,15 @@ public class TaskApplicationService {
     public TaskSnapshot create(UserContext actor, TaskRequest r) {
         if (TaskRequest.retired(r.taskType())) throw new LabException("WORKFLOW_RETIRED", "旧FAQ与研究报告已移除，请使用学习自测或资料整编");
         boolean mediaType = Set.of("NOTES_PPT", "NOTES_VIDEO").contains(r.taskType());
-        if (!TaskRequest.supported(r.taskType()) || r.topic() == null || r.topic().isBlank() || r.topic().length() > 1000 || r.documentIds().isEmpty() || r.documentIds().size() > 6 || r.documentIds().stream().anyMatch(id -> id == null || id <= 0))
+        if (!TaskRequest.supported(r.taskType()) || !r.documentDriven() && (r.topic() == null || r.topic().isBlank())
+                || r.topic() != null && r.topic().length() > 1000 || r.documentIds().isEmpty() || r.documentIds().size() > 6 || r.documentIds().stream().anyMatch(id -> id == null || id <= 0))
             throw LabException.invalid("支持PPT、视频、自测和资料整编，指定1～6份资料和有限主题");
-        // 学习任务固定执行；媒体兼容原strategy参数，实际架构由服务端选择。
-        if (!Set.of("FIXED", "PLANNED").contains(r.strategy()) || r.strategy().equals("PLANNED") && !mediaType)
-            throw LabException.invalid("学习任务strategy须为FIXED，媒体保留FIXED或PLANNED");
+        if (r.documentDriven() && r.topic() != null || !r.documentDriven() && r.remarks() != null
+                || r.remarks() != null && r.remarks().length() > 1000)
+            throw LabException.invalid("资料工作流只接受可选remarks；视频使用必填topic");
+        if (!r.strategy().equals(r.documentDriven() ? "FIXED" : "PLANNED"))
+            throw LabException.invalid("资料工作流由服务端固定执行；视频使用PLANNED");
         if (Learning.supports(r.taskType())) {
-            if (!r.strategy().equals("FIXED")) throw LabException.invalid("学习工作流由服务端固定分配FIXED架构");
             if (r.taskType().equals("QUIZ_GENERATION")) r.quizOptions().validate();
             else r.compilationOptions().validate();
         }
@@ -76,25 +78,22 @@ public class TaskApplicationService {
     }
 
     /**
-     * 查询本人已校验计划，未产生时为空；ADMIN没有私人旁路。
-     */
-    public java.util.Optional<TaskPlanSnapshot> plan(UserContext actor, long id) {
-        actor = policy.current(actor);
-        tasks.read(actor, id);
-        return tasks.readPlan(actor, id);
-    }
-
-    /**
      * 状态机由数据短事务执行，resume 不能作为用户确认。
      */
     public TaskSnapshot action(UserContext actor, long id, String action) {
         return tasks.action(policy.current(actor), id, action);
     }
 
-    private com.example.ailab.contract.port.FixedWorkflowStorePort fixed;
+    private ContentWorkflowStorePort content;
     @org.springframework.beans.factory.annotation.Autowired
-    public void fixedWorkflows(com.example.ailab.contract.port.FixedWorkflowStorePort fixed) { this.fixed = fixed; }
-    public String result(UserContext actor, long id) { return fixed.result(policy.current(actor), id); }
+    public void contentWorkflows(ContentWorkflowStorePort content) { this.content=content; }
+    public String result(UserContext actor, long id) {
+        return content.result(policy.current(actor), id);
+    }
+    public Optional<ContentWorkflow.Snapshot> contentPlan(UserContext actor,long id) {
+        actor=policy.current(actor);tasks.read(actor,id);
+        return content.readPlan(actor,id);
+    }
 
     /**
      * 本人产物同时复核来源。

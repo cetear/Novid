@@ -14,16 +14,14 @@ import java.util.*;
 public final class MediaSchemas {
     private static final ObjectMapper JSON = new ObjectMapper().enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
-    private static final Map<String, String> ROLES = Map.of("research", "ResearchWorker", "content", "PresentationContentWorker",
-            "layout", "PresentationLayoutWorker", "visual", "VisualResearchWorker", "script", "VideoScriptWorker",
-            "direction", "SceneDirectorWorker", "review", "TeachingReviewWorker");
+    private static final Map<String, String> ROLES = Map.of("research", "ResearchWorker", "script", "VideoScriptWorker", "direction", "SceneDirectorWorker", "review", "TeachingReviewWorker");
 
     /**
      * 提示、提供方结构和本地校验共用按任务绑定的动作白名单，顺序固定。
      */
     private static List<String> allowedActions(String taskType) {
-        return taskType.equals("NOTES_VIDEO") ? List.of("research", "script", "direction", "review")
-                : List.of("research", "content", "layout", "visual", "review");
+        if(!"NOTES_VIDEO".equals(taskType)) throw invalid("PLAN_ACTION");
+        return List.of("research", "script", "direction", "review");
     }
 
     /**
@@ -42,7 +40,6 @@ public final class MediaSchemas {
         if (plan.steps().size() > 8 || plan.steps().size() < 3) throw invalid("PLAN_STEP_COUNT");
         var ids = new HashMap<String, Media.Step>();
         var actions = new HashMap<String, Media.Step>();
-        boolean video = taskType.equals("NOTES_VIDEO");
         var allowed = allowedActions(taskType);
         for (var s : plan.steps()) {
             if (s.action() == null || !allowed.contains(s.action())) throw invalid("PLAN_ACTION");
@@ -52,11 +49,10 @@ public final class MediaSchemas {
                 throw invalid("PLAN_STEP_ID");
             if (s.dependsOn().size() > 7 || new HashSet<>(s.dependsOn()).size() != s.dependsOn().size()
                     || s.inputRefs().size() > 8) throw invalid("PLAN_DEPENDENCY");
-            if (s.when() == null || !Set.of("ALWAYS", "HAS_WEB_IMAGES").contains(s.when())
-                    || !s.when().equals("ALWAYS") && !s.action().equals("visual")) throw invalid("PLAN_WHEN");
+            if (s.when() == null || !"ALWAYS".equals(s.when())) throw invalid("PLAN_WHEN");
             if (!Objects.equals(s.completionCondition(), "VALID_TYPED_RESULT")) throw invalid("PLAN_COMPLETION");
         }
-        String first = video ? "script" : "content", second = video ? "direction" : "layout";
+        String first = "script", second = "direction";
         if (!actions.keySet().containsAll(Set.of(first, second, "review"))) throw invalid("PLAN_REQUIRED_ACTION");
         if (!actions.get(second).dependsOn().contains(actions.get(first).stepId()))
             throw invalid("PLAN_CONTENT_DEPENDENCY");
@@ -91,13 +87,16 @@ public final class MediaSchemas {
     }
 
     /**
-     * 每页／镜头稳定ID、白名单版式和有效引用，PPT最多12页，视频最多6镜头。
+     * 每页／镜头稳定ID、白名单版式和有效引用，PPT遵循内容计划，视频最多6镜头。
      */
     public static void validateUnits(List<Media.Unit> units, String taskType, Set<String> refs) {
-        if (units.isEmpty() || units.size() > (taskType.equals("NOTES_VIDEO") ? 6 : 12)) throw invalid();
+        validateUnits(units,taskType,refs,taskType.equals("NOTES_VIDEO")?6:512);
+    }
+    public static void validateUnits(List<Media.Unit> units,String taskType,Set<String> refs,int maximum) {
+        if (units.isEmpty() || units.size() > maximum) throw invalid();
         var ids = new HashSet<String>();
         for (var u : units) {
-            if (!u.unitId().matches("(slide|shot)-[1-9][0-9]?") || !ids.add(u.unitId()) || u.title() == null || u.title().isBlank() || u.title().length() > 200
+            if (!u.unitId().matches(taskType.equals("NOTES_VIDEO") ? "shot-[1-9][0-9]?" : "slide-[1-9][0-9]{0,2}") || !ids.add(u.unitId()) || u.title() == null || u.title().isBlank() || u.title().length() > 200
                     || u.text() == null || !taskType.equals("NOTES_VIDEO") && u.text().isBlank() || u.text().length() > 3000 || u.notes() == null || u.notes().length() > 1500
                     || !Set.of("TITLE", "TEXT", "TWO_COLUMN", "IMAGE_TEXT", "SCENE").contains(u.layout())
                     || !Set.of("NONE", "GENERATED", "WEB_SEARCH").contains(u.imageMode()) || u.imagePrompt() == null || u.imagePrompt().length() > 1000
@@ -132,11 +131,11 @@ public final class MediaSchemas {
                 Map.entry("PLAN_ROLE", "agentId必须与该action的登记角色完全一致。"),
                 Map.entry("PLAN_STEP_ID", "stepId须为小写英文开头的稳定标识且不可重复，每种action最多一个节点。"),
                 Map.entry("PLAN_DEPENDENCY", "dependsOn只能引用已定义的其他stepId且不能重复；inputRefs只能为SOURCE或直接依赖stepId。"),
-                Map.entry("PLAN_CONTENT_DEPENDENCY", "布局必须直接依赖内容节点，导演必须直接依赖脚本节点，依赖值填写对应stepId。"),
+                Map.entry("PLAN_CONTENT_DEPENDENCY", "导演必须直接依赖脚本节点，依赖值填写对应stepId。"),
                 Map.entry("PLAN_REQUIRED_ACTION", "必须包含当前任务的三个必需动作。"),
                 Map.entry("PLAN_REVIEW_DEPENDENCY", "review的直接或间接依赖必须覆盖全部其他节点。"),
                 Map.entry("PLAN_CYCLE", "删除循环依赖和自身依赖，形成可按依赖先后执行的DAG。"),
-                Map.entry("PLAN_WHEN", "when使用ALWAYS；只有visual可以使用HAS_WEB_IMAGES。"),
+                Map.entry("PLAN_WHEN", "when使用ALWAYS；不接受其他条件。"),
                 Map.entry("PLAN_COMPLETION", "completionCondition只能为VALID_TYPED_RESULT。"),
                 Map.entry("PLAN_VERSION", "planVersion须为本次指定版本，schemaVersion须为media-plan-s09-v1。"),
                 Map.entry("PLAN_STEP_COUNT", "steps须包含3～8个节点。"),
@@ -168,8 +167,7 @@ public final class MediaSchemas {
          * 指令只给白名单协议，不返回隐藏思维链。
          */
         public String instruction(Set<String> refs) {
-            boolean video = task.equals("NOTES_VIDEO");
-            String first = video ? "script" : "content", second = video ? "direction" : "layout";
+            String first = "script", second = "direction";
             var roles = new LinkedHashMap<String, String>();
             allowedActions(task).forEach(action -> roles.put(action, ROLES.get(action)));
             var example = new Media.Plan(version, "media-plan-s09-v1", List.of(
@@ -181,7 +179,7 @@ public final class MediaSchemas {
                     + "，须原样使用英文小写值，不得使用角色名、stepId、中文、自造动作或其他任务动作；每种action最多一个节点。"
                     + "action与agentId对应关系：" + JSON.valueToTree(roles) + "。必需动作：" + List.of(first, second, "review") + "；其余允许动作按需要选择。"
                     + second + "必须直接依赖" + first + "；review汇合所有前序。stepId须小写英文开头且唯一；dependsOn填写其他节点的stepId，禁止循环及自身依赖；inputRefs仅SOURCE或直接依赖stepId。"
-                    + "when使用ALWAYS" + (video ? "" : "；visual只负责WEB_SEARCH事实图片搜索，生成概念图GENERATED和无图NONE不需要visual。visual须依赖content或layout，并使用HAS_WEB_IMAGES；执行时没有事实图片需求会跳过，即使旧计划写了ALWAYS") + "；completionCondition=VALID_TYPED_RESULT。"
+                    + "when=ALWAYS；completionCondition=VALID_TYPED_RESULT。"
                     + "合法最小计划示例（按实际需求调整允许节点和依赖）：" + JSON.valueToTree(example)
                     + "。不输出权限、URL、密钥、批准、预算、正文或代码。";
         }
@@ -258,7 +256,7 @@ public final class MediaSchemas {
         public String instruction(Set<String> refs) {
             return "只输出JSON字段stepId=" + step.stepId() + ",agentId=" + step.agentId() + ",inputHash=" + inputHash
                     + ",units数组,review对象。单位字段仅unitId,title,text,notes,layout,imageMode,imagePrompt,references,seconds。"
-                    + "PPT unitId=slide-1等，视频shot-1等，与前序ID对应。版式TITLE/TEXT/TWO_COLUMN/IMAGE_TEXT/SCENE；imageMode=NONE/GENERATED/WEB_SEARCH，视频用NONE。"
+                    + "视频unitId=shot-1等，与前序ID对应。版式SCENE；imageMode=NONE。"
                     + "text为逐页正文或完整台词，notes为备注或镜头动作，references为合法标签字符串数组：" + references
                     + "。所有生成角色review={decision:ACCEPT,issues:[]}；review角色units=[]，review={decision:ACCEPT/REPAIR/NEEDS_USER/FAIL,issues:[{code,stepId,unitId,evidence,suggestion}]}。"
                     + "定位具体计划stepId和单位ID，至多8问题；不声称看过图片／视频，不批准付费。布局／导演输出必须覆盖对应内容／脚本的全部稳定ID。";
@@ -273,12 +271,13 @@ public final class MediaSchemas {
                 var r = JSON.readValue(text, Media.WorkerResult.class);
                 if (!r.stepId().equals(step.stepId()) || !r.agentId().equals(step.agentId()) || !r.inputHash().equals(inputHash) || r.review() == null || !r.webCandidates().isEmpty() || !r.sourceDependencies().isEmpty())
                     throw invalid();
+                if (!"NOTES_VIDEO".equals(task)) throw invalid();
                 if (step.action().equals("review")) {
                     if (!r.units().isEmpty() || !Set.of("ACCEPT", "REPAIR", "NEEDS_USER", "FAIL").contains(r.review().decision()) || r.review().issues().size() > 8)
                         throw invalid();
                     for (var i : r.review().issues())
                         if (!i.code().matches("[A-Z_]{1,64}") || plan.stream().noneMatch(s -> s.stepId().equals(i.stepId()) && !s.action().equals("review"))
-                                || !i.unitId().matches("(slide|shot)-[1-9][0-9]?") || i.suggestion() == null || i.suggestion().length() > 1000 || i.evidence() == null || i.evidence().length() > 1000)
+                                || !i.unitId().matches("shot-[1-9][0-9]?") || i.suggestion() == null || i.suggestion().length() > 1000 || i.evidence() == null || i.evidence().length() > 1000)
                             throw invalid();
                     if (r.review().decision().equals("REPAIR") && r.review().issues().isEmpty()) throw invalid();
                 } else {
@@ -298,7 +297,7 @@ public final class MediaSchemas {
     private static JsonObjectSchema stepSchema(String task) {
         return JsonObjectSchema.builder().addStringProperty("stepId")
                 .addEnumProperty("action", allowedActions(task)).addEnumProperty("agentId", allowedActions(task).stream().map(ROLES::get).toList())
-                .addProperty("dependsOn", strings()).addProperty("inputRefs", strings()).addEnumProperty("when", task.equals("NOTES_VIDEO") ? List.of("ALWAYS") : List.of("ALWAYS", "HAS_WEB_IMAGES"))
+                .addProperty("dependsOn", strings()).addProperty("inputRefs", strings()).addEnumProperty("when", List.of("ALWAYS"))
                 .addEnumProperty("completionCondition", List.of("VALID_TYPED_RESULT"))
                 .required("stepId", "action", "agentId", "dependsOn", "inputRefs", "when", "completionCondition").additionalProperties(false).build();
     }

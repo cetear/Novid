@@ -201,12 +201,28 @@ public final class Media {
                         ImageSource webSource, Long artifactId) {
     }
 
+    public record ContentPlanRef(String planHash, String title, int contentSlides, int sourceSlides, int totalSlides) {
+        public ContentPlanRef {
+            if (planHash == null || !planHash.matches("[a-f0-9]{64}") || title == null || title.isBlank()
+                    || contentSlides < 1 || contentSlides > 512 || sourceSlides < 1 || sourceSlides > 4
+                    || totalSlides != contentSlides + sourceSlides) throw new IllegalArgumentException("内容计划引用无效");
+        }
+    }
+
     public record Preview(long taskId, int previewVersion, int planVersion, String hash, String status,
                           String approvalId, Instant expiresAt, String configurationHash,
                           String currency, BigDecimal estimatedAmount, BigDecimal maximumAmount,
                           List<Unit> units, List<SourceDependency> sourceDependencies,
                           List<DocumentCoverage> coverage, List<CatalogItem> catalogs, List<Asset> assets,
-                          String qualityStatus, Storyboard storyboard) {
+                          String qualityStatus, Storyboard storyboard,
+                          @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) ContentPlanRef contentPlan) {
+        public Preview(long taskId, int previewVersion, int planVersion, String hash, String status, String approvalId, Instant expiresAt,
+                       String configurationHash, String currency, BigDecimal estimatedAmount, BigDecimal maximumAmount, List<Unit> units,
+                       List<SourceDependency> sources, List<DocumentCoverage> coverage, List<CatalogItem> catalogs, List<Asset> assets,
+                       String qualityStatus, Storyboard storyboard) {
+            this(taskId,previewVersion,planVersion,hash,status,approvalId,expiresAt,configurationHash,currency,estimatedAmount,maximumAmount,
+                    units,sources,coverage,catalogs,assets,qualityStatus,storyboard,null);
+        }
         /**
          * 旧图片预览和历史整片数据不伪造分镜事实。
          */

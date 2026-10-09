@@ -6,6 +6,7 @@ import java.util.List;
 
 /** 自定义 SQL 由 MyBatis 执行，参数绑定与事务使用统一数据源。 */
 public interface TaskMapper {
+    List<SqlRow> remainingModelAttempts(@Param("args") Object[] args);
     List<SqlRow> createRequestDeduplicationsSelect(@Param("args") Object[] args);
     List<SqlRow> createAiTasksSelect(@Param("args") Object[] args);
     int createAiTasksInsert(@Param("insert") InsertCommand insert);
@@ -33,11 +34,6 @@ public interface TaskMapper {
     int progressChangedAiTasksWrite(@Param("args") Object[] args);
     int reserveModelAttemptAiTasksWrite(@Param("args") Object[] args);
     int reserveModelTurnAiTasksWrite(@Param("args") Object[] args);
-    List<SqlRow> checkpointTaskStepsSelect(@Param("args") Object[] args);
-    int checkpointTaskStepsWrite(@Param("args") Object[] args);
-    int checkpointTaskStepProgressWrite(@Param("args") Object[] args);
-    int checkpointAiTasksWrite(@Param("args") Object[] args);
-    List<SqlRow> checkpointsTaskStepsSelect(@Param("args") Object[] args);
     List<SqlRow> initializeCoverageDocumentSectionsSelect(@Param("args") Object[] args);
     int initializeCoverageTaskDocumentCoverageWrite(@Param("args") Object[] args);
     List<SqlRow> checkpointPageTaskDocumentPagesSelect(@Param("args") Object[] args);
@@ -45,8 +41,6 @@ public interface TaskMapper {
     int checkpointPageTaskDocumentPagesWrite(@Param("args") Object[] args);
     List<SqlRow> pagesTaskDocumentPagesSelect(@Param("args") Object[] args);
     List<SqlRow> remainingModelTurnsAiTasksSelect(@Param("args") Object[] args);
-    List<SqlRow> readPlanTaskPlansSelect(@Param("args") Object[] args);
-    int savePlanTaskPlansWrite(@Param("args") Object[] args);
     int reserveToolCallAiTasksWrite(@Param("args") Object[] args);
     int reserveModelRepairAiTasksWrite(@Param("args") Object[] args);
     List<SqlRow> validatePageDocumentSectionsSelect(@Param("args") Object[] args);

@@ -51,6 +51,19 @@ management:
     health:
       show-details: never
 lab:
+  content-workflow:
+    source-bytes: 1000000
+    page-bytes: 3000
+    maximum-items: 4096
+    index-bytes: 4000
+    unit-input-bytes: 7000
+    maximum-units: 256
+    parallelism: 4
+    turns: 1200
+    attempts: 1800
+    tools: 1200
+    execution-seconds: 7200
+    result-bytes: 4000000
   # S08维护显式启用；测试保持关闭，历史至少七天，每类最多100行。
   governance:
     cleanup-enabled: false
@@ -96,7 +109,6 @@ lab:
     enabled: ${SKILLS_ENABLED:true}
     # 分号分隔服务端目录；外部同名版本覆盖内置版本，新任务生效。
     roots: ${SKILLS_ROOTS:}
-    ppt-skill: ${PPT_SKILL:ppt-generation}
   ingestion:
     worker-enabled: ${INGESTION_WORKER_ENABLED:true}
   task:

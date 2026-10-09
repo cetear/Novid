@@ -1,6 +1,0 @@
-SKILL.md
-references/extract.md
-references/organize.md
-references/generate.md
-references/review.md
-references/repair.md

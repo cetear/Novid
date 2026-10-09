@@ -20,7 +20,7 @@ import java.util.List;
 public class MediaController {
     private final MediaApplicationService service;
 
-    public record Edit(@Min(1) @Max(10) int previewVersion, @NotEmpty @Size(max = 12) List<Media.@NotNull Unit> units) {
+    public record Edit(@Min(1) @Max(10) int previewVersion, @NotEmpty @Size(max = 512) List<Media.@NotNull Unit> units) {
     }
 
     public record Decision(boolean approved, @Positive long taskId) {

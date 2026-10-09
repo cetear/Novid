@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.ailab.data.persistence.mapper.ContentWorkflowMapper">
+ <select id="policy" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT policy_hash,policy_json FROM task_content_policies WHERE task_id=#{args[0]}</select>
+ <insert id="savePolicy">INSERT INTO task_content_policies(task_id,policy_hash,policy_json) VALUES(#{args[0]},#{args[1]},#{args[2]})</insert>
+ <select id="run" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_runs WHERE task_id=#{args[0]}</select>
+ <insert id="bind">INSERT INTO task_content_runs(task_id,source_hash,source_json) VALUES(#{args[0]},#{args[1]},#{args[2]})</insert>
+ <select id="node" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_nodes WHERE task_id=#{args[0]} AND node_id=#{args[1]}</select>
+ <select id="nodes" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_nodes WHERE task_id=#{args[0]} ORDER BY node_id</select>
+ <insert id="begin">INSERT INTO task_content_nodes(task_id,node_id,stage,input_hash) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]})</insert>
+ <update id="complete">UPDATE task_content_nodes SET output_hash=#{args[0]},output_json=#{args[1]},status='COMPLETED',completed_at=CURRENT_TIMESTAMP(6) WHERE task_id=#{args[2]} AND node_id=#{args[3]} AND input_hash=#{args[4]} AND status='PENDING'</update>
+ <update id="accept">UPDATE task_content_runs SET plan_hash=#{args[0]},plan_json=#{args[1]} WHERE task_id=#{args[2]} AND plan_hash IS NULL</update>
+ <update id="progress">UPDATE ai_tasks SET state_version=state_version+1 WHERE id=#{args[0]}</update>
+ <update id="stage">UPDATE task_step_progress SET status='SUCCEEDED',completed_at=CURRENT_TIMESTAMP(6),error_code=NULL WHERE task_id=#{args[0]} AND step_id=#{args[1]} AND status IN ('PENDING','RUNNING')</update>
+ <insert id="coverage">INSERT INTO task_document_coverage(task_id,document_id,document_version,processing_revision,section_id,completed_pages,read_start,read_end,remaining_start,remaining_end,complete,count_source) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},'1',#{args[4]},0,#{args[5]},#{args[5]},#{args[5]},TRUE,'ESTIMATED_UTF8_BYTES') ON DUPLICATE KEY UPDATE completed_pages=VALUES(completed_pages),read_end=VALUES(read_end),remaining_start=VALUES(remaining_start),remaining_end=VALUES(remaining_end),complete=TRUE</insert>
+</mapper>

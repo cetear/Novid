@@ -28,21 +28,18 @@ public final class SkillCatalog {
     }
 
     private final Map<String, Skill> skills;
-    private final String pptSkill;
     private final boolean enabled;
 
     public SkillCatalog(@Value("${lab.skills.enabled:true}") boolean enabled,
-                        @Value("${lab.skills.roots:}") String roots,
-                        @Value("${lab.skills.ppt-skill:ppt-generation}") String pptSkill) {
+                        @Value("${lab.skills.roots:}") String roots) {
         this.enabled = enabled;
-        this.pptSkill = pptSkill;
         var values = new LinkedHashMap<String, Skill>();
         if (enabled) {
             loadBuiltins(values);
             var external = new HashMap<String, Skill>();
             if (!roots.isBlank()) for (String root : roots.split(";")) loadExternal(Path.of(root.trim()), external);
             values.putAll(external); // 显式配置外部根目录时，以外部版本覆盖同名内置版本。
-            if (!values.containsKey(pptSkill)) throw new IllegalArgumentException("PPT Skill未配置");
+            if (!values.containsKey("document-content")) throw new IllegalArgumentException("资料工作流Skill未配置");
         }
         skills = Map.copyOf(values);
     }
@@ -167,17 +164,10 @@ public final class SkillCatalog {
     /**
      * 新任务固定目录契约，所需别名不存在时在首次模型调用前失败。
      */
-    public TaskExecutionBinding pptBinding(Map<String, String> contracts) {
-        return binding(pptSkill, "ppt-actions-v1", contracts);
-    }
 
-    public TaskExecutionBinding learningBinding(String type, Map<String, String> contracts) {
-        String id = switch (type) {
-            case "QUIZ_GENERATION" -> "learning-quiz";
-            case "KNOWLEDGE_COMPILATION" -> "knowledge-compilation";
-            default -> throw new IllegalArgumentException("未知学习工作流");
-        };
-        return binding(id, "fixed-learning-v1", contracts);
+
+    public TaskExecutionBinding contentBinding(Map<String, String> contracts) {
+        return binding("document-content", "document-content-v2", contracts);
     }
 
     private TaskExecutionBinding binding(String id, String policy, Map<String, String> contracts) {
@@ -195,7 +185,7 @@ public final class SkillCatalog {
     }
 
     public static void verify(TaskExecutionBinding binding) {
-        if (binding.schemaVersion() != 1 || !Set.of("ppt-actions-v1", "fixed-learning-v1").contains(binding.actionPolicyVersion())
+        if (binding.schemaVersion() != 1 || !"document-content-v2".equals(binding.actionPolicyVersion())
                 || !binding.skillHash().equals(hash(binding.resources(), binding.allowedTools())) || !binding.resources().containsKey("SKILL.md")
                 || !binding.toolContracts().keySet().equals(binding.allowedTools()))
             throw new LabException("SKILL_SNAPSHOT_INVALID", "Skill快照不完整或版本不兼容");

@@ -8,13 +8,13 @@ public record TaskProgress(String stage, String message, boolean workerEnabled, 
                            int completedSteps, int totalSteps, int percent, List<String> currentSteps,
                            List<TaskStepSnapshot> steps, Instant startedAt, Instant updatedAt,
                            Instant lastHeartbeatAt, long elapsedExecutionSeconds, int pollAfterMillis) {
-    /** 保留媒体与历史任务的五步进度形状，新学习任务使用独立六阶段。 */
+    /** 视频使用五步进度，三类资料任务使用六阶段。 */
     public static List<String> stepIds() {
         return List.of("prepare", "research", "analysis", "report", "publish");
     }
 
     public static List<String> stepIds(String type) {
-        return Learning.supports(type) ? List.of("prepare", "extract", "organize", "generate", "review", "publish") : stepIds();
+        return (Learning.supports(type) || "NOTES_PPT".equals(type)) ? List.of("prepare", "extract", "organize", "generate", "review", "publish") : stepIds();
     }
 
     /** 标签由程序生成，客户端和模型均不能指定用户可见执行步骤。 */

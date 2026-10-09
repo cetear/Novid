@@ -22,6 +22,7 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
     }
     public JsonSchema schema() { return JsonSchema.builder().name(type.getSimpleName()).rootElement(element(type)).build(); }
     private JsonSchemaElement element(Type type) {
+        if (type == int.class || type == Integer.class) return JsonIntegerSchema.builder().build();
         if (type == String.class) return JsonStringSchema.builder().build();
         if (type instanceof ParameterizedType list && list.getRawType() == List.class)
             return JsonArraySchema.builder().items(element(list.getActualTypeArguments()[0])).build();
@@ -34,6 +35,7 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
         throw new IllegalArgumentException("未支持的固定工作流JSON字段类型");
     }
     private void check(JsonNode value, Type type) {
+        if (type == int.class || type == Integer.class) { if (!value.isIntegralNumber() || !value.canConvertToInt()) throw new IllegalArgumentException(); return; }
         if (type == String.class) { if (!value.isTextual()) throw new IllegalArgumentException(); return; }
         if (type instanceof ParameterizedType list && list.getRawType() == List.class) {
             if (!value.isArray()) throw new IllegalArgumentException();

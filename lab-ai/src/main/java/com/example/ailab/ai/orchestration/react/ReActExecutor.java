@@ -1,35 +1,27 @@
 package com.example.ailab.ai.orchestration.react;
 
+import com.example.ailab.ai.model.ModelGateway;
+import com.example.ailab.ai.orchestration.*;
 import com.example.ailab.ai.runtime.ExecutionBudget;
-import com.example.ailab.contract.dto.WorkflowAction;
+import com.example.ailab.ai.tools.ToolExecutionService;
+import com.example.ailab.contract.dto.ExecutionArchitecture;
 import com.example.ailab.contract.error.LabException;
-import java.util.Optional;
-import java.util.Set;
+import org.springframework.stereotype.Component;
 
-/** 通用受控动作循环；业务提供观察、可用动作及持久化，执行器不依赖业务工作流。 */
-public final class ReActExecutor {
-    public interface Session {
-        boolean finished();
-        int completedActions();
-        Set<String> allowedActions();
-        Optional<WorkflowAction> pending();
-        WorkflowAction decide(Set<String> allowed);
-        void start(WorkflowAction action);
-        void execute(WorkflowAction action);
-    }
-
-    public void run(Session session, ExecutionBudget budget) {
-        while (!session.finished()) {
-            budget.check();
-            if (session.completedActions() >= 12) throw new LabException("BUDGET_EXCEEDED", "ReAct动作次数耗尽");
-            var allowed = session.allowedActions();
-            var pending = session.pending();
-            var action = pending.orElseGet(() -> session.decide(allowed));
-            if (!"PENDING".equals(action.status()) || action.sequence() != session.completedActions() + 1
-                    || !allowed.contains(action.name()))
-                throw new LabException("WORKFLOW_ACTION_INVALID", "动作不满足当前状态的执行条件");
-            if (pending.isEmpty()) session.start(action);
-            session.execute(action);
-        }
+/** 独立的模型决策／工具反馈执行器，复用已验证的消息配对、工具授权和共享预算。 */
+@Component
+public final class ReActExecutor implements ArchitectureExecutor {
+    private final BoundedToolLoop loop;
+    public ReActExecutor(ModelGateway models, ToolExecutionService tools) { loop = new BoundedToolLoop(models, tools); }
+    public ExecutionArchitecture architecture() { return ExecutionArchitecture.REACT; }
+    public String version() { return "react-v1"; }
+    public boolean supports(WorkflowProgram<?> program) { return program instanceof ReActProgram; }
+    @SuppressWarnings("unchecked")
+    public <R> R execute(WorkflowProgram<R> program, ExecutionBudget budget) {
+        if (!(program instanceof ReActProgram react)) throw new LabException("WORKFLOW_ARCHITECTURE_MISMATCH", "需要ReAct程序");
+        budget.check();
+        var result = loop.run(react.actor(), react.scope(), react.selection(), react.input(), budget, react.verify(),
+                react.toolTask(), react.maximumRounds(), react.allowedTools(), react.contracts());
+        budget.check(); return (R) result;
     }
 }

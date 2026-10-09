@@ -14,12 +14,12 @@ import java.util.concurrent.*;
 @ConditionalOnProperty(name = "lab.task.worker-enabled", havingValue = "true")
 public final class TaskQueueWorker {
     private final TaskStorePort tasks;
-    private final FixedLearningWorker learning;
+    private final LearningTaskWorker learning;
     private final String workerId = UUID.randomUUID().toString();
     private final ThreadPoolExecutor coordinator = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,
             new ArrayBlockingQueue<>(1), new ThreadPoolExecutor.AbortPolicy());
 
-    public TaskQueueWorker(TaskStorePort tasks, FixedLearningWorker learning) {
+    public TaskQueueWorker(TaskStorePort tasks, LearningTaskWorker learning) {
         this.tasks = tasks;
         this.learning = learning;
     }

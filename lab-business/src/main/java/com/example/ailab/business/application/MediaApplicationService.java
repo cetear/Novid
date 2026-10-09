@@ -46,13 +46,13 @@ public class MediaApplicationService {
      */
     public void validate(UserContext actor, TaskRequest r) {
         policy.current(actor);
-        if (!Set.of("NOTES_PPT", "NOTES_VIDEO").contains(r.taskType()) || !r.strategy().equals("PLANNED"))
+        if (!Set.of("NOTES_PPT", "NOTES_VIDEO").contains(r.taskType()) || !r.documentDriven() && !r.strategy().equals("PLANNED"))
             throw LabException.invalid("媒体任务必须使用PLANNED");
         BigDecimal limit;
         if (r.taskType().equals("NOTES_PPT")) {
             var p = r.presentationOptions();
-            if (p == null || r.videoOptions() != null || p.pageCount() < 2 || p.pageCount() > 12 || !"default".equals(p.themeId()) || !Set.of("MIXED", "CONCEPT", "FACTUAL").contains(p.imagePolicy()))
-                throw LabException.invalid("PPT总页数（含来源页）须2～12页，主题／配图策略须合法");
+            if (p == null || r.videoOptions() != null || (p.pageCount() != 0 && (p.pageCount() < 2 || p.pageCount() > 512)) || !"default".equals(p.themeId()) || !Set.of("MIXED", "CONCEPT", "FACTUAL").contains(p.imagePolicy()))
+                throw LabException.invalid("PPT页数0表示自动，显式总页数须2～512页，主题／配图策略须合法");
             limit = p.maximumAmount();
             if (presentation != null) presentation.validateConfiguration();
         } else {
@@ -164,7 +164,7 @@ public class MediaApplicationService {
                 throw LabException.invalid("编辑单位及ID、版式、配图方式不能为空");
             var old = p.units().stream().filter(x -> x.unitId().equals(u.unitId())).findFirst().orElseThrow(() -> LabException.invalid("编辑单位ID不合法"));
             if (!ids.add(u.unitId()) || u.title() == null || u.title().isBlank() || u.title().length() > 200 || u.text() == null || (!video && u.text().isBlank()) || u.text().length() > 3000 || u.notes() == null || u.notes().length() > 1500
-                    || !Set.of("TITLE", "TEXT", "TWO_COLUMN", "IMAGE_TEXT", "SCENE").contains(u.layout()) || u.references().isEmpty() || !refs.containsAll(u.references())
+                    || !(video?Set.of("TITLE", "TEXT", "TWO_COLUMN", "IMAGE_TEXT", "SCENE"):Set.of("TITLE", "TEXT", "TWO_COLUMN", "IMAGE_TEXT")).contains(u.layout()) || u.references().isEmpty() || !refs.containsAll(u.references())
                     || !u.imageMode().equals(old.imageMode()) || u.imagePrompt() == null || u.imagePrompt().length() > 1000 || u.seconds() != old.seconds()
                     || u.imageMode().equals("WEB_SEARCH") && !u.imagePrompt().equals(old.imagePrompt()))
                 throw LabException.invalid("编辑超限或改变不可替换来源／资产约束");
@@ -178,6 +178,8 @@ public class MediaApplicationService {
                 }
             }
         }
+        if(p.contentPlan()!=null&&!units.stream().map(Media.Unit::unitId).toList().equals(p.units().stream().map(Media.Unit::unitId).toList()))
+            throw LabException.invalid("资料驱动预览须保持内容计划的页面顺序");
         return store.edit(actor, id, version, units, configurationHash(task.taskType()));
     }
 

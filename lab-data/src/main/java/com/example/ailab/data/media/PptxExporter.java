@@ -79,15 +79,16 @@ public class PptxExporter implements PresentationPort {
     public Presentation.Bundle export(Media.Preview p, String inputHash, Instant deadline, long remaining) {
         limit(deadline);
         validateConfiguration();
-        if (!p.status().equals("APPROVED") || p.units().isEmpty() || p.units().size() > 11)
-            throw error("PPT_PAGE_LIMIT", "内容页加来源页必须在2～12页内，旧12内容页需重新预览");
+        if (!p.status().equals("APPROVED") || p.units().isEmpty() || p.contentPlan()==null || p.units().size() > 512
+                || p.units().size()!=p.contentPlan().contentSlides())
+            throw error("PPT_PAGE_LIMIT", "PPT必须携带内容计划，页数须与已批准计划一致");
         var warnings = new ArrayList<String>();
         var images = new ArrayList<Presentation.Image>();
         if (p.coverage().stream().anyMatch(c -> !c.complete())) warnings.add("资料未完整覆盖，请同时核对未读范围");
         warnings.add("图文一致性、事实对象与教学效果仍须本人人工验收");
         try (var ppt = new XMLSlideShow()) {
             ppt.setPageSize(new Dimension(960, 540));
-            ppt.getProperties().getCoreProperties().setTitle("私人笔记演示文稿");
+            ppt.getProperties().getCoreProperties().setTitle(p.contentPlan().title());
             ppt.getProperties().getCoreProperties().setDescription("task=" + p.taskId() + ";preview=" + p.previewVersion() + ";plan=" + p.planVersion() + ";approval=" + p.hash() + ";input=" + inputHash + ";layout=" + Presentation.VERSION);
             for (var unit : p.units()) {
                 limit(deadline);
@@ -113,22 +114,14 @@ public class PptxExporter implements PresentationPort {
                 notes(ppt, slide, unit.notes() + "\n\n笔记引用：" + unit.references() + "\n" + sourceNotes(p) + (image == null ? "" : "\n配图：" + image.kind() + "\nchecksum=" + image.file().checksum() + "\noperation=" + image.operationId() + "\n" + image.webSource()));
             }
             if (images.size() > 8) throw error("PPT_IMAGE_LIMIT", "每任务最多8张配图");
-            var source = ppt.createSlide();
-            source.getBackground().setFillColor(Color.WHITE);
-            box(source, "来源与使用说明", new Rectangle2D.Double(48, 32, 864, 82), 34, 28, true);
-            String text = "笔记来源\n" + p.sourceDependencies().stream().map(s -> "D" + s.documentId() + "v" + s.documentVersion() + "  知识库 " + s.knowledgeBaseId()).collect(java.util.stream.Collectors.joining("\n"));
-            if (!images.isEmpty())
-                text += "\n\n配图来源\n" + images.stream().map(i -> i.unitId() + "  " + (i.kind().equals("GENERATED") ? "AI生成概念示意" : shortLabel(i.source()))).collect(java.util.stream.Collectors.joining("\n"));
-            text += "\n\n" + (p.coverage().stream().anyMatch(c -> !c.complete()) ? "资料未完整覆盖，未读范围详见讲者备注" : "覆盖范围详见讲者备注");
-            box(source, text, new Rectangle2D.Double(48, 136, 864, 342), 22, 18, false);
-            notes(ppt, source, sourceNotes(p) + "\n配图完整出处\n" + images);
+            sourcePages(ppt,p,images);
             var output = new ByteArrayOutputStream();
             ppt.write(output);
             byte[] bytes = output.toByteArray();
             if (bytes.length > 52428800 || bytes.length > remaining)
                 throw error("BUDGET_EXCEEDED", "PPTX及预览超过剩余空间");
             // 用真实重开结果检查关系、页数、文字与备注，不能只检查ZIP文件头。
-            reopen(bytes, p.units().size() + 1, images.size());
+            reopen(bytes, p.contentPlan().totalSlides(), images.size());
             var previewBytes = new ArrayList<byte[]>();
             long size = bytes.length;
             for (var slide : ppt.getSlides()) {
@@ -157,7 +150,7 @@ public class PptxExporter implements PresentationPort {
             for (int i = 0; i < previewBytes.size(); i++) {
                 limit(deadline);
                 var fact = files.writePagePreview(stable(inputHash + ":page:" + i), previewBytes.get(i));
-                pages.add(new Presentation.Page(i + 1, i < p.units().size() ? p.units().get(i).unitId() : "SOURCES", fact, null));
+                pages.add(new Presentation.Page(i + 1, i < p.units().size() ? p.units().get(i).unitId() : "SOURCES_"+(i-p.units().size()+1), fact, null));
             }
             var check = new Presentation.Check(p.taskId(), p.previewVersion(), p.planVersion(), p.hash(), inputHash, Presentation.VERSION, font, ppt.getSlides().size(), "PASSED", "REQUIRES_HUMAN_REVIEW", warnings, images, p.sourceDependencies(), p.coverage());
             return new Presentation.Bundle(deck, null, pages, check);
@@ -166,6 +159,25 @@ public class PptxExporter implements PresentationPort {
         } catch (Exception e) {
             org.slf4j.LoggerFactory.getLogger(PptxExporter.class).error("event=presentation.export_failed", com.example.ailab.contract.error.DiagnosticFailure.sanitized(e));
             throw error("PPT_EXPORT_FAILED", "PPTX导出、备注或逐页预览失败");
+        }
+    }
+
+    private void sourcePages(XMLSlideShow ppt,Media.Preview preview,List<Presentation.Image> images) {
+        var entries=new ArrayList<String>();
+        preview.sourceDependencies().forEach(s->entries.add("笔记 D"+s.documentId()+"v"+s.documentVersion()+" · 知识库 "+s.knowledgeBaseId()));
+        images.forEach(i->entries.add(i.unitId()+" · "+(i.kind().equals("GENERATED")?"AI生成概念示意":shortLabel(i.source()))));
+        int pages=Math.max(1,(entries.size()+11)/12);
+        if(pages!=preview.contentPlan().sourceSlides())throw error("PREVIEW_CHANGED","来源页数与已批准计划不一致");
+        for(int i=0;i<pages;i++) {
+            var slide=ppt.createSlide();slide.getBackground().setFillColor(Color.WHITE);
+            box(slide,"来源与使用说明 "+(i+1)+" / "+pages,new Rectangle2D.Double(48,32,864,82),34,28,true);
+            var page=entries.subList(i*12,Math.min(entries.size(),(i+1)*12));
+            for(int column=0;column<2;column++) {
+                int start=column*6;if(start>=page.size())continue;
+                box(slide,String.join("\n",page.subList(start,Math.min(page.size(),start+6))),new Rectangle2D.Double(48+column*444,136,420,290),20,16,false);
+            }
+            box(slide,"覆盖范围与完整出处详见讲者备注",new Rectangle2D.Double(48,450,864,40),18,16,false);
+            notes(ppt,slide,sourceNotes(preview)+"\n配图完整出处\n"+images);
         }
     }
 

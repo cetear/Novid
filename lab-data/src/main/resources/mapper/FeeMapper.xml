@@ -5,7 +5,7 @@
         UPDATE fee_attempts SET outcome=#{args[0]},response_hash=#{args[1]} WHERE operation_id=#{args[2]}
     </update>
     <select id="reserveAiTasksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
-        SELECT task_type,request_json FROM ai_tasks WHERE id=#{args[0]} AND requester_user_id=#{args[1]}
+        SELECT task_type,request_json,model_attempt_limit FROM ai_tasks WHERE id=#{args[0]} AND requester_user_id=#{args[1]}
     </select>
 
     <select id="reserveFeeScopesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">

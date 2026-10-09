@@ -72,7 +72,8 @@ public class FeeRepository implements FeeStorePort {
         BigDecimal reserved = simulated || price == null ? null : price.amount(input, output);
         long consumed = sql.scalar(mapper.reserveFeeAttemptsSelect3(new Object[]{id}), Long.class);
         // 尝试额度来自服务端任务类型，与执行预算一致，不能由费用调用方自行放宽。
-        int attemptLimit = scope.kind().equals("INGESTION") ? 160 : Learning.Limits.forType(taskType).attempts();
+        int attemptLimit = scope.kind().equals("INGESTION") ? 160
+                : task == null ? 10 : ((Number) task.get("model_attempt_limit")).intValue();
         if (used.attempts() >= attemptLimit
                 || consumed + (media?0:input + output) > ((Number)savedScope.get("token_limit")).longValue()
                 || used.overLimit() || reserved != null && used.estimatedAmount().add(used.reservedAmount()).add(reserved)

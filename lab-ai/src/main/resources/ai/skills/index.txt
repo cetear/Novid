@@ -1,3 +1,1 @@
-ppt-generation
-learning-quiz
-knowledge-compilation
+document-content

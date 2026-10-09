@@ -38,7 +38,7 @@ public final class PresentationExecution {
                 throw new LabException("PPT_IMAGE_MISSING", "当前批准需要的图片未就绪或选择不唯一");
             assets.add(matches.get(0));
         }
-        var p = new Media.Preview(approved.taskId(), approved.previewVersion(), approved.planVersion(), approved.hash(), approved.status(), approved.approvalId(), approved.expiresAt(), approved.configurationHash(), approved.currency(), approved.estimatedAmount(), approved.maximumAmount(), approved.units(), approved.sourceDependencies(), approved.coverage(), approved.catalogs(), assets, approved.qualityStatus(), approved.storyboard());
+        var p = new Media.Preview(approved.taskId(), approved.previewVersion(), approved.planVersion(), approved.hash(), approved.status(), approved.approvalId(), approved.expiresAt(), approved.configurationHash(), approved.currency(), approved.estimatedAmount(), approved.maximumAmount(), approved.units(), approved.sourceDependencies(), approved.coverage(), approved.catalogs(), assets, approved.qualityStatus(), approved.storyboard(),approved.contentPlan());
         String hash = hash(p);
         var saved = store.presentationStart(lease, hash, false);
         if (saved.isPresent() && exporter.intact(saved.get())) {

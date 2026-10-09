@@ -14,43 +14,30 @@ public final class Learning {
     }
     public record QuizOptions(int questionCount, List<String> questionTypes, String difficulty) {
         public QuizOptions { questionTypes = List.copyOf(questionTypes); }
-        public static QuizOptions defaults() { return new QuizOptions(10, List.of("SINGLE_CHOICE", "SHORT_ANSWER"), "MEDIUM"); }
+        public static QuizOptions defaults() { return new QuizOptions(0, List.of("SINGLE_CHOICE", "SHORT_ANSWER"), "MEDIUM"); }
         public void validate() {
-            if (questionCount < 1 || questionCount > 20 || questionTypes.isEmpty() || questionTypes.size() > 2
+            if (questionCount < 0 || questionCount > 512 || questionTypes.isEmpty() || questionTypes.size() > 2
                     || new HashSet<>(questionTypes).size() != questionTypes.size()
                     || !Set.of("SINGLE_CHOICE", "SHORT_ANSWER").containsAll(questionTypes)
                     || difficulty == null || !Set.of("EASY", "MEDIUM", "HARD").contains(difficulty))
-                throw LabException.invalid("自测支持1～20题、单选／简答和EASY／MEDIUM／HARD难度");
+                throw LabException.invalid("自测数量0表示自动，显式要求最多512题；题型及难度须合法");
         }
     }
     public record CompilationOptions(String detailLevel, int maximumChapters) {
-        public static CompilationOptions defaults() { return new CompilationOptions("DETAILED", 6); }
+        public static CompilationOptions defaults() { return new CompilationOptions("DETAILED", 0); }
         public void validate() {
             if (detailLevel == null || !Set.of("CONCISE", "DETAILED").contains(detailLevel)
-                    || maximumChapters < 1 || maximumChapters > 6) throw LabException.invalid("整编详略或章节上限不合法");
+                    || maximumChapters < 0 || maximumChapters > 512) throw LabException.invalid("整编详略或章节上限不合法");
         }
     }
     public record Limits(int turns, int attempts, int tools) {
-        public static Limits forType(String type) {
-            return switch (type) {
-                case "QUIZ_GENERATION" -> new Limits(24, 36, 32);
-                case "KNOWLEDGE_COMPILATION" -> new Limits(32, 48, 32);
-                case "NOTES_PPT" -> new Limits(24, 36, 40);
-                case "NOTES_VIDEO" -> new Limits(24, 36, 24);
-                default -> new Limits(6, 10, 8);
-            };
-        }
+        public static Limits video() { return new Limits(24,36,24); }
     }
+
     public record SourceSlice(String id, long knowledgeBaseId, long documentId, int documentVersion,
                               long processingRevision, String title, int startOffset, int endOffset, String textHash) { }
-    public record Baseline(WorkflowExecutionBinding workflow, TaskExecutionBinding skill, String requestHash,
-                           List<SourceSlice> slices, List<SourceDependency> sources, Limits limits) {
-        public Baseline { slices = List.copyOf(slices); sources = List.copyOf(sources); }
-    }
     public record Item(String id, String sourceId, String category, String content, String quote) { }
-    public record Batch(List<Item> items) { public Batch { items = List.copyOf(items); } }
     public record Target(String id, String type, List<String> itemIds) { public Target { itemIds = List.copyOf(itemIds); } }
-    public record Blueprint(List<Target> targets) { public Blueprint { targets = List.copyOf(targets); } }
     public record Question(String id, String type, String stem, List<String> options, String answer,
                            String explanation, List<String> itemIds) {
         public Question { options = List.copyOf(options); itemIds = List.copyOf(itemIds); }

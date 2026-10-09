@@ -6,13 +6,7 @@ import java.util.*;
 
 /** 媒体持久状态图；远程调用不位于这些短事务内。 */
 public interface MediaStorePort {
-    /** 迁移前创建的任务保留旧流程，新任务才采用Skill基线。 */
-    default boolean skillBindingEligible(TaskLease lease){return false;}
-    /** 在有效执行租约下读取已固定的Skill基线；旧任务无基线返回空。 */
-    default Optional<TaskExecutionBinding> executionBinding(TaskLease lease){return Optional.empty();}
-    /** 首次规划之前原子建立基线；已有基线必须相同，禁止恢复时覆盖。 */
-    default void bindExecution(TaskLease lease,TaskExecutionBinding binding){throw new UnsupportedOperationException("未实现任务Skill绑定");}
-    /** 旧素材就绪任务可显式排队本地导出；原截止、批准和购买事实保持不变。 */
+    /** 素材就绪任务可显式排队本地导出；原截止、批准和购买事实保持不变。 */
     default void requestPresentation(UserContext actor,long taskId,int version){throw new UnsupportedOperationException();}
     /** 当前批准输入本地导出最多两次，重建不重置预算或外部操作。 */
     default Optional<Presentation.Bundle> presentationStart(TaskLease lease,String hash,boolean rebuild){throw new UnsupportedOperationException();}

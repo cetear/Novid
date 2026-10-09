@@ -1,0 +1,8 @@
+SKILL.md
+references/extract.md
+references/index.md
+references/intent.md
+references/plan.md
+references/merge.md
+references/generate.md
+references/review.md

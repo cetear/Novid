@@ -15,33 +15,35 @@ public final class ExecutionBudget {
     private final Runnable cancellationCheck;
     private int attempts, turns, tools, repairs;
     private int maxTurns = 6, maxTools = 8;
+    private int maxRepairs = 1;
     private int maximumWaitSeconds = 30;
 
     /**
      * 仅媒体入口显式启用独立预算，普通问答／报告仍六轮八工具。
      */
     public ExecutionBudget media(String taskType) {
-        if (!java.util.Set.of("NOTES_PPT", "NOTES_VIDEO").contains(taskType) || maxAttempts != 36)
+        if (!"NOTES_VIDEO".equals(taskType) || maxAttempts != 36)
             throw new IllegalArgumentException("媒体预算仅限登记媒体任务");
         maxTurns = 24;
-        maxTools = taskType.equals("NOTES_PPT") ? 40 : 24;
+        maxTools = 24;
         maximumWaitSeconds = 120;
         return this;
     }
 
     /** 固定学习工作流共享持久额度，恢复不获得新预算。 */
-    public ExecutionBudget learning(String type) {
-        if (!com.example.ailab.contract.dto.Learning.supports(type)) throw new IllegalArgumentException("未知学习工作流");
-        var limits = com.example.ailab.contract.dto.Learning.Limits.forType(type);
-        if (maxAttempts != limits.attempts()) throw new IllegalArgumentException("固定工作流尝试预算不匹配");
-        maxTurns = limits.turns(); maxTools = limits.tools(); maximumWaitSeconds = 120;
-        return this;
-    }
+
 
     private Runnable toolJournal = () -> {
     }, repairJournal = () -> {
     };
     private final java.util.List<com.example.ailab.contract.dto.ModelRoute.Attempt> observed = new java.util.ArrayList<>();
+    private final ThreadLocal<Integer> observedIndex = new ThreadLocal<>();
+    public ExecutionBudget content(com.example.ailab.contract.dto.ContentWorkflow.Policy policy) {
+        if (maxAttempts != policy.attempts()) throw new IllegalArgumentException("资料工作流预算不匹配");
+        maxTurns = policy.turns(); maxTools = policy.tools(); maximumWaitSeconds = 120;
+        maxRepairs = policy.turns();
+        return this;
+    }
     private com.example.ailab.contract.context.TraceContext rootTrace = com.example.ailab.contract.context.TraceContext.disabled("none");
     private final ThreadLocal<com.example.ailab.contract.context.TraceContext> activeTrace = new ThreadLocal<>();
     private final ThreadLocal<String> lastModelNode = new ThreadLocal<>();
@@ -225,7 +227,7 @@ public final class ExecutionBudget {
      */
     public synchronized void repair() {
         check();
-        if (repairs >= 1) throw new LabException("MODEL_REPAIR_EXHAUSTED", "结构化修复额度耗尽");
+        if (repairs >= maxRepairs) throw new LabException("MODEL_REPAIR_EXHAUSTED", "结构化修复额度耗尽");
         repairJournal.run();
         repairs++;
     }
@@ -235,6 +237,7 @@ public final class ExecutionBudget {
      */
     public synchronized void observe(com.example.ailab.contract.dto.ModelRoute.Attempt attempt) {
         observed.add(attempt);
+        observedIndex.set(observed.size() - 1);
     }
 
     /**
@@ -248,9 +251,10 @@ public final class ExecutionBudget {
      * 字段校验晚于提供方响应，保留已知用量但更正最后一次结果。
      */
     public synchronized void invalidStructure() {
-        if (observed.isEmpty()) return;
-        var a = observed.remove(observed.size() - 1);
-        observed.add(new com.example.ailab.contract.dto.ModelRoute.Attempt(a.modelId(), "MODEL_STRUCTURED_INVALID", a.reservedInputTokens(),
+        Integer index = observedIndex.get();
+        if (index == null) return;
+        var a = observed.get(index);
+        observed.set(index, new com.example.ailab.contract.dto.ModelRoute.Attempt(a.modelId(), "MODEL_STRUCTURED_INVALID", a.reservedInputTokens(),
                 a.countSource(), a.inputTokens(), a.outputTokens(), a.usageSource(), a.priceRef()));
     }
 

@@ -1,15 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.example.ailab.data.persistence.mapper.MediaMapper">
-    <select id="skillBindingEligibleSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
-        SELECT skill_binding_eligible FROM ai_tasks WHERE id=#{args[0]}
-    </select>
-    <select id="executionBindingSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
-        SELECT binding_hash,binding_json FROM task_execution_bindings WHERE task_id=#{args[0]}
-    </select>
-    <insert id="executionBindingInsert">
-        INSERT INTO task_execution_bindings(task_id,binding_hash,binding_json) VALUES(#{args[0]},#{args[1]},#{args[2]})
-    </insert>
     <select id="previewGenerationPreviewsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
         SELECT preview_json,status FROM generation_previews WHERE task_id=#{args[0]} ORDER BY preview_version DESC LIMIT 1
     </select>

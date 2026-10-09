@@ -23,41 +23,14 @@ public class MediaRepository implements MediaStorePort {
     private final TaskRepository tasks;
     private final DocumentSqlRepository docs;
     private final FeeStorePort fees;
+    private ContentWorkflowStorePort contentWorkflows;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void contentWorkflows(ContentWorkflowStorePort store) {this.contentWorkflows=store;}
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules()
             .enable(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
     /** 所有写入沿用system_control→actor→task→scope→operation锁序。 */
     public MediaRepository(SqlSupport sql, TaskRepository tasks, DocumentSqlRepository docs, FeeStorePort fees) {
         this.sql=sql; this.mapper = sql.mapper(MediaMapper.class); this.tasks=tasks; this.docs=docs; this.fees=fees;
-    }
-    /** 迁移前任务保持原执行模式，新任务在首次规划前固定基线。 */
-    @Override
-    @Transactional
-    public boolean skillBindingEligible(TaskLease lease) {
-        tasks.valid(lease);
-        return mapper.skillBindingEligibleSelect(new Object[]{lease.task().taskId()}).get(0).booleanValue("skill_binding_eligible");
-    }
-    /** 绑定读取沿可信任务租约核验。 */
-    @Override
-    @Transactional
-    public Optional<TaskExecutionBinding> executionBinding(TaskLease lease) {
-        tasks.valid(lease);
-        var rows=mapper.executionBindingSelect(new Object[]{lease.task().taskId()});
-        if(rows.isEmpty())return Optional.empty();
-        var row=rows.get(0);TaskExecutionBinding value;
-        try {value=json.readValue(row.string("binding_json"),TaskExecutionBinding.class);}
-        catch(Exception invalid){throw new LabException("SKILL_SNAPSHOT_INVALID","任务Skill快照无法解析");}
-        if(!SqlSupport.hash(encode(value)).equals(row.string("binding_hash")))throw new LabException("SKILL_SNAPSHOT_INVALID","任务Skill快照损坏");
-        return Optional.of(value);
-    }
-    /** 可信租约和账户锁序沿任务仓库；首次写入后不允许替换。 */
-    @Override
-    @Transactional
-    public void bindExecution(TaskLease lease,TaskExecutionBinding binding) {
-        tasks.valid(lease);
-        var saved=executionBinding(lease);
-        if(saved.isPresent()){if(!saved.get().equals(binding))throw conflict();return;}
-        if(!plans(lease.actor(),lease.task().taskId()).isEmpty())throw new LabException("SKILL_BINDING_CONFLICT","已有计划不能补写新Skill基线");
-        mapper.executionBindingInsert(new Object[]{lease.task().taskId(),SqlSupport.hash(encode(binding)),encode(binding)});
     }
     /** 私人预览与来源二次复核；没有预览时不返回模型草稿。 */
     @Transactional(readOnly=true)
@@ -67,6 +40,7 @@ public class MediaRepository implements MediaStorePort {
         if(values.isEmpty()) return Optional.empty();
         var p=decode((String)values.get(0).get("preview_json"),Media.Preview.class);
         verify(actor,p.sourceDependencies());
+        verifyContentPlan(actor,taskId,p);
         return Optional.of(copy(p,(String)values.get(0).get("status"),loadAssets(taskId)));
     }
     /** 每版计划不可覆盖，hash复核后登记真实模型／策略事实。 */
@@ -115,7 +89,10 @@ public class MediaRepository implements MediaStorePort {
     @Transactional
     public Media.Preview prepare(TaskLease lease,Media.Preview value) {
         tasks.valid(lease); verify(lease.actor(),value.sourceDependencies());
-        if(value.taskId()!=lease.task().taskId() || value.previewVersion()!=1 || value.units().isEmpty() || value.units().size()>12) throw LabException.invalid("预览范围无效");
+        if(value.taskId()!=lease.task().taskId() || value.previewVersion()!=1 || value.units().isEmpty()
+                || value.units().size()>(lease.request().documentDriven()?tasks.contentPolicy(lease).orElseThrow().maximumUnits():12)
+                || lease.request().documentDriven()!=(value.contentPlan()!=null)) throw LabException.invalid("预览范围无效");
+        if(value.contentPlan()!=null){contentWorkflows.verifyComplete(lease);verifyContentPlan(lease.actor(),value.taskId(),value);}
         for(var c:value.catalogs()) {
             var old=sql.scalars(mapper.prepareMediaCatalogItemsSelect(new Object[]{c.id(), c.version()}), String.class);
             // MySQL JSON会规范化空白和键序；比较类型化值，不能把存储格式差异当目录篡改。
@@ -140,6 +117,10 @@ public class MediaRepository implements MediaStorePort {
                 ||t.taskType().equals("NOTES_PPT")&&Set.of("MEDIA_READY","WAITING_MEDIA_REVIEW","SUCCEEDED").contains(t.status())) || !Set.of("WAITING","APPROVED").contains(old.status()) || old.previewVersion()!=version || version>=10
                 ) throw new LabException("PREVIEW_CHANGED","预览或配置已变化");
         if(operations(actor,taskId).stream().anyMatch(o->Set.of("SENDING","UNKNOWN","WAITING_EXTERNAL").contains(o.state())))throw new LabException("MEDIA_SUBMISSION_UNKNOWN","原外部操作仍未明确，先核对原ID，不能借编辑重新购买");
+        if(old.contentPlan()!=null) {
+            if(!units.stream().map(Media.Unit::unitId).toList().equals(old.units().stream().map(Media.Unit::unitId).toList()))throw conflict();
+            for(int i=0;i<units.size();i++)if(!units.get(i).imageMode().equals(old.units().get(i).imageMode()))throw conflict();
+        }
         // 只有确定未发送的预留释放；已成功／已发送未知账本永不退款。
         for(var row:mapper.editMediaOperationsSelect(new Object[]{taskId})){
             fees.release(new FeeReservation((String)row.get("operation_id"),(String)row.get("fee_scope_id")));
@@ -152,10 +133,10 @@ public class MediaRepository implements MediaStorePort {
             mapper.editAiTasksWrite(new Object[]{taskId});
         }
         var board=old.storyboard()==null?null:selections==null?StoryboardRules.recreate(version+1,units,old.storyboard()):StoryboardRules.routed(version+1,units,selections);
-        String hash=SqlSupport.hash(encode(units)+encode(board)+configurationHash+encode(old.sourceDependencies())+encode(old.catalogs())+old.maximumAmount());
+        String hash=SqlSupport.hash(encode(units)+encode(board)+configurationHash+encode(old.sourceDependencies())+encode(old.catalogs())+old.maximumAmount()+(old.contentPlan()==null?"":encode(old.contentPlan())));
         var p=new Media.Preview(taskId,version+1,old.planVersion(),hash,"WAITING",UUID.randomUUID().toString(),Instant.now().plusSeconds(1800),
                 configurationHash,old.currency(),null,old.maximumAmount(),units,old.sourceDependencies(),old.coverage(),old.catalogs(),old.assets(),"EDITED_REQUIRES_STRUCTURAL_CHECK_AND_HUMAN_REVIEW",
-                board);
+                board,old.contentPlan());
         insertPreview(p);
         mapper.editAiTasksWrite2(new Object[]{taskId});return p;
     }
@@ -179,7 +160,7 @@ public class MediaRepository implements MediaStorePort {
         }
         boolean video=t.taskType().equals("NOTES_VIDEO");
         // PPT来源页与图片数先限制，再产生任何购买意图，防止导出阶段才发现超额。
-        if(!video&&(p.units().size()>11||p.units().stream().filter(u->!u.imageMode().equals("NONE")).count()>8))throw new LabException("PPT_PAGE_LIMIT","PPT内容加来源最多12页，配图最多8张");
+        if(!video&&(p.units().size()>(p.contentPlan().contentSlides())||p.units().stream().filter(u->!u.imageMode().equals("NONE")).count()>8))throw new LabException("PPT_PAGE_LIMIT","PPT内容页须匹配计划，配图最多8张");
         var submissions=new ArrayList<Media.Submission>();
         var operationUnits=new HashMap<String,String>();
         if(video) {
@@ -463,7 +444,24 @@ public class MediaRepository implements MediaStorePort {
     /** 保存完整私有预览，不自动变成批准；同版不可覆盖。 */
     private void insertPreview(Media.Preview p) { mapper.insertPreviewGenerationPreviewsWrite(new Object[]{p.taskId(), p.previewVersion(), p.approvalId(), p.hash(), p.configurationHash(), p.status(), encode(p.sourceDependencies()), encode(p), Timestamp.from(p.expiresAt())}); }
     /** 只修改服务端状态／资产视图，保持批准参数与来源不可变。 */
-    private Media.Preview copy(Media.Preview p,String status,List<Media.Asset> assets) { return new Media.Preview(p.taskId(),p.previewVersion(),p.planVersion(),p.hash(),status,p.approvalId(),p.expiresAt(),p.configurationHash(),p.currency(),p.estimatedAmount(),p.maximumAmount(),p.units(),p.sourceDependencies(),p.coverage(),p.catalogs(),assets,p.qualityStatus(),p.storyboard()); }
+    private Media.Preview copy(Media.Preview p,String status,List<Media.Asset> assets) { return new Media.Preview(p.taskId(),p.previewVersion(),p.planVersion(),p.hash(),status,p.approvalId(),p.expiresAt(),p.configurationHash(),p.currency(),p.estimatedAmount(),p.maximumAmount(),p.units(),p.sourceDependencies(),p.coverage(),p.catalogs(),assets,p.qualityStatus(),p.storyboard(),p.contentPlan()); }
+    private void verifyContentPlan(UserContext actor,long id,Media.Preview preview) {
+        var task=tasks.read(actor,id);
+        if("NOTES_VIDEO".equals(task.taskType())) {if(preview.contentPlan()!=null)throw conflict();return;}
+        var ref=preview.contentPlan();if(ref==null)throw conflict();
+        if(contentWorkflows==null)throw conflict();
+        var snapshot=contentWorkflows.readPlan(actor,id).orElseThrow(this::conflict);var plan=snapshot.plan();
+        if(!"NOTES_PPT".equals(plan.taskType())||preview.planVersion()!=plan.version()||!ref.planHash().equals(snapshot.planHash())||!ref.title().equals(plan.intent().title())
+                ||ref.contentSlides()!=plan.counts().contentSlides()||ref.sourceSlides()!=plan.counts().sourceSlides()
+                ||ref.totalSlides()!=plan.counts().totalSlides()||preview.units().size()!=ref.contentSlides()
+                ||snapshot.completedUnits()!=plan.units().size())throw conflict();
+        var row=sql.mapper(com.example.ailab.data.persistence.mapper.ContentWorkflowMapper.class).run(new Object[]{id});
+        if(row.size()!=1||!decode(row.get(0).string("source_json"),ContentWorkflow.SourcePlan.class).sources().equals(preview.sourceDependencies()))throw conflict();
+        for(int i=0;i<preview.units().size();i++) {
+            var unit=preview.units().get(i);var target=plan.units().get(i);
+            if(!unit.unitId().equals("slide-"+(i+1))||!unit.imageMode().equals(target.imageMode()))throw conflict();
+        }
+    }
     /** 管理员衍生产物也复核当前真实来源，降级后不能沿用ALL。 */
     private void verify(UserContext actor,List<SourceDependency> sources) { docs.verifySources(new AuthorizedKnowledgeScope(actor,actor.role()==UserContext.Role.ADMIN?ScopeRequest.Mode.ALL:ScopeRequest.Mode.SELF,List.of(),null,Instant.now()),sources); }
     /** Instant按UTC事实保存，不用执行主机本地时区。 */
@@ -511,7 +509,8 @@ public class MediaRepository implements MediaStorePort {
                 ||c.taskId()!=p.taskId()||c.previewVersion()!=p.previewVersion()||c.planVersion()!=p.planVersion()||!c.approvalHash().equals(p.hash())
                 ||!c.sources().equals(p.sourceDependencies())||!c.coverage().equals(p.coverage())||!c.structuralStatus().equals("PASSED")
                 ||!c.qualityStatus().equals("REQUIRES_HUMAN_REVIEW")||!bundle.pptx().mime().equals(Presentation.MIME)
-                ||c.slideCount()!=p.units().size()+1||bundle.pages().size()!=c.slideCount()||c.slideCount()>12)throw conflict();
+                ||c.slideCount()!=(p.contentPlan().totalSlides())||bundle.pages().size()!=c.slideCount()
+                ||c.slideCount()>(516))throw conflict();
         var operations=operations(lease.actor(),p.taskId());
         if(operations.stream().anyMatch(o->!o.state().equals("SUCCEEDED")))throw conflict();
         for(var image:c.images()){

@@ -27,6 +27,12 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     private final boolean workerEnabled;
     @org.springframework.beans.factory.annotation.Value("${lab.media.worker-enabled:false}")
     private boolean mediaWorkerEnabled;
+    private ContentWorkflowProperties contentProperties = new ContentWorkflowProperties();
+    @org.springframework.beans.factory.annotation.Autowired
+    public void contentProperties(ContentWorkflowProperties properties) { this.contentProperties = properties; }
+    private WorkflowRoutingPort workflowRoutes;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void workflowRoutes(WorkflowRoutingPort routes) { this.workflowRoutes = routes; }
 
     /**
      * 使用同一权威数据库与来源规则。
@@ -52,12 +58,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
         if (TaskRequest.retired(request.taskType())) throw new LabException("WORKFLOW_RETIRED", "此工作流已移除");
         if (!TaskRequest.supported(request.taskType())) throw LabException.invalid("未登记的任务类型");
         sql.actor(actor, true);
-        // FIXED保留S04之前的规范JSON，旧幂等键不能因增加可选字段而参数冲突。
-        var canonical = json.valueToTree(new TaskRequest(request.taskType(), request.topic(), request.scope(), request.documentIds().stream().distinct().sorted().toList(), request.idempotencyKey(), request.strategy(), request.presentationOptions(), request.videoOptions(), request.quizOptions(), request.compilationOptions()));
-        if (request.strategy().equals("FIXED")) ((com.fasterxml.jackson.databind.node.ObjectNode) canonical).remove("strategy");
-        // 学习任务不保存媒体选项，媒体保留既有幂等JSON。
-        if (!media(request.taskType())) ((com.fasterxml.jackson.databind.node.ObjectNode)canonical).remove(java.util.List.of("presentationOptions","videoOptions"));
-        if (!Learning.supports(request.taskType())) ((com.fasterxml.jackson.databind.node.ObjectNode)canonical).remove(java.util.List.of("quizOptions", "compilationOptions"));
+        var canonical = json.valueToTree(new TaskRequest(request.taskType(), request.topic(), request.scope(), request.documentIds().stream().distinct().sorted().toList(), request.idempotencyKey(), request.strategy(), request.presentationOptions(), request.videoOptions(), request.quizOptions(), request.compilationOptions(), request.remarks()));
         String serialized = encode(canonical), hash = SqlSupport.hash(serialized);
         var old = sql.project(mapper.createRequestDeduplicationsSelect(new Object[]{actor.userId(), request.idempotencyKey()}), (r, n) -> Map.entry(r.string(1), r.longValue(2)));
         if (!old.isEmpty()) {
@@ -66,9 +67,16 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
         }
         if (sql.scalar(mapper.createAiTasksSelect(new Object[]{actor.userId()}), Long.class) >= 20)
             throw new LabException("RATE_LIMITED", "未完成任务数量超过限额");
-        var limits = Learning.Limits.forType(request.taskType());
+        var binding = workflowRoutes.route(request.taskType());
+        var policy = request.documentDriven() ? contentProperties.snapshot() : null;
+        var limits = policy == null ? Learning.Limits.video() : policy.limits();
         long id = sql.insert(command -> mapper.createAiTasksInsert(command), actor.userId(), request.taskType(), serialized, hash,
-                limits.turns(), limits.attempts(), limits.tools());
+                limits.turns(), limits.attempts(), limits.tools(), policy == null ? 1200 : policy.executionSeconds(), policy == null ? 1 : policy.turns());
+        var bindingJson = encode(binding);
+        sql.mapper(com.example.ailab.data.persistence.mapper.WorkflowRunMapper.class)
+                .bind(new Object[]{id, SqlSupport.hash(bindingJson), bindingJson});
+        if (policy != null) sql.mapper(com.example.ailab.data.persistence.mapper.ContentWorkflowMapper.class)
+                .savePolicy(new Object[]{id, SqlSupport.hash(encode(policy)), encode(policy)});
         // 与任务创建同事务初始化步骤，202 返回时就有完整的待执行列表。
         for (String step : TaskProgress.stepIds(request.taskType()))
             mapper.createTaskStepProgressWrite(new Object[]{id, step});
@@ -206,32 +214,6 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
             throw new LabException("BUDGET_EXCEEDED", "持久模型轮数耗尽");
     }
 
-    /**
-     * 完成检查点唯一键确保恢复跳过已成功步骤。
-     */
-    @Transactional
-    public void checkpoint(TaskLease lease, TaskCheckpoint checkpoint) {
-        valid(lease);
-        if (!List.of("research", "analysis", "report").contains(checkpoint.stepId()))
-            throw LabException.invalid("未知模型检查点步骤");
-        docs.verifySources(all(lease.actor()), checkpoint.sourceDependencies());
-        int count = sql.scalar(mapper.checkpointTaskStepsSelect(new Object[]{lease.task().taskId(), checkpoint.stepId()}), Integer.class);
-        if (count > 0) return;
-        mapper.checkpointTaskStepsWrite(new Object[]{lease.task().taskId(), checkpoint.stepId(), checkpoint.content(), encode(checkpoint.sourceDependencies()), checkpoint.partial()});
-        mapper.checkpointTaskStepProgressWrite(new Object[]{lease.task().taskId(), checkpoint.stepId()});
-        mapper.checkpointAiTasksWrite(new Object[]{lease.task().taskId()});
-    }
-
-    /**
-     * 恢复读取成功事实，来源已撤销则停止。
-     */
-    public List<TaskCheckpoint> checkpoints(TaskLease lease) {
-        sql.actor(lease.actor(), false);
-        var checkpoints = sql.project(mapper.checkpointsTaskStepsSelect(new Object[]{lease.task().taskId()}), (r, n) -> new TaskCheckpoint(r.string("step_id"), r.string("content"), sources(r.string("source_json")), r.booleanValue("partial")));
-        for (var c : checkpoints) docs.verifySources(all(lease.actor()), c.sourceDependencies());
-        return checkpoints;
-    }
-
     /** 初始范围涵盖每一份所选文档；重复恢复不得重置已读页次或变更绑定版本。 */
     @Transactional
     public void initializeCoverage(TaskLease lease,List<DocumentCoverage> coverage) {
@@ -302,43 +284,23 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public int remainingModelTurns(TaskLease lease) {
         valid(lease);
-        return Learning.Limits.forType(lease.request().taskType()).turns()-sql.scalar(mapper.remainingModelTurnsAiTasksSelect(new Object[]{lease.task().taskId()}), Integer.class);
+        return sql.scalar(mapper.remainingModelTurnsAiTasksSelect(new Object[]{lease.task().taskId()}), Integer.class);
     }
-
-    /** 当前租约下恢复唯一计划；已成功节点仍由原检查点复用。 */
     @Transactional
-    public Optional<TaskPlan> plan(TaskLease lease) {
+    public int remainingModelAttempts(TaskLease lease) {
         valid(lease);
-        return readPlan(lease.actor(), lease.task().taskId()).map(TaskPlanSnapshot::plan);
+        return sql.scalar(mapper.remainingModelAttempts(new Object[]{lease.task().taskId()}), Integer.class);
     }
-
-    /** 本人查询计划，JSON摘要与hash不一致时拒绝恢复，不猜测原计划。 */
-    @Transactional(readOnly = true)
-    public Optional<TaskPlanSnapshot> readPlan(UserContext actor, long taskId) {
-        read(actor, taskId);
-        return sql.project(mapper.readPlanTaskPlansSelect(new Object[]{taskId}), (r, n) -> {
-            var plan = decode(r.string("plan_json"), TaskPlan.class);
-            if (!SqlSupport.hash(encode(plan)).equals(r.string("plan_hash")))
-                throw new LabException("CONTEXT_MAPPING_INVALID", "计划摘要不匹配");
-            return new TaskPlanSnapshot(plan, r.string("plan_hash"), r.string("agent_version"), r.string("model_id"), r.string("policy_version"));
-        }).stream().findFirst();
-    }
-
-    /** 已校验计划不可覆盖；fencing／用户锁与任务写事务共用，远程生成在本方法外。 */
     @Transactional
-    public void savePlan(TaskLease lease, TaskPlan plan, String modelId, String policyVersion) {
+    public Optional<ContentWorkflow.Policy> contentPolicy(TaskLease lease) {
         valid(lease);
-        if (!lease.request().strategy().equals("PLANNED") || !"plan-s05-v1".equals(plan.version())
-                || plan.steps().size() != 3 || modelId == null || modelId.length() > 64 || policyVersion == null || policyVersion.length() > 128)
-            throw LabException.invalid("计划登记参数不合法");
-        var previous = readPlan(lease.actor(), lease.task().taskId());
-        if (previous.isPresent()) {
-            if (!previous.get().plan().equals(plan)) throw new LabException("OPERATION_CONFLICT", "已登记计划不可覆盖");
-            return;
-        }
-        String encoded = encode(plan);
-        mapper.savePlanTaskPlansWrite(new Object[]{lease.task().taskId(), plan.version(), SqlSupport.hash(encoded), encoded, "s05-v1", modelId, policyVersion});
-        progressChanged(lease);
+        if (!lease.request().documentDriven()) return Optional.empty();
+        var rows = sql.mapper(com.example.ailab.data.persistence.mapper.ContentWorkflowMapper.class).policy(new Object[]{lease.task().taskId()});
+        if (rows.isEmpty()) throw new LabException("WORKFLOW_STATE_CONFLICT", "资料工作流资源策略缺失");
+        var policy = decode(rows.get(0).string("policy_json"), ContentWorkflow.Policy.class);
+        if (!SqlSupport.hash(encode(policy)).equals(rows.get(0).string("policy_hash")))
+            throw new LabException("WORKFLOW_STATE_CONFLICT", "资料工作流资源策略摘要不一致");
+        return Optional.of(policy);
     }
 
     /** 工具调用逐次持久消费，任何角色或恢复都不能重获额度。 */
@@ -393,12 +355,19 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     public void publish(TaskLease lease, TaskCheckpoint report) {
         valid(lease);
         // 页来源／代次在发布短事务再次核验，已读事实不能套用到新处理批次。
-        pages(lease);
+        if (!lease.request().documentDriven()) pages(lease);
+        else {
+            var contentMapper=sql.mapper(com.example.ailab.data.persistence.mapper.ContentWorkflowMapper.class);
+            var runs=contentMapper.run(new Object[]{lease.task().taskId()});
+            if(runs.size()!=1)throw new LabException("WORKFLOW_STATE_CONFLICT","缺少资料驱动发布清单");
+            ContentWorkflowRepository.verifyPublication(runs.get(0),contentMapper.nodes(new Object[]{lease.task().taskId()}),lease,report,docs);
+        }
         if (coverage(lease.task().taskId()).stream().anyMatch(c -> !c.complete()) && !report.partial())
             throw new LabException("CONTEXT_MAPPING_INVALID","仍有未读范围却声明完整发布");
         docs.verifySources(all(lease.actor()), report.sourceDependencies());
-        if (report.content().getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 1048576)
-            throw new LabException("BUDGET_EXCEEDED", "报告超过 1 MB");
+        int resultLimit=lease.request().documentDriven()?contentPolicy(lease).orElseThrow().resultBytes():1048576;
+        if (report.content().getBytes(java.nio.charset.StandardCharsets.UTF_8).length > resultLimit)
+            throw new LabException("BUDGET_EXCEEDED", "报告超过当前任务保存的结果容量");
         long id = sql.insert(command -> mapper.publishArtifactsInsert(command), lease.actor().userId(), lease.task().taskId(), report.content(), encode(report.sourceDependencies()), SqlSupport.hash(report.content()));
         // 发布事实与可下载产物同事务提交，避免在报告校验/授权完成之前显示 100%。
         mapper.publishTaskStepProgressWrite(new Object[]{lease.task().taskId()});
@@ -425,7 +394,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     public ArtifactSnapshot artifact(UserContext actor, long id) {
         sql.actor(actor, false);
         var result = sql.project(mapper.artifactArtifactsSelect(new Object[]{id, actor.userId()}), (r, n) -> {
-            FixedWorkflowRepository.verifyArtifactBaseline(r, actor, docs);
+            ContentWorkflowRepository.verifyArtifactBaseline(r, actor, docs);
             return new ArtifactSnapshot(r.longValue("id"), actor.userId(), r.longValue("task_id"), r.string("filename"), r.string("mime"), r.string("content"), sources(r.string("source_json")),r.string("kind"),(Long)r.value("byte_size"),r.string("checksum"),r.string("storage_key"),r.string("media_operation_id"),r.intValue("revision"),(Integer)r.value("preview_version")); }).stream().findFirst().orElseThrow(LabException::denied);
         docs.verifySources(all(actor), result.sourceDependencies());
         return result;
@@ -473,7 +442,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
                 : Math.max(0, Duration.between(claimedAt, measuredAt).getSeconds()));
         var progress = media(r.string("task_type")) ? TaskProgress.media(r.string("status"), r.string("media_phase"), mediaWorkerEnabled, leaseActive, steps, instant(r,"started_at"), instant(r,"updated_at"), instant(r,"heartbeat_at"), elapsed) : TaskProgress.from(r.string("status"), workerEnabled, leaseActive, steps,
                 instant(r, "started_at"), instant(r, "updated_at"), instant(r, "heartbeat_at"), elapsed);
-        return new TaskSnapshot(id, r.longValue("requester_user_id"), r.string("task_type"), r.string("status"), r.longValue("state_version"), r.intValue("model_attempts"), Learning.supports(r.string("task_type")) ? progress.completedSteps() : r.intValue("completed_steps"), r.string("error_code"), (Long) r.value("artifact_id"), progress,coverage(id));
+        return new TaskSnapshot(id, r.longValue("requester_user_id"), r.string("task_type"), r.string("status"), r.longValue("state_version"), r.intValue("model_attempts"), progress.completedSteps(), r.string("error_code"), (Long) r.value("artifact_id"), progress,coverage(id));
     }
 
     /** JDBC 使用 UTC 时区转换 TIMESTAMP，历史缺失时间保持 null。 */

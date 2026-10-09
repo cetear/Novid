@@ -1,6 +1,6 @@
 # 多用户个人知识库与 AI 助手：学习验证项目架构与开发约束
 
-> 当前范围（2026-10-09）：旧 FAQ／研究报告创建及执行已移除。学习自测与资料整编固定 Graph/Workflow + Skill，新 PPT 固定 ReAct，视频保留原媒体实现。V21 取消旧未完成任务，历史任务和产物保留只读查询；早期阶段方案与验收仍按当时记录理解。现行使用与接口见 [项目介绍](docs/项目说明与使用介绍.md)、[接口说明](docs/前端接口与联调说明.md)。
+> 当前范围（2026-10-09）：四种独立架构 Workflow、ReAct、Plan-and-Execute、Multi-Agent 并存，工作流声明式登记，创建时固化架构绑定。自测、整编、PPT 采用资料驱动固定 Workflow，视频采用独立 Plan-and-Execute；ReAct／Multi-Agent 已登记，暂无新的独立业务绑定。旧 FAQ／研究报告、旧学习及 PPT ReAct 执行路径已移除，V23 已清理三类资料任务及废弃结构。早期阶段方案与验收按当时记录理解，不作为现行代码恢复依据；现行使用与接口见 [项目介绍](docs/项目说明与使用介绍.md)、[接口说明](docs/前端接口与联调说明.md)。
 
 > 文档用途：作为后续模型实施开发、验证与交付的依据。参考《AI模型应用开发学习指南（零基础到实践）》。
 >
@@ -434,8 +434,11 @@ Citation 至少含 evidenceId、knowledgeBaseId、knowledgeBaseName、owner 展�
 
 ### 6.1 默认执行策略
 
+**2026-10-09 现行实现：**架构层由 `ArchitectureExecutor` 和 `WorkflowProgram` 隔离，`WorkflowModule` 声明式登记业务路由，`WorkflowRouter` 收集独立执行器并派发。固定 Workflow、ReAct、Plan-and-Execute、Multi-Agent 四种执行器均已实现和登记；三个资料工作流绑定 `FIXED/fixed-v1`，视频绑定 `PLAN_EXECUTE/plan-execute-v1`，独立 ReAct／Multi-Agent 暂无新业务绑定。任务创建与架构绑定同事务提交，恢复不得重选架构。详细接入约定见 [AI 模块说明](lab-ai/README.md)。旧 PPT ReAct、旧学习执行器和旧动作表已经删除，后续历史方案不得据此恢复旧实现。
+
+
 - **【默认】采用混合编排：简单任务走固定 Workflow；复杂任务走受限 Plan-and-Execute；有明确独立职责时使用 Supervisor／Worker 多 Agent；Worker 内允许受限 ReAct 类工具循环。不是全系统一个无限 ReAct Agent，也不是所有请求都拆为多个 Agent。**
-- IntentRouter 先用明确规则和小范围结构化意图识别选择执行策略；未知意图澄清或拒绝。
+- 工作流架构由服务端登记选择，不使用模型意图识别替换已绑定架构；未知工作流拒绝执行。
 - 问答：读取合法历史 → 授权小片检索／必要改写 → 父段／邻片扩展与去重／预算 → 生成 → 汇聚校验；背景缺失不靠模型补编。
 - 文档查询：抽取 docId／知识库选择 → KnowledgeAccessPolicy → 读取文档工具 → 依据真实结果生成／程序组装 → 汇聚。普通 UI 的文档 CRUD 不必调用 AI。
 - 学习自测／资料整编：固定“准备 → 分批提取 → 组织 → 生成 → 质检 → 发布”，分别生成题目答案解析或统一分类文档；不调用 Planner，最多一次局部修复。
@@ -639,9 +642,11 @@ S04实施说明（2026-10-04）：正式入口已增加服务端EXACT白名单�
 
 输入继承可信请求者、授权 SELF／SELECTED／ALL、有限 documentIds、主题、受众和语言。PPT 追加页数、服务端主题、配图策略及费用上限；视频追加已登记 characterId／voiceId／sceneId、目标时长及费用上限。客户端不能指定提供方地址、凭证、存储路径或提升系统预算。DTO／端口保持框架无关；本节为规划，实际已交付接口以接口文档的“已实现”清单为准。
 
-#### 6.10.2 共同架构：持久状态图＋受限规划＋Supervisor／Worker
+#### 6.10.2 媒体生命周期与独立架构
 
-**【必须】**PPT 与教学视频同时用于验证复杂 Agent 能力，采用同一编排架构：持久状态图控制生命周期，Planner 生成受限任务 DAG，程序 Supervisor／PlanExecutor 校验并调度已注册 Worker；研究型 Worker 使用有界 ReAct 类工具续轮，TeachingReviewWorker 提交结构化质量意见，经程序核验后最多一次局部重规划／语义返工。计划与角色结果保存为类型化、版本化事实。全部模型调用经过统一 ModelGateway，工具经过 ToolExecutionService；审批和付费提交由程序执行。
+**当前实现优先说明（2026-10-09）：**PPT 和视频共享审批、费用、外部操作及产物的持久生命周期，但任务级架构分别绑定固定 Workflow 和 Plan-and-Execute。PPT 使用资料驱动内容计划及逐页节点，不再进入下面早期方案的媒体 Planner DAG；该 DAG、有限研究工具循环和最多一次局部重规划用于视频。历史方案的真实模型验收要求保留，具体接口与数量规则以当前资料驱动说明为准。
+
+**【早期方案，按上述当前实现更新适用范围】**PPT 与教学视频同时用于验证复杂 Agent 能力，原方案采用同一编排架构：持久状态图控制生命周期，Planner 生成受限任务 DAG，程序 Supervisor／PlanExecutor 校验并调度已注册 Worker；研究型 Worker 使用有界 ReAct 类工具续轮，TeachingReviewWorker 提交结构化质量意见，经程序核验后最多一次局部重规划／语义返工。计划与角色结果保存为类型化、版本化事实。全部模型调用经过统一 ModelGateway，工具经过 ToolExecutionService；审批和付费提交由程序执行。
 
 固定生命周期负责准备／规划、角色执行、质检、预览审批、素材执行、导出或外部等待、发布与终态；**具体 Agent 动作、依赖、并行条件和工具选择来自经校验的真实模型计划**。不能只生成教学大纲，随后执行写死的角色顺序，却声称 Plan-and-Execute 已验证。生命周期状态与计划步骤分开，不建立八层嵌套计划来放大额度。
 
@@ -1309,7 +1314,7 @@ app 是默认正式启动入口；demo 不依赖 app，使用相同模块配置�
 
 `lab.model.routing`：taskType → profile、允许显式选择的范围、策略版本；`lab.model.failover`：故障分类、maxFallbackHops、maxAttemptsPerLogicalCall、冷却／半开；`lab.model.qualityEscalation`：默认关闭。
 
-`lab.agents`：各角色 id／版本、输入输出、允许任务类型、默认 profile、工具白名单、轮数；`lab.orchestration`：任务 → FIXED_WORKFLOW／PLANNED_WORKFLOW、最大步数和并行 Worker 数。
+`lab.agents`：各角色 id／版本、输入输出、允许任务类型、默认 profile、工具白名单、轮数；`WorkflowModule`：工作流 → 架构／执行器版本；程序定义有限步数，任务策略限制并行 Worker 数与累计资源。
 
 `lab.execution`：期限、轮数、工具调用数、计划步骤、修复次数、Token／金额预算、线程／队列。
 
@@ -1493,7 +1498,7 @@ Maven 常规 verify 不调用付费模型或图片／视频生成服务；真实
 | `tools` / 基础 | 10：Function Calling、ReAct、权限、参数 | 模型申请查询工具→执行器校验→返回结果→续轮；注入未知工具、错参和越权 | u1 可读 DOC-U1-01，不能读 DOC-U2-01；admin 可读两者；状态对应当前 MySQL |
 | `write_approval` / 基础 | 10、14、17：写操作、确认、幂等 | 模拟保存 AI 笔记；用户确认具体参数后执行；相同操作 ID 重试 | 未确认不写入；重复确认只产生一份笔记文档和一次 Outbox 入库；改参数使旧确认失效 |
 | `routing_skill` / 进阶 | 路由与 Skill | 依据可信业务类型绑定对应 Skill 与固定执行架构 | Skill 不扩大权限，旧工作流不会映射为新任务 |
-| `orchestration` / 进阶 | Workflow、ReAct 与计划执行扩展 | 自测／整编固定工作流，PPT ReAct；复杂 Plan & Execute 留待真实工作流接入 | 已绑定工作流恢复不切换架构，不将占位目录称为已实现能力 |
+| `orchestration` / 进阶 | Workflow、ReAct 与计划执行扩展 | 资料工作流固定 Workflow，视频 Plan-and-Execute；独立 ReAct／Multi-Agent 已实现并登记，暂无新业务绑定 | 已绑定工作流恢复不切换架构，不将占位目录称为已实现能力 |
 | `memory` / 进阶 | 13：历史、摘要、长期记忆、任务状态 | 会话记住当前知识库／文档，来源权限重核；用户授权保存偏好；提供查看、更正和删除 | 新会话仅读取允许的长期记忆；u2 不读到 u1；删除后后续请求不再使用 |
 | `memory_store` / 进阶 | 13：KV、向量、图、事件记录 | MySQL 保存键值/关系边/事件，ES 保存记忆向量；分别查询与重放 | 展示不同查询能力；图用关系表演示，不额外启动图数据库 |
 | `durable_task` / 进阶 | 队列、状态、检查点、恢复、取消 | 学习工作流分批提取、蓝图／目录、生成、质检与发布 | 完成节点复用，暂停／取消不补充预算，不保证远端请求恰好一次 |

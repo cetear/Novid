@@ -1,6 +1,4 @@
 package com.example.ailab.contract.dto;
 
-/** 服务端执行架构；预留值只有登记了工作流与执行器后才能运行。 */
-public enum ExecutionArchitecture {
-    REACT, PLAN_EXECUTE, FIXED, MULTI_AGENT
-}
+/** 服务端登记的独立执行架构；任务绑定后不能由客户端或模型切换。 */
+public enum ExecutionArchitecture { FIXED, REACT, PLAN_EXECUTE, MULTI_AGENT }
