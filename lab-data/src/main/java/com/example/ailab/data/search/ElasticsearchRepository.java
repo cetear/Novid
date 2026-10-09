@@ -176,7 +176,9 @@ public class ElasticsearchRepository implements KnowledgeIndexPort, KnowledgeSea
             // 超时、冲突或分片失败不能作为删除完成事实。
             if (Boolean.TRUE.equals(result.timedOut()) || !result.failures().isEmpty() || result.versionConflicts() != 0)
                 throw unavailable();
-            return client.count(r -> r.index(config.index()).withJson(new StringReader(body))).count() == 0;
+            var remaining = client.count(r -> r.index(config.index()).withJson(new StringReader(body)));
+            if (remaining.shards().failed().intValue() > 0) throw unavailable();
+            return remaining.count() == 0;
         } catch (LabException e) {
             throw e;
         } catch (Exception e) {

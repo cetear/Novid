@@ -37,10 +37,18 @@ public class FeeRepository implements FeeStorePort {
         if (!media && price!=null && !price.unit().equals("PER_MILLION_TOKENS")) throw conflict();
         if (price != null && !price.currency().equals(currency)) throw conflict();
         sql.actor(scope.actor(), true);
-        if(mediaTask(scope)){
+        String taskType = "";
+        SqlRow task = null;
+        if (scope.kind().equals("TASK")) {
+            var rows = mapper.reserveAiTasksSelect(new Object[]{scope.resourceId(), scope.actor().userId()});
+            if (rows.isEmpty()) throw LabException.denied();
+            task = sql.one(rows);
+            taskType = (String) task.get("task_type");
+        }
+        if ("NOTES_PPT".equals(taskType) || "NOTES_VIDEO".equals(taskType)) {
             // 媒体首次规划就使用本人缩小后的金额上限，不能先创建30元scope再忽略批准上限。
             try{
-                var request=new com.fasterxml.jackson.databind.ObjectMapper().readValue(sql.scalar(mapper.reserveAiTasksSelect(new Object[]{scope.resourceId(), scope.actor().userId()}), String.class),TaskRequest.class);
+                var request=new com.fasterxml.jackson.databind.ObjectMapper().readValue((String) task.get("request_json"),TaskRequest.class);
                 BigDecimal requested=request.taskType().equals("NOTES_VIDEO")?request.videoOptions().maximumAmount():request.presentationOptions().maximumAmount();limit=limit.min(requested);
             }catch(Exception e){throw conflict();}
         }
@@ -63,7 +71,9 @@ public class FeeRepository implements FeeStorePort {
         var used = totals(id, null);
         BigDecimal reserved = simulated || price == null ? null : price.amount(input, output);
         long consumed = sql.scalar(mapper.reserveFeeAttemptsSelect3(new Object[]{id}), Long.class);
-        if (used.attempts() >= (scope.kind().equals("INGESTION") ? 160 : mediaTask(scope) ? 36 : 10)
+        // 尝试额度来自服务端任务类型，与执行预算一致，不能由费用调用方自行放宽。
+        int attemptLimit = scope.kind().equals("INGESTION") ? 160 : Learning.Limits.forType(taskType).attempts();
+        if (used.attempts() >= attemptLimit
                 || consumed + (media?0:input + output) > ((Number)savedScope.get("token_limit")).longValue()
                 || used.overLimit() || reserved != null && used.estimatedAmount().add(used.reservedAmount()).add(reserved)
                     .compareTo((BigDecimal)savedScope.get("limit_amount")) > 0)
@@ -147,12 +157,6 @@ public class FeeRepository implements FeeStorePort {
                 (String)row.get("price_unit"),((Timestamp)row.get("price_effective_at")).toInstant(),(BigDecimal)row.get("input_rate"),(BigDecimal)row.get("output_rate"));
         mapper.completeMediaFeeAttemptsWrite(new Object[]{units==null?"UNKNOWN":"SETTLED", units, units==null?"UNKNOWN":"PROVIDER_REPORTED", units==null?null:price.amount(units,0), outcome, hash, reservation.operationId()});
     }
-    /** 媒体TASK共享36次费用意图，普通报告／在线仍10，不能由客户端选择命名空间绕过。 */
-    private boolean mediaTask(FeeScope scope) {
-        if (!scope.kind().equals("TASK")) return false;
-        return sql.scalar(mapper.mediaTaskAiTasksSelect(new Object[]{scope.resourceId(), scope.actor().userId()}), Integer.class)==1;
-    }
-
     /** 统一scope锁先于attempt锁，发送和补账都采用同一锁顺序。 */
     private void lock(FeeReservation reservation) {
         var rows = mapper.lockFeeScopesSelect(new Object[]{reservation.scopeId()});

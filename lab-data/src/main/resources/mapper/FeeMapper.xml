@@ -5,7 +5,7 @@
         UPDATE fee_attempts SET outcome=#{args[0]},response_hash=#{args[1]} WHERE operation_id=#{args[2]}
     </update>
     <select id="reserveAiTasksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
-        SELECT request_json FROM ai_tasks WHERE id=#{args[0]} AND requester_user_id=#{args[1]}
+        SELECT task_type,request_json FROM ai_tasks WHERE id=#{args[0]} AND requester_user_id=#{args[1]}
     </select>
 
     <select id="reserveFeeScopesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
@@ -63,10 +63,6 @@
     <update id="completeMediaFeeAttemptsWrite">
         UPDATE fee_attempts SET state=#{args[0]},used_units=#{args[1]},usage_source=#{args[2]},estimated_amount=#{args[3]},outcome=#{args[4]},response_hash=#{args[5]},completed_at=CURRENT_TIMESTAMP(6) WHERE operation_id=#{args[6]}
     </update>
-
-    <select id="mediaTaskAiTasksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
-        SELECT COUNT(*) FROM ai_tasks WHERE id=#{args[0]} AND requester_user_id=#{args[1]} AND task_type IN ('NOTES_PPT','NOTES_VIDEO')
-    </select>
 
     <select id="lockFeeScopesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
         SELECT scope_id FROM fee_scopes WHERE scope_id=#{args[0]} FOR UPDATE

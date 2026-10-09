@@ -22,7 +22,6 @@ public interface FeeMapper {
     int completeFeeAttemptsWrite(@Param("args") Object[] args);
     List<SqlRow> completeMediaFeeAttemptsSelect(@Param("args") Object[] args);
     int completeMediaFeeAttemptsWrite(@Param("args") Object[] args);
-    List<SqlRow> mediaTaskAiTasksSelect(@Param("args") Object[] args);
     List<SqlRow> lockFeeScopesSelect(@Param("args") Object[] args);
     List<SqlRow> summaryFeeAttemptsSelect(@Param("args") Object[] args);
     List<SqlRow> summaryAiRunsSelect(@Param("args") Object[] args);

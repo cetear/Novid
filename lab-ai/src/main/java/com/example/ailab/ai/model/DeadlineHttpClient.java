@@ -14,6 +14,8 @@ import java.time.format.DateTimeFormatter;
  * 缓存SDK客户端的同步传输；每次发送用当前线程预算，不缓存请求截止时间。
  */
 final class DeadlineHttpClient implements dev.langchain4j.http.client.HttpClient {
+    /** 聊天及批量向量共用16 MiB传输上限；错误响应也在收取阶段受限。 */
+    private static final int MAXIMUM_RESPONSE_BYTES = 16 * 1024 * 1024;
     record Scope(ExecutionBudget budget, int timeoutSeconds,
                  java.util.concurrent.atomic.AtomicReference<String> responseBody) {
     }
@@ -64,12 +66,14 @@ final class DeadlineHttpClient implements dev.langchain4j.http.client.HttpClient
         request.headers().forEach((name, values) -> values.forEach(value -> builder.header(name, value)));
         builder.method(request.method().name(), java.net.http.HttpRequest.BodyPublishers.ofString(request.body()));
         try {
-            var response = com.example.ailab.contract.http.HttpRequests.send(client, builder.build(), HttpResponse.BodyHandlers.ofString());
+            var response = com.example.ailab.contract.http.HttpRequests.send(client, builder.build(),
+                    com.example.ailab.contract.http.HttpRequests.boundedBytes(MAXIMUM_RESPONSE_BYTES));
             if (response.statusCode() < 200 || response.statusCode() >= 300)
                 throw new Failure(response.statusCode(), retryAfter(response.headers().firstValue("Retry-After").orElse(null)));
             scope.budget().check();
-            scope.responseBody().set(response.body());
-            return SuccessfulHttpResponse.builder().statusCode(response.statusCode()).headers(response.headers().map()).body(response.body()).build();
+            String body = new String(response.body(), java.nio.charset.StandardCharsets.UTF_8);
+            scope.responseBody().set(body);
+            return SuccessfulHttpResponse.builder().statusCode(response.statusCode()).headers(response.headers().map()).body(body).build();
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
             throw new com.example.ailab.contract.error.LabException("REQUEST_CANCELLED", "模型等待已中断");

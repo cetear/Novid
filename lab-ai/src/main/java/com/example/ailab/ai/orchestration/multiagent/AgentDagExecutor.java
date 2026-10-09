@@ -8,6 +8,8 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
@@ -18,6 +20,8 @@ import java.util.function.Function;
 public final class AgentDagExecutor<R> implements AutoCloseable {
     private final Executor executor;
     private final Map<String, CompletableFuture<R>> futures = new ConcurrentHashMap<>();
+    private final Map<String, FutureTask<R>> tasks = new HashMap<>();
+    private boolean closed;
 
     /** 复用工作流已有的有界线程池，不创建额外队列或执行预算。 */
     public AgentDagExecutor(Executor executor) {
@@ -25,12 +29,46 @@ public final class AgentDagExecutor<R> implements AutoCloseable {
     }
 
     /** 节点必须按已验证拓扑登记；依赖完成前不占用角色线程。 */
-    public synchronized void submit(String id, List<String> dependencies, Function<List<R>, R> action) {
-        if (futures.containsKey(id)) throw new IllegalArgumentException("角色步骤ID重复");
+    public void submit(String id, List<String> dependencies, Function<List<R>, R> action) {
         var inputs = List.copyOf(dependencies);
-        var waiting = inputs.stream().map(this::require).toArray(CompletableFuture[]::new);
-        futures.put(id, CompletableFuture.allOf(waiting).thenApplyAsync(
-                ignored -> action.apply(inputs.stream().map(this::result).toList()), executor));
+        var completion = new CompletableFuture<R>();
+        CompletableFuture<?>[] waiting;
+        synchronized (this) {
+            if (closed) throw new IllegalStateException("角色调度已关闭");
+            if (futures.containsKey(id)) throw new IllegalArgumentException("角色步骤ID重复");
+            waiting = inputs.stream().map(this::require).toArray(CompletableFuture[]::new);
+            futures.put(id, completion);
+        }
+        CompletableFuture.allOf(waiting).whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                completion.completeExceptionally(failure);
+                return;
+            }
+            // FutureTask保存真正执行线程，取消能够中断在途动作，而非仅取消汇合结果。
+            var task = new FutureTask<R>(() -> action.apply(inputs.stream().map(this::result).toList())) {
+                @Override protected void done() {
+                    try {
+                        if (isCancelled()) completion.cancel(false);
+                        else completion.complete(get());
+                    } catch (ExecutionException error) {
+                        completion.completeExceptionally(error.getCause());
+                    } catch (InterruptedException error) {
+                        Thread.currentThread().interrupt();
+                        completion.completeExceptionally(error);
+                    }
+                }
+            };
+            synchronized (this) {
+                if (closed) { completion.cancel(false); return; }
+                tasks.put(id, task);
+            }
+            // 不持调度锁执行，兼容直接执行及调用方线程执行的拒绝策略。
+            try { executor.execute(task); }
+            catch (RuntimeException rejected) {
+                completion.completeExceptionally(rejected);
+                task.cancel(false);
+            }
+        });
     }
 
     /** 读取已完成祖先结果；工作流负责保证非直接依赖也是当前节点的祖先。 */
@@ -53,9 +91,16 @@ public final class AgentDagExecutor<R> implements AutoCloseable {
         return future;
     }
 
-    /** 失败或取消时阻止未完成节点继续汇合；线程池生命周期仍归工作流所有。 */
+    /** 关闭后不再启动角色，并中断正在执行的动作；线程池生命周期仍归工作流所有。 */
     @Override
     public void close() {
-        futures.values().stream().filter(future -> !future.isDone()).forEach(future -> future.cancel(true));
+        List<FutureTask<R>> running;
+        synchronized (this) {
+            if (closed) return;
+            closed = true;
+            running = List.copyOf(tasks.values());
+        }
+        futures.values().forEach(future -> future.cancel(false));
+        running.forEach(task -> task.cancel(true));
     }
 }
