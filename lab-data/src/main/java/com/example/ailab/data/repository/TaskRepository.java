@@ -311,7 +311,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
             throw new LabException("BUDGET_EXCEEDED", "持久工具预算耗尽");
     }
 
-    /** 全任务只有一次结构修复，崩溃后也不能再次取得。 */
+    /** 按创建时固化的修复限额消费；恢复不重置资料任务或视频的累计额度。 */
     @Transactional
     public void reserveModelRepair(TaskLease lease) {
         valid(lease);

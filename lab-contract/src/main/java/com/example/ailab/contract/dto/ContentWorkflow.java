@@ -10,13 +10,13 @@ public final class ContentWorkflow {
                          int executionSeconds, int resultBytes) {
         public Policy {
             if (sourceBytes < 3000 || sourceBytes > 10000000 || pageBytes < 500 || pageBytes > 6000
-                    || maximumItems < 8 || maximumItems > 20000 || indexBytes < 3000 || indexBytes > 24000
+                    || maximumItems < 8 || maximumItems > 20000 || indexBytes < 6000 || indexBytes > 24000
                     || unitInputBytes < indexBytes || unitInputBytes > 32000 || maximumUnits < 1 || maximumUnits > 512
                     || parallelism < 1 || parallelism > 16 || turns < 10 || turns > 10000 || attempts < turns || attempts > 20000
                     || tools < 1 || tools > 10000 || executionSeconds < 1200 || executionSeconds > 86400
                     || resultBytes < 500000 || resultBytes > 16000000) throw new IllegalArgumentException("资料工作流资源策略无效");
         }
-        public static Policy defaults() { return new Policy(1000000, 3000, 4096, 4000, 7000, 256, 4, 1200, 1800, 1200, 7200, 4000000); }
+        public static Policy defaults() { return new Policy(1000000, 3000, 4096, 8000, 8000, 256, 4, 1200, 1800, 1200, 7200, 4000000); }
         public Learning.Limits limits() { return new Learning.Limits(turns, attempts, tools); }
     }
     public record SourcePlan(WorkflowExecutionBinding workflow, TaskExecutionBinding skill, String requestHash,

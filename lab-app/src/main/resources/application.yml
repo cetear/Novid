@@ -55,8 +55,8 @@ lab:
     source-bytes: 1000000
     page-bytes: 3000
     maximum-items: 4096
-    index-bytes: 4000
-    unit-input-bytes: 7000
+    index-bytes: 8000
+    unit-input-bytes: 8000
     maximum-units: 256
     parallelism: 4
     turns: 1200
@@ -156,7 +156,7 @@ lab:
         quality-tags: [configured-baseline]
         data-classifications: [PRIVATE]
         context-window: 16000
-        output-limit: 2048
+        output-limit: 4096
         # 模型配置范围1～1800秒；资料任务可等待30分钟，在线仍受30秒单次上限限制。
         timeout-seconds: ${MODEL_PRIMARY_TIMEOUT_SECONDS:90}
       backup:
@@ -169,7 +169,7 @@ lab:
         quality-tags: [configured-baseline]
         data-classifications: [PRIVATE]
         context-window: 16000
-        output-limit: 2048
+        output-limit: 4096
         timeout-seconds: ${MODEL_BACKUP_TIMEOUT_SECONDS:90}
       embedding:
         provider-id: glm-compatible

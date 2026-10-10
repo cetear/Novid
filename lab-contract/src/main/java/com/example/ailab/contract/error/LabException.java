@@ -5,13 +5,19 @@ package com.example.ailab.contract.error;
  */
 public final class LabException extends RuntimeException {
     private final String code;
+    private final java.util.List<com.example.ailab.contract.dto.ValidationIssue> validationIssues;
 
     /**
      * 用稳定错误码表达失败，HTTP 状态由接入层映射。
      */
     public LabException(String code, String message) {
+        this(code,message,java.util.List.of());
+    }
+
+    public LabException(String code,String message,java.util.List<com.example.ailab.contract.dto.ValidationIssue> validationIssues) {
         super(message);
         this.code = code;
+        this.validationIssues = java.util.List.copyOf(validationIssues);
     }
 
     /**
@@ -20,6 +26,8 @@ public final class LabException extends RuntimeException {
     public String code() {
         return code;
     }
+
+    public java.util.List<com.example.ailab.contract.dto.ValidationIssue> validationIssues() { return validationIssues; }
 
     /**
      * 创建统一拒绝异常，避免泄露他人资源是否存在。

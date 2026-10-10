@@ -25,9 +25,9 @@ public interface StructuredSchema<T> {
     T validate(String text, Set<String> references);
 
     /**
-     * 默认不回送草稿和异常消息；具体协议可提供服务端白名单诊断。
+     * 仅回送程序生成的字段诊断；原始异常消息不作为模型指令。
      */
     default String repairInstruction(LabException failure) {
-        return "上次输出未满足字段或引用约束，请按同一结构重新生成。";
+        return "上次输出未满足字段或引用约束，错误码="+failure.code()+"。字段诊断："+failure.validationIssues()+"。请按原参数和同一结构修正全部问题。";
     }
 }

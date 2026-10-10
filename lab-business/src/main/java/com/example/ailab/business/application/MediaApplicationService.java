@@ -157,15 +157,17 @@ public class MediaApplicationService {
             throw LabException.invalid("编辑保留原页／镜头数量与稳定ID；重规划需另行有限执行");
         var task = tasks.read(actor, id);
         boolean video = task.taskType().equals("NOTES_VIDEO");
+        var limits=ContentLimits.current();
+        boolean utf8=!video;
         var refs = p.sourceDependencies().stream().map(s -> "D" + s.documentId() + "v" + s.documentVersion()).collect(java.util.stream.Collectors.toSet());
         var ids = new HashSet<String>();
         for (var u : units) {
             if (u == null || u.unitId() == null || u.layout() == null || u.imageMode() == null)
                 throw LabException.invalid("编辑单位及ID、版式、配图方式不能为空");
             var old = p.units().stream().filter(x -> x.unitId().equals(u.unitId())).findFirst().orElseThrow(() -> LabException.invalid("编辑单位ID不合法"));
-            if (!ids.add(u.unitId()) || u.title() == null || u.title().isBlank() || u.title().length() > 200 || u.text() == null || (!video && u.text().isBlank()) || u.text().length() > 3000 || u.notes() == null || u.notes().length() > 1500
+            if (!ids.add(u.unitId()) || u.title() == null || u.title().isBlank() || !within(u.title(),video?200:limits.title(),utf8) || u.text() == null || (!video && u.text().isBlank()) || !within(u.text(),video?3000:limits.slideText(),utf8) || u.notes() == null || !within(u.notes(),video?1500:limits.slideNotes(),utf8)
                     || !(video?Set.of("TITLE", "TEXT", "TWO_COLUMN", "IMAGE_TEXT", "SCENE"):Set.of("TITLE", "TEXT", "TWO_COLUMN", "IMAGE_TEXT")).contains(u.layout()) || u.references().isEmpty() || !refs.containsAll(u.references())
-                    || !u.imageMode().equals(old.imageMode()) || u.imagePrompt() == null || u.imagePrompt().length() > 1000 || u.seconds() != old.seconds()
+                    || !u.imageMode().equals(old.imageMode()) || u.imagePrompt() == null || !within(u.imagePrompt(),utf8?limits.imagePrompt():1000,utf8) || u.seconds() != old.seconds()
                     || u.imageMode().equals("WEB_SEARCH") && !u.imagePrompt().equals(old.imagePrompt()))
                 throw LabException.invalid("编辑超限或改变不可替换来源／资产约束");
             if (video) {
@@ -182,6 +184,7 @@ public class MediaApplicationService {
             throw LabException.invalid("资料驱动预览须保持内容计划的页面顺序");
         return store.edit(actor, id, version, units, configurationHash(task.taskType()));
     }
+    private static boolean within(String value,int maximum,boolean utf8){return value!=null&&(utf8?TextWindow.count(value):value.length())<=maximum;}
 
     /**
      * 决定只接收批准ID和布尔值，不允许覆盖脚本／价格／来源；数据端原子消费。

@@ -223,7 +223,7 @@ public final class ExecutionBudget {
     }
 
     /**
-     * 全请求最多一次结构修复；修复还需另消耗逻辑轮与真实尝试，不重建期限。
+     * 消费入口绑定的修复额度；每个逻辑生成的纠正次数由网关与节点约束，不重建期限。
      */
     public synchronized void repair() {
         check();

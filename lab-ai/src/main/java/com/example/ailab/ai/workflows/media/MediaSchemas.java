@@ -93,20 +93,29 @@ public final class MediaSchemas {
         validateUnits(units,taskType,refs,taskType.equals("NOTES_VIDEO")?6:512);
     }
     public static void validateUnits(List<Media.Unit> units,String taskType,Set<String> refs,int maximum) {
-        if (units.isEmpty() || units.size() > maximum) throw invalid();
+        var issues=new ArrayList<ValidationIssue>();
+        if (units.isEmpty() || units.size() > maximum)issues.add(new ValidationIssue("units","COUNT",units.size(),maximum,"ITEMS","至少一个单位且不超过本批上限"));
         var ids = new HashSet<String>();
+        int index=0;
         for (var u : units) {
-            if (!u.unitId().matches(taskType.equals("NOTES_VIDEO") ? "shot-[1-9][0-9]?" : "slide-[1-9][0-9]{0,2}") || !ids.add(u.unitId()) || u.title() == null || u.title().isBlank() || u.title().length() > 200
-                    || u.text() == null || !taskType.equals("NOTES_VIDEO") && u.text().isBlank() || u.text().length() > 3000 || u.notes() == null || u.notes().length() > 1500
-                    || !Set.of("TITLE", "TEXT", "TWO_COLUMN", "IMAGE_TEXT", "SCENE").contains(u.layout())
-                    || !Set.of("NONE", "GENERATED", "WEB_SEARCH").contains(u.imageMode()) || u.imagePrompt() == null || u.imagePrompt().length() > 1000
-                    || u.references().isEmpty() || u.references().stream().anyMatch(r -> !refs.contains(r)) || u.seconds() < 0 || u.seconds() > 90)
-                throw invalid();
-            if (taskType.equals("NOTES_VIDEO") && (!u.unitId().startsWith("shot-") || u.seconds() < 1 || !u.imageMode().equals("NONE")))
-                throw invalid();
-            if (!taskType.equals("NOTES_VIDEO") && !u.unitId().startsWith("slide-")) throw invalid();
+            String path="units["+(index++)+"]";
+            if(u==null){issues.add(new ValidationIssue(path,"JSON_TYPE",null,null,"","非null单位"));continue;}
+            if(u.unitId()==null||!u.unitId().matches(taskType.equals("NOTES_VIDEO")?"shot-[1-9][0-9]?":"slide-[1-9][0-9]{0,2}")||!ids.add(u.unitId()))
+                issues.add(new ValidationIssue(path+".unitId","IDENTITY",null,null,"","本任务合法且不重复的单位编号"));
+            mediaText(issues,path+".title",u.title(),200,true);mediaText(issues,path+".text",u.text(),3000,!taskType.equals("NOTES_VIDEO"));
+            mediaText(issues,path+".notes",u.notes(),1500,false);mediaText(issues,path+".imagePrompt",u.imagePrompt(),1000,false);
+            if(u.layout()==null||!Set.of("TITLE","TEXT","TWO_COLUMN","IMAGE_TEXT","SCENE").contains(u.layout()))issues.add(new ValidationIssue(path+".layout","ENUM",null,null,"","TITLE/TEXT/TWO_COLUMN/IMAGE_TEXT/SCENE"));
+            if(u.imageMode()==null||!Set.of("NONE","GENERATED","WEB_SEARCH").contains(u.imageMode())||taskType.equals("NOTES_VIDEO")&&!u.imageMode().equals("NONE"))
+                issues.add(new ValidationIssue(path+".imageMode","ENUM",null,null,"",taskType.equals("NOTES_VIDEO")?"NONE":"NONE/GENERATED/WEB_SEARCH"));
+            if(u.references().isEmpty()||!refs.containsAll(u.references()))issues.add(new ValidationIssue(path+".references","SOURCE",null,null,"","本目标提供的非空来源标签集合"));
+            if(u.seconds()<(taskType.equals("NOTES_VIDEO")?1:0)||u.seconds()>90)issues.add(new ValidationIssue(path+".seconds","RANGE",u.seconds(),90,"SECONDS",taskType.equals("NOTES_VIDEO")?"1至90":"0至90"));
         }
-        if (units.stream().filter(u -> !u.imageMode().equals("NONE")).count() > 8) throw invalid();
+        int images=(int)units.stream().filter(Objects::nonNull).filter(u->!"NONE".equals(u.imageMode())).count();
+        if(images>8)issues.add(new ValidationIssue("units.imageMode","MAXIMUM",images,8,"ITEMS","配图最多8个"));
+        if(!issues.isEmpty())throw invalid(issues.stream().limit(32).toList());
+    }
+    private static void mediaText(List<ValidationIssue> issues,String path,String value,int maximum,boolean nonBlank) {
+        if(value==null||nonBlank&&value.isBlank()||value.length()>maximum)issues.add(new ValidationIssue(path,"TEXT",value==null?0:value.length(),maximum,"UTF-16_UNITS",nonBlank?"非空且不超过上限":"非null且不超过上限"));
     }
 
     /**
@@ -259,7 +268,9 @@ public final class MediaSchemas {
                     + "视频unitId=shot-1等，与前序ID对应。版式SCENE；imageMode=NONE。"
                     + "text为逐页正文或完整台词，notes为备注或镜头动作，references为合法标签字符串数组：" + references
                     + "。所有生成角色review={decision:ACCEPT,issues:[]}；review角色units=[]，review={decision:ACCEPT/REPAIR/NEEDS_USER/FAIL,issues:[{code,stepId,unitId,evidence,suggestion}]}。"
-                    + "定位具体计划stepId和单位ID，至多8问题；不声称看过图片／视频，不批准付费。布局／导演输出必须覆盖对应内容／脚本的全部稳定ID。";
+                    + "定位具体计划stepId和单位ID，至多8问题；不声称看过图片／视频，不批准付费。布局／导演输出必须覆盖对应内容／脚本的全部稳定ID。"
+                    + "单位数量1至6；title最多200、text最多3000、notes最多1500、imagePrompt最多1000个UTF-16长度单位，seconds为1至90。"
+                    + "review.issues的evidence及suggestion各最多1000个UTF-16长度单位；完整JSON最多50000个UTF-16长度单位。";
         }
 
         /**
@@ -267,7 +278,7 @@ public final class MediaSchemas {
          */
         public Media.WorkerResult validate(String text, Set<String> refs) {
             try {
-                if (text.length() > 50000) throw invalid();
+                if (text.length() > 50000) throw invalid(List.of(new ValidationIssue("$","MAXIMUM",text.length(),50000,"UTF-16_UNITS","完整JSON长度上限")));
                 var r = JSON.readValue(text, Media.WorkerResult.class);
                 if (!r.stepId().equals(step.stepId()) || !r.agentId().equals(step.agentId()) || !r.inputHash().equals(inputHash) || r.review() == null || !r.webCandidates().isEmpty() || !r.sourceDependencies().isEmpty())
                     throw invalid();
@@ -285,6 +296,8 @@ public final class MediaSchemas {
                     if (!r.review().decision().equals("ACCEPT") || !r.review().issues().isEmpty()) throw invalid();
                 }
                 return r;
+            } catch (LabException e) {
+                throw e;
             } catch (Exception e) {
                 throw invalid();
             }
@@ -337,5 +350,9 @@ public final class MediaSchemas {
 
     private static LabException invalid() {
         return new LabException("MODEL_STRUCTURED_INVALID", "媒体计划、引用、单位或角色结果结构不合法");
+    }
+    private static LabException invalid(List<ValidationIssue> issues) {
+        try{return new LabException("MODEL_STRUCTURED_INVALID","媒体内容字段不合法 details="+JSON.writeValueAsString(issues),issues);}
+        catch(com.fasterxml.jackson.core.JsonProcessingException failure){throw new IllegalStateException(failure);}
     }
 }

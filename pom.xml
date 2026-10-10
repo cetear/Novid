@@ -30,6 +30,7 @@
     <properties>
 
         <java.version>17</java.version>
+        <test.jvm.args></test.jvm.args>
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
@@ -112,7 +113,7 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
                     <configuration>
-                        <argLine>-Dfile.encoding=UTF-8</argLine>
+                        <argLine>-Dfile.encoding=UTF-8 ${test.jvm.args}</argLine>
                     </configuration>
                 </plugin>
 

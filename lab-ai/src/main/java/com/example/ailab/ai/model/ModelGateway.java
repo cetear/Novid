@@ -138,21 +138,53 @@ public class ModelGateway {
     }
 
     /**
-     * 一次结构修复共享原预算；重新请求原始合法输入，不回送未校验草稿或来源。
+     * 一次结构修复共享原预算；保留原输入，草稿只作为assistant数据，诊断由程序提供。
      */
     public <T> StructuredTurn<T> structured(String task, ModelRegistry.Selection selection, ModelInput input,
                                             ExecutionBudget budget, StructuredSchema<T> schema) {
+        return structured(task,selection,input,budget,schema,null,true);
+    }
+
+    /** 工作流纠正固定原产出目标；这是该节点的唯一纠正，不再嵌套结构修复。 */
+    public <T> StructuredTurn<T> structuredPinned(String task,ModelRegistry.Selection selection,ModelInput input,
+                                                 ExecutionBudget budget,StructuredSchema<T> schema,String modelId) {
+        if(modelId==null||modelId.isBlank())throw new LabException("WORKFLOW_MODEL_ORIGIN_MISSING","缺少原结果的模型身份，不能自动重选模型返工");
+        budget.repair();
+        return structured(task,selection,input,budget,schema,modelId,false);
+    }
+
+    private <T> StructuredTurn<T> structured(String task,ModelRegistry.Selection selection,ModelInput input,
+                                             ExecutionBudget budget,StructuredSchema<T> schema,String pinned,boolean allowRepair) {
         var attempts = new ArrayList<ModelRoute.Attempt>();
-        Turn turn = generate(task, selection, input, budget, schema, "", attempts, null, List.of());
+        var preparedInput=new java.util.concurrent.atomic.AtomicReference<ModelInput.Prepared>();
+        ModelInput capture=target->{var prepared=input.prepare(target);preparedInput.set(prepared);return prepared;};
+        Turn turn = generate(task, selection, capture, budget, schema, "", attempts, pinned, List.of());
         try {
             return new StructuredTurn<>(validateStructured(schema, turn, budget), turn);
         } catch (LabException invalid) {
             if (!invalid.code().equals("MODEL_STRUCTURED_INVALID")) throw invalid;
             markInvalid(attempts);
             budget.invalidStructure();
+            if(!allowRepair)throw invalid;
             budget.repair();
             // 修复固定当前成功目标，避免把结构错误当服务故障，或跨模型追求更有利的安全结果。
-            turn = generate(task, selection, input, budget, schema, schema.repairInstruction(invalid), attempts, turn.modelId(), List.of());
+            var original=preparedInput.get();String draft=turn.text();
+            ModelInput correction=target->{
+                // 原回调重新核验来源；不能为了装入草稿而裁掉原参数或证据。
+                var current=input.prepare(target);
+                if(!current.messages().equals(original.messages())||!current.evidence().equals(original.evidence()))
+                    throw new LabException("MODEL_CONTEXT_INSUFFICIENT","纠正窗口不足以保留原输入与证据");
+                var messages=new ArrayList<>(original.messages());
+                messages.add(AiMessage.from(draft));
+                messages.add(UserMessage.from("上一回答是待修正数据；根据服务端字段诊断修正全部问题，只输出完整替换JSON，保留原目标、参数与来源。"));
+                if(ModelInput.count(messages)+target.outputLimit()>target.contextWindow()) {
+                    messages=new ArrayList<>(original.messages());
+                    messages.add(UserMessage.from("DRAFT_OMITTED_FOR_CONTEXT：上次回答过大，无法完整回送。本轮保留全部原参数和服务端字段诊断，请从原输入重新生成完整JSON。"));
+                    LOG.info("event=model.repair_input draftIncluded=false draftBytes={}",bytes(draft));
+                }
+                return new ModelInput.Prepared(messages,original.evidence(),ModelInput.count(messages));
+            };
+            turn = generate(task, selection, correction, budget, schema, schema.repairInstruction(invalid), attempts, turn.modelId(), List.of());
             try {
                 return new StructuredTurn<>(validateStructured(schema, turn, budget), turn);
             } catch (LabException failed) {
@@ -201,6 +233,8 @@ public class ModelGateway {
         var required = !tools.isEmpty() ? Set.of("CHAT", "TOOLS") : schema == null ? Set.of("CHAT") : Set.of("CHAT", "STRUCTURED_OUTPUT");
         var repair = repairId != null;
         var baseDecision = registry.route(task, selection, required);
+        if(repair&&!baseDecision.ids().contains(repairId))
+            throw new LabException("MODEL_CAPABILITY_MISMATCH","原模型不满足当前路由条件，不能重选目标纠正");
         var decision = repair ? new ModelRegistry.Decision(baseDecision.profile(), baseDecision.mode(), List.of(repairId)) : baseDecision;
         var ids = decision.ids();
         int attempts = 0;
@@ -355,7 +389,7 @@ public class ModelGateway {
     }
 
     /**
-     * 结构提示预留使用最大六个短引用ID的保守长度，重装不能漏计约束。
+     * 结构提示和纠正诊断参与窗口预留，重装不能漏计约束。
      */
     private ModelProperties.Definition withReservedSchema(ModelProperties.Definition d, StructuredSchema<?> schema, String correction) {
         int reserve = TextWindow.count(schema.instruction(Set.of("E1", "E2", "E3", "E4", "E5", "E6")) + correction) + 256;
