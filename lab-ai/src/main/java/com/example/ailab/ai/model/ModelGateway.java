@@ -343,8 +343,8 @@ public class ModelGateway {
                     return turn(text, id, inputUsage, outputUsage, false, response.aiMessage(), decision, log, prepared.evidence());
                 } catch (RuntimeException error) {
                     failure = refused(raw.get()) ? "MODEL_REFUSED" : classify(error);
-                    LOG.warn("event=model.attempt_failed modelId={} attempt={} code={}", id, attempts, failure);
-                    LOG.debug("event=model.diagnostic", com.example.ailab.contract.error.DiagnosticFailure.sanitized(error));
+                    LOG.warn("event=model.attempt_failed modelId={} attempt={} code={}", id, attempts, failure,
+                            com.example.ailab.contract.error.DiagnosticFailure.sanitized(error));
                     outcome = failure;
                     if (!sent || !Set.of("MODEL_TIMEOUT", "MODEL_UNAVAILABLE", "MODEL_RATE_LIMITED", "MODEL_CONFIGURATION_ERROR").contains(failure))
                         throw new LabException(failure, "模型调用失败");
@@ -571,6 +571,10 @@ public class ModelGateway {
      * 仅明确瞬时故障允许切换，认证、限流和参数失败不重试。
      */
     private String classify(RuntimeException e) {
+        // 预算／授权复核可能访问数据库；其底层Socket异常不能触发模型重试或主备切换。
+        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            if (cause instanceof java.sql.SQLException) return "INTERNAL_ERROR";
+        }
         for (Throwable cause = e; cause != null; cause = cause.getCause()) {
             if (cause instanceof LabException lab) return lab.code();
             if (cause instanceof DeadlineHttpClient.Failure http) {
