@@ -60,7 +60,7 @@ public class ModelGateway {
     private final ConcurrentHashMap<String, OpenAiChatModel> chatClients = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, OpenAiEmbeddingModel> embeddingClients = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Semaphore> targetConcurrency = new ConcurrentHashMap<>();
-    private final Semaphore concurrency = new Semaphore(4);
+    private final Semaphore concurrency = new Semaphore(ModelProperties.MAX_CONCURRENCY, true);
     private static final ObjectMapper JSON = new ObjectMapper();
     private FeeAccounting fees;
 
@@ -248,7 +248,7 @@ public class ModelGateway {
                 var permit = health.acquire(id, d.quotaGroup());
                 if (permit == null) break;
                 boolean global = false, local = false, sent = false;
-                var semaphore = targetConcurrency.computeIfAbsent(id, key -> new Semaphore(d.maxConcurrency()));
+                var semaphore = targetConcurrency.computeIfAbsent(id, key -> new Semaphore(d.maxConcurrency(), true));
                 Integer inputUsage = null, outputUsage = null;
                 int reserved = 0;
                 String outcome = "MODEL_INVALID_OUTPUT";
@@ -257,6 +257,12 @@ public class ModelGateway {
                 FeeReservation fee = null;
                 boolean feeSending = false;
                 try {
+                    // 先等目标许可，避免低并发目标的排队请求占满共享许可；等待不消费实际尝试额度。
+                    var waitDeadline = java.time.Instant.now().plus(budget.timeout());
+                    acquire(semaphore, budget, waitDeadline);
+                    local = true;
+                    acquire(concurrency, budget, waitDeadline);
+                    global = true;
                     // 结构指令也计入目标窗口；重装时增加同等预留，不截系统规则和当前问题。
                     var target = schema == null ? d : withReservedSchema(d, schema, correction);
                     var prepared = input.prepare(target);
@@ -269,10 +275,6 @@ public class ModelGateway {
                     reserved = ModelInput.count(messages) + (tools.isEmpty() ? 0 : TextWindow.count(tools.toString()) + 256);
                     if (reserved + d.outputLimit() > d.contextWindow())
                         throw new LabException("MODEL_CONTEXT_INSUFFICIENT", "目标窗口不足以容纳结构约束");
-                    global = concurrency.tryAcquire();
-                    if (!global) throw new LabException("RATE_LIMITED", "模型并发已满");
-                    local = semaphore.tryAcquire();
-                    if (!local) throw new LabException("RATE_LIMITED", "目标模型并发已满");
                     // 金额和词元预留先于持久执行权消费；执行权失败只释放尚未发送的意图。
                     if (fees != null)
                         fee = fees.reserve(budget, id, "CHAT", reserved, d.outputLimit(), d.priceRef(), registry.mock());
@@ -388,6 +390,35 @@ public class ModelGateway {
                 "模型暂不可用，未获得合法结果");
     }
 
+    /** 许可等待使用同一截止时间，定期核验取消／租约，取得后核验失败也必须归还许可。 */
+    private void acquire(Semaphore semaphore, ExecutionBudget budget, java.time.Instant waitDeadline) {
+        boolean waiting = false;
+        while (true) {
+            long remaining = Duration.between(java.time.Instant.now(), waitDeadline).toMillis();
+            if (remaining <= 0) throw new LabException("BUDGET_EXCEEDED", "模型并发许可等待已超时");
+            try {
+                // 空闲时公平地直接获取；只在排队时重复核验，避免每次调用额外多次读取全部来源。
+                if (!semaphore.tryAcquire(waiting ? Math.min(250, remaining) : 0, TimeUnit.MILLISECONDS)) {
+                    waiting = true;
+                    budget.check();
+                    continue;
+                }
+                try {
+                    if (waiting) budget.check();
+                    if (!java.time.Instant.now().isBefore(waitDeadline))
+                        throw new LabException("BUDGET_EXCEEDED", "模型并发许可等待已超时");
+                    return;
+                } catch (RuntimeException failure) {
+                    semaphore.release();
+                    throw failure;
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new LabException("REQUEST_CANCELLED", "模型并发许可等待已中断");
+            }
+        }
+    }
+
     /**
      * 结构提示和纠正诊断参与窗口预留，重装不能漏计约束。
      */
@@ -475,7 +506,7 @@ public class ModelGateway {
         var d = registry.definition(id);
         if (texts.isEmpty() || texts.size() > 32 || texts.stream().mapToInt(this::bytes).sum() > 16000)
             throw new LabException("INGESTION_BUDGET_EXCEEDED", "Embedding 批次输入超过限额");
-        if (!concurrency.tryAcquire()) throw new LabException("RATE_LIMITED", "模型并发已满");
+        acquire(concurrency, budget, java.time.Instant.now().plus(budget.timeout()));
         com.example.ailab.contract.context.TraceContext.Span embeddingSpan = null;
         Integer used = null;
         FeeReservation fee = null;

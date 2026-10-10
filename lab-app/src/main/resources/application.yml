@@ -58,7 +58,7 @@ lab:
     index-bytes: 8000
     unit-input-bytes: 8000
     maximum-units: 256
-    parallelism: 4
+    parallelism: 8
     turns: 1200
     attempts: 1800
     tools: 1200

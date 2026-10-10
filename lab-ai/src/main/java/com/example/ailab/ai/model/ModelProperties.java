@@ -11,6 +11,7 @@ import java.util.*;
 @ConfigurationProperties("lab.model")
 public record ModelProperties(String mode, Map<String, Definition> models, Map<String, Profile> profiles,
                               Routing routing, boolean externalDataAllowed, Failover failover) {
+    public static final int MAX_CONCURRENCY = 8;
     /**
      * 旧装配入口保留，默认有限故障策略。
      */
@@ -24,14 +25,14 @@ public record ModelProperties(String mode, Map<String, Definition> models, Map<S
                              Set<String> dataClassifications, int contextWindow, int outputLimit, int dimensions,
                              int timeoutSeconds, String quotaGroup, String priceRef, int maxConcurrency) {
         /**
-         * 旧定义默认共享供应商配额、未知价格和至多四并发。
+         * 旧定义默认共享供应商配额、未知价格和至多八并发。
          */
         public Definition(String providerId, String endpoint, String modelName, String credentialRef,
                           boolean enabled, Set<String> capabilities, Set<String> qualityTags,
                           Set<String> dataClassifications, int contextWindow, int outputLimit, int dimensions,
                           int timeoutSeconds) {
             this(providerId, endpoint, modelName, credentialRef, enabled, capabilities, qualityTags,
-                    dataClassifications, contextWindow, outputLimit, dimensions, timeoutSeconds, null, null, 4);
+                    dataClassifications, contextWindow, outputLimit, dimensions, timeoutSeconds, null, null, MAX_CONCURRENCY);
         }
 
         /**
@@ -44,8 +45,8 @@ public record ModelProperties(String mode, Map<String, Definition> models, Map<S
             dataClassifications = dataClassifications == null ? Set.of() : Set.copyOf(dataClassifications);
             quotaGroup = quotaGroup == null || quotaGroup.isBlank() ? providerId : quotaGroup;
             priceRef = priceRef == null || priceRef.isBlank() ? "UNKNOWN" : priceRef;
-            if (maxConcurrency == 0) maxConcurrency = 4;
-            if (maxConcurrency < 1 || maxConcurrency > 4) throw new IllegalArgumentException("模型并发须为1～4");
+            if (maxConcurrency == 0) maxConcurrency = MAX_CONCURRENCY;
+            if (maxConcurrency < 1 || maxConcurrency > MAX_CONCURRENCY) throw new IllegalArgumentException("模型并发须为1～8");
         }
     }
 

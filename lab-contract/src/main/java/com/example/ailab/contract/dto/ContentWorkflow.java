@@ -16,7 +16,7 @@ public final class ContentWorkflow {
                     || tools < 1 || tools > 10000 || executionSeconds < 1200 || executionSeconds > 86400
                     || resultBytes < 500000 || resultBytes > 16000000) throw new IllegalArgumentException("资料工作流资源策略无效");
         }
-        public static Policy defaults() { return new Policy(1000000, 3000, 4096, 8000, 8000, 256, 4, 1200, 1800, 1200, 7200, 4000000); }
+        public static Policy defaults() { return new Policy(1000000, 3000, 4096, 8000, 8000, 256, 8, 1200, 1800, 1200, 7200, 4000000); }
         public Learning.Limits limits() { return new Learning.Limits(turns, attempts, tools); }
     }
     public record SourcePlan(WorkflowExecutionBinding workflow, TaskExecutionBinding skill, String requestHash,
