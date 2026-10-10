@@ -1,340 +1,670 @@
+# 配置说明：${环境变量:默认值} 表示优先读取环境变量，缺失时使用冒号后的默认值。
+# 本文件的模型、工具和工作流参数在应用启动时加载；修改后需重启相关服务。
+# 资料任务创建时保存资源策略快照；调整工作流策略不会重置已有任务的预算。
+# Spring Boot 基础配置。
 spring:
+  # 应用身份配置。
   application:
+    # 应用名称，用于标识服务。
     name: ai-learning-lab
+  # MySQL 数据源及连接池配置。
   datasource:
+    # JDBC 连接地址；默认使用 ailab 库，并统一连接与会话时区为 UTC。
     url: ${DB_URL:jdbc:mysql://localhost:3306/ailab?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true}
+    # 数据库登录用户名，通过 DB_USERNAME 覆盖。
     username: ${DB_USERNAME:ailab}
+    # 数据库密码，通过 DB_PASSWORD 注入；默认空值。
     password: ${DB_PASSWORD:}
+    # Hikari 数据库连接池配置。
     hikari:
+      # 连接池最大连接数；请求、后台任务和观测写入共享数据库资源。
       maximum-pool-size: 10
+      # 从连接池获取连接的最长等待时间，单位毫秒；不是 SQL 或模型调用超时。
       connection-timeout: 5000
+  # 数据库版本迁移配置。
   flyway:
+    # 启动时扫描数据库迁移脚本的位置。
     locations: classpath:db/migration
+    # 是否在应用启动时执行 Flyway 数据库迁移。
     enabled: true
+  # HTTP JSON 编解码配置。
   jackson:
+    # 请求 JSON 的反序列化规则。
     deserialization:
+      # 是否拒绝 DTO 未定义的请求字段；true 时未知字段会报错。
       fail-on-unknown-properties: true
+  # Servlet 请求处理配置。
   servlet:
+    # 文件上传容量限制。
     multipart:
+      # 单个上传文件的最大体积。
       max-file-size: 10MB
+      # 整个上传请求的最大体积，包含文件和其他表单内容。
       max-request-size: 11MB
+  # Spring 应用启动行为。
   main:
+    # 是否允许 Bean 循环依赖；false 时启动阶段拒绝循环引用。
     allow-circular-references: false
+# 日志输出、级别和归档配置。
 logging:
+  # Log4j2 配置文件的位置。
   config: classpath:log4j2-spring.xml
+  # 日志文件位置配置。
   file:
+    # 日志输出目录；应用日志和错误日志均写入此目录。
     path: ${LOG_PATH:./logs}
+  # 日志级别配置；可取 TRACE、DEBUG、INFO、WARN、ERROR、OFF 等。
   level:
+    # 全局默认日志级别，通过 LOG_LEVEL 覆盖。
     root: ${LOG_LEVEL:INFO}
+    # 项目业务日志级别，覆盖全局级别，通过 LAB_LOG_LEVEL 调整。
     com.example.ailab: ${LAB_LOG_LEVEL:INFO}
+  # 供 log4j2-spring.xml 读取的自定义滚动归档参数。
   log4j2:
+    # 单个日志文件触发按大小滚动的阈值；同时按天滚动。
     max-file-size: ${LOG_MAX_FILE_SIZE:20MB}
+    # 应用日志归档保留天数，由 Log4j2 归档删除规则使用。
     max-history-days: ${LOG_MAX_HISTORY_DAYS:30}
+    # 应用日志归档累计体积阈值；超过后由归档删除规则清理旧文件。
     max-archive-size: ${LOG_MAX_ARCHIVE_SIZE:1GB}
+# HTTP 服务及内嵌 Tomcat 配置。
 server:
+  # HTTP 监听端口，通过 PORT 覆盖。
   port: ${PORT:8080}
+  # 默认 HTTP 错误响应的内容控制。
   error:
+    # 是否在默认错误响应中包含异常消息；never 表示不包含。
     include-message: never
+    # 是否在默认错误响应中包含异常堆栈；never 表示不包含。
     include-stacktrace: never
+  # 内嵌 Tomcat 的请求承载限制。
   tomcat:
+    # 处理 HTTP 请求的工作线程池配置。
     threads:
+      # HTTP 工作线程最大数量；不等同于后台任务或模型并发数。
       max: 32
+      # Tomcat 保持的最少空闲工作线程数量。
       min-spare: 4
+    # Tomcat 同时接受的最大连接数。
     max-connections: 100
+    # 连接达到上限后，底层连接等待队列的容量。
     accept-count: 32
+# Actuator 运行状态端点配置。
 management:
+  # 管理端点配置。
   endpoints:
+    # 通过 HTTP 暴露管理端点的规则。
     web:
+      # 管理端点开放范围。
       exposure:
+        # 允许通过 HTTP 访问的管理端点；当前仅开放 health。
         include: health
+  # 单个管理端点的行为配置。
   endpoint:
+    # 健康检查端点配置。
     health:
+      # 是否显示健康检查详情；never 表示不公开组件详情。
       show-details: never
+# 本项目业务配置。
 lab:
+  # 资料驱动工作流策略；创建任务时保存快照，后续调整只影响新任务。
   content-workflow:
+    # 所选资料原文总量上限，单位 UTF-8 字节；范围 3000～10000000。
     source-bytes: 1000000
+    # 原文分片大小上限，单位 UTF-8 字节；范围 500～6000，必要时可继续拆分。
     page-bytes: 3000
+    # 整个资料任务可保存的事实条目数上限；范围 8～20000。
     maximum-items: 4096
+    # 知识索引工作包的容量上限，单位 UTF-8 字节；范围 6000～24000。
     index-bytes: 8000
+    # 单个内容目标的事实输入包上限，单位 UTF-8 字节；须不小于 index-bytes，最大 32000。
     unit-input-bytes: 8000
+    # 内容目标数量上限，如题目、整编小节或内容页；范围 1～512。
     maximum-units: 256
+    # 资料子工作包线程池并发数；范围 1～16，实际还受模型网关和目标模型许可限制。
     parallelism: 8
+    # 单个资料任务的逻辑模型生成轮数上限；范围 10～10000，恢复执行不重置。
     turns: 1200
+    # 单个资料任务的实际模型请求次数上限，包含重试、备用及纠正；须不小于 turns，最大 20000。
     attempts: 1800
+    # 单个资料任务的工具调用次数上限；范围 1～10000，恢复执行不重置。
     tools: 1200
+    # 单个资料任务累计执行时间上限，单位秒；范围 1200～86400，7200 秒为 2 小时。
     execution-seconds: 7200
+    # 保存工作流结果的容量边界，单位 UTF-8 字节；范围 500000～16000000。
     result-bytes: 4000000
   # S08维护显式启用；测试保持关闭，历史至少七天，每类最多100行。
+  # 受控历史数据清理配置。
   governance:
+    # 是否启用定时治理清理；默认关闭，启用后按现有调度分批清理。
     cleanup-enabled: false
+    # 治理历史的保留天数；范围 7～365。
     retention-days: 30
+    # 一次治理清理的批量上限；范围 1～100，具体类别按治理实现分批处理。
     batch-size: 100
   # S07金额为已报价部分的估算上限；没有核验价格时保持UNKNOWN，仍守硬词元／次数。
+  # 应用自己的金额和词元预算；不会查询或修改供应商账户余额。
   fees:
+    # 费用预算与价格表的币种，使用三位大写币种代码；CNY 表示人民币。
     currency: CNY
+    # 每次在线执行的已报价部分估算金额上限，单位由 currency 决定；不是供应商账户余额。
     online-limit: 10
+    # 单个后台任务的已报价部分估算金额上限；任务恢复继续使用原费用范围。
     task-limit: 30
+    # 单次文档入库任务的已报价部分估算金额上限。
     ingestion-limit: 30
+    # 每次在线执行的输入与输出总词元硬上限；范围 1～10000000，无报价时仍生效。
     online-tokens: 10000000
+    # 单个后台任务的输入与输出总词元硬上限；范围 1～10000000，各任务独立累计。
     task-tokens: 10000000
+    # 单次文档入库任务的总词元硬上限；范围 1～10000000。
     ingestion-tokens: 10000000
+    # 模型价格引用表；键须与报价 ref 一致，币种须一致；空表表示未配置报价，金额状态为 UNKNOWN。
     prices: {}
+  # 运行图追踪、异步存储与可选外部导出配置。
   observability:
+    # 单次运行最多记录的追踪节点数；范围 1～2000，超过后标记追踪不完整。
     max-nodes: 2000
+    # 异步追踪写入队列容量，单位为队列项数；范围 1～128。
     queue-capacity: 32
+    # 运行追踪记录保留天数；范围 7～365。
     retention-days: 7
+    # 是否向外部 OTLP 接收端导出追踪元数据。
     export-enabled: ${OBS_EXPORT_ENABLED:false}
+    # OTLP HTTP 追踪接收地址；启用导出时配置完整的 /v1/traces 入口。
     otlp-endpoint: ${OBS_OTLP_ENDPOINT:}
+    # OTLP 请求的 Authorization 头值，通过环境变量注入；默认空值。
     otlp-authorization: ${OBS_OTLP_AUTHORIZATION:}
+  # 内置工具和外部 MCP 工具的执行配置。
   tools:
     # S05：只读模型工具暴露开关；写工具仍只能通过本人确认API。
+    # 是否向模型开放已注册的只读工具；写操作仍走现有本人确认流程。
     enabled: true
     # 包含排队、授权复核、远程向量和检索；范围1～1800秒，在线仍受30秒单次上限限制。
+    # 工具执行超时，包含排队和授权复核，单位秒；范围 1～1800，在线单次仍最多 30 秒。
     timeout-seconds: ${TOOL_TIMEOUT_SECONDS:1800}
+    # 外部 MCP 工具连接与白名单配置。
     mcp:
+      # 是否加载并连接配置中的 MCP 服务。
       enabled: true
       # 服务、远端工具名到本地别名及任务范围由服务端显式配置。
+      # MCP 服务列表；工具别名与可用任务范围均由服务端配置。
       servers:
+        # MCP 服务的本地唯一标识，用于区分连接和注册工具。
         - id: zhipu_search
+          # 连接方式；http 使用远端 HTTP MCP 地址，stdio 使用配置的本地进程。
           transport: http
+          # HTTP MCP 服务地址，不是普通模型聊天 API 地址。
           url: https://open.bigmodel.cn/api/mcp/web_search_prime/mcp
+          # 连接 MCP 服务时使用的请求头；认证值通过环境变量提供。
           headers:
+            # MCP Bearer 认证头；当前引用 MODEL_BACKUP_API_KEY。
             Authorization: "Bearer ${MODEL_BACKUP_API_KEY}"
+          # 该服务是否为必需；true 时服务连接或必需工具注册失败会阻止正常初始化。
           required: true
+          # MCP 连接及协议请求的超时，单位秒；工具执行仍受外层任务预算约束。
           timeout-seconds: 60
+          # 远端工具名到本地工具别名的显式白名单映射。
           tools:
+            # 将远端 web_search_prime 注册为本地别名 mcp_zhipu_search。
             web_search_prime: mcp_zhipu_search
+          # 允许使用该服务工具的逻辑任务类型白名单。
           tasks: [KNOWLEDGE_QA, RESEARCH]
+  # 服务端技能启用与加载目录配置。
   skills:
+    # 是否加载技能目录并向工作流提供技能协议。
     enabled: ${SKILLS_ENABLED:true}
     # 分号分隔服务端目录；外部同名版本覆盖内置版本，新任务生效。
+    # 额外技能目录，多个目录用分号分隔；同名外部版本覆盖内置版本，新任务生效。
     roots: ${SKILLS_ROOTS:}
+  # 文档入库后台执行配置。
   ingestion:
+    # 是否启用文档入库任务后台消费。
     worker-enabled: ${INGESTION_WORKER_ENABLED:true}
+  # 持久任务后台执行配置。
   task:
+    # 是否启用任务后台消费；关闭时已登记任务等待执行者。
     worker-enabled: ${TASK_WORKER_ENABLED:true}
+  # 初始化管理员账号的配置。
   bootstrap:
+    # 是否启用管理员初始化流程。
     enabled: ${BOOTSTRAP_ENABLED:false}
+    # 初始化管理员的用户名，通过 BOOTSTRAP_USERNAME 覆盖。
     username: ${BOOTSTRAP_USERNAME:admin}
+  # Elasticsearch 检索、认证和向量空间配置。
   search:
+    # 是否启用真实 Elasticsearch 搜索连接。
     enabled: ${SEARCH_ENABLED:false}
+    # Elasticsearch 服务的 HTTP(S) 地址；认证信息通过独立字段提供。
     endpoint: ${ES_URL:http://localhost:9200}
+    # Elasticsearch 认证用户名；须与 password 成对配置，默认空值。
     username: ${ES_USERNAME:}
+    # Elasticsearch 认证密码，通过 ES_PASSWORD 注入，默认空值。
     password: ${ES_PASSWORD:}
+    # HTTPS 自定义 CA 证书文件路径，通过 ES_CA_CERTIFICATE 指定；trust-all=true 时跳过证书校验。
     ca-certificate: ${ES_CA_CERTIFICATE:}
+    # 是否跳过 HTTPS 证书校验；true 跳过校验，false 使用正常信任校验。
     trust-all: ${ES_TRUST_ALL:true}
+    # 知识块索引名称；应与实际入库和查询使用的索引一致。
     index: ${ES_INDEX:knowledge_chunks_mock_v1}
+    # 向量维度；范围 1～4096，须与 embedding 模型输出和索引映射一致。
     dimensions: ${EMBEDDING_DIMENSIONS:32}
+    # 索引使用的嵌入模型版本标识，用于限定兼容的向量空间。
     embedding-model-version: ${EMBEDDING_MODEL_NAME:mock-embedding-v1}
+  # 分块与检索参数；名称含 tokens 的容量当前按 UTF-8 字节保守估算，不是供应商精确词元数。
   rag:
+    # 单个知识小片的容量上限；范围 100～500，按 UTF-8 字节保守计数。
     max-chunk-tokens: 500
+    # 相邻小片的重叠容量；须非负且小于 max-chunk-tokens，按 UTF-8 字节估算。
     overlap-tokens: 50
+    # 小片最小容量参数；范围 1～max-chunk-tokens，按 UTF-8 字节估算。
     min-chunk-tokens: 100
+    # 加入小片的标题路径前缀容量；至少 1 且小于 max-chunk-tokens，按 UTF-8 字节估算。
     heading-prefix-max-tokens: 64
+    # 父段容量上限；须不小于 max-chunk-tokens，最大 2000，按 UTF-8 字节估算。
     parent-max-tokens: 2000
+    # 检索合并后保留的候选知识小片数；范围 1～6。
     candidate-chunks: 6
+    # 最终交给模型的证据包数量上限；范围 1～6。
     final-evidence: 6
+    # 命中片段向前后扩展的邻片窗口；0 不扩展，1 最多各扩展一片。
     neighbor-window: 1
+    # 最终证据总容量上限；范围 500～4000，按 UTF-8 字节保守估算。
     max-evidence-tokens: 4000
     # S02：块保留与检索参数统一绑定，修改后新处理代次使用新 configHash。
+    # 每条检索路线最多召回的条目数；范围 1～20。
     retrieval-per-route: 20
+    # 分块时是否尽量保持代码块完整；仍受分块容量边界约束。
     preserve-code-blocks: true
+    # 分块时是否保持表格行结构；仍受分块容量边界约束。
     preserve-table-rows: true
+    # 是否将章节标题路径加入分块上下文。
     include-heading-path: true
+  # 模型定义、档位、任务路由和故障切换配置。
   model:
+    # 模型运行模式：mock 为本地模拟，real 为真实提供方调用。
     mode: ${MODEL_MODE:mock}
+    # 是否允许向外部模型发送获授权的业务内容；真实模式仍需满足权限与路由条件。
     external-data-allowed: ${MODEL_EXTERNAL_DATA_ALLOWED:false}
+    # 以本地模型 ID 为键的模型定义；ID 被 profiles 的候选列表引用。
     models:
+      # 主聊天模型定义。
       primary:
+        # 协议适配器标识，用于选择聊天或嵌入请求的适配方式。
         provider-id: openai-compatible
+        # 模型提供方 API 基础地址，通过对应环境变量覆盖。
         endpoint: ${MODEL_BASE_URL:https://api.openai.com/v1}
+        # 发送给提供方的模型名称；mock 模式使用模拟定义。
         model-name: ${MODEL_PRIMARY_NAME:mock-primary}
+        # 保存 API 密钥的环境变量名称；填写引用名，不是密钥正文。
         credential-ref: MODEL_API_KEY
+        # 是否将此模型加入可用目标集合。
         enabled: true
         # STRUCTURED_OUTPUT采用JSON对象协议与本地Schema校验；不冒称原生JSON_SCHEMA已验证。
+        # 声明目标能力；CHAT 聊天、STRUCTURED_OUTPUT JSON 对象输出、TOOLS 工具调用、EMBEDDING 嵌入。
         capabilities: [CHAT, STRUCTURED_OUTPUT, TOOLS]
+        # 声明目标质量标签，须满足 profile 要求；配置标签不等于已完成实际模型评测。
         quality-tags: [configured-baseline]
+        # 允许该模型处理的数据分类；PRIVATE 仍需来源授权和外发开关。
         data-classifications: [PRIVATE]
-        context-window: 16000
-        output-limit: 4096
+        # 声明模型上下文窗口容量（词元）；网关对输入使用 UTF-8 字节保守估算，并预留输出与结构指令。
+        context-window: 200000
+        # 聊天请求的最大输出词元数，同时参与窗口和费用预留；不等于整个任务的词元预算。
+        output-limit: 131072
         # 模型配置范围1～1800秒；资料任务可等待30分钟，在线仍受30秒单次上限限制。
+        # 模型单次等待上限，单位秒；范围 1～1800，在线调用仍最多 30 秒，资料任务还受剩余总期限限制。
         timeout-seconds: ${MODEL_PRIMARY_TIMEOUT_SECONDS:90}
+      # 备用聊天模型定义；只有满足当前 profile 约束的目标才可接管。
       backup:
+        # 协议适配器标识，用于选择聊天或嵌入请求的适配方式。
         provider-id: openai-compatible
+        # 模型提供方 API 基础地址，通过对应环境变量覆盖。
         endpoint: ${MODEL_BACKUP_BASE_URL:${MODEL_BASE_URL:https://api.openai.com/v1}}
+        # 发送给提供方的模型名称；mock 模式使用模拟定义。
         model-name: ${MODEL_BACKUP_NAME:mock-backup}
+        # 保存 API 密钥的环境变量名称；填写引用名，不是密钥正文。
         credential-ref: MODEL_BACKUP_API_KEY
+        # 是否将此模型加入可用目标集合。
         enabled: ${MODEL_BACKUP_ENABLED:true}
+        # 声明目标能力；CHAT 聊天、STRUCTURED_OUTPUT JSON 对象输出、TOOLS 工具调用、EMBEDDING 嵌入。
         capabilities: [CHAT, STRUCTURED_OUTPUT, TOOLS]
+        # 声明目标质量标签，须满足 profile 要求；配置标签不等于已完成实际模型评测。
         quality-tags: [configured-baseline]
+        # 允许该模型处理的数据分类；PRIVATE 仍需来源授权和外发开关。
         data-classifications: [PRIVATE]
-        context-window: 16000
-        output-limit: 4096
+        # 声明模型上下文窗口容量（词元）；网关对输入使用 UTF-8 字节保守估算，并预留输出与结构指令。
+        context-window: 200000
+        # 聊天请求的最大输出词元数，同时参与窗口和费用预留；不等于整个任务的词元预算。
+        output-limit: 131072
+        # 模型单次等待上限，单位秒；范围 1～1800，在线调用仍最多 30 秒，资料任务还受剩余总期限限制。
         timeout-seconds: ${MODEL_BACKUP_TIMEOUT_SECONDS:90}
+      # 嵌入模型定义，用于生成知识检索向量。
       embedding:
+        # 协议适配器标识，用于选择聊天或嵌入请求的适配方式。
         provider-id: glm-compatible
+        # 模型提供方 API 基础地址，通过对应环境变量覆盖。
         endpoint: ${EMBEDDING_BASE_URL:${MODEL_BASE_URL:https://api.openai.com/v1}}
+        # 发送给提供方的模型名称；mock 模式使用模拟定义。
         model-name: ${EMBEDDING_MODEL_NAME:mock-embedding-v1}
+        # 保存 API 密钥的环境变量名称；填写引用名，不是密钥正文。
         credential-ref: ${EMBEDDING_CREDENTIAL_REF:MODEL_API_KEY}
+        # 是否将此模型加入可用目标集合。
         enabled: ${EMBEDDING_ENABLED:true}
+        # 声明目标能力；CHAT 聊天、STRUCTURED_OUTPUT JSON 对象输出、TOOLS 工具调用、EMBEDDING 嵌入。
         capabilities: [EMBEDDING]
+        # 声明目标质量标签，须满足 profile 要求；配置标签不等于已完成实际模型评测。
         quality-tags: [configured-baseline]
+        # 允许该模型处理的数据分类；PRIVATE 仍需来源授权和外发开关。
         data-classifications: [PRIVATE]
+        # 声明模型上下文窗口容量（词元）；网关对输入使用 UTF-8 字节保守估算，并预留输出与结构指令。
         context-window: 16000
+        # 嵌入定义的输出预留参数；不是嵌入向量维度，也不表示只返回一个向量。
         output-limit: 1
+        # 嵌入向量维度，须与搜索索引和实际模型输出一致。
         dimensions: ${EMBEDDING_DIMENSIONS:32}
+        # 模型单次等待上限，单位秒；范围 1～1800，在线调用仍最多 30 秒，资料任务还受剩余总期限限制。
         timeout-seconds: 30
+    # 逻辑模型档位；定义候选顺序、能力与质量要求，不直接等同于某个模型。
     profiles:
+      # 知识问答档位。
       knowledge:
+        # 按优先顺序排列的候选模型 ID，引用 models 中的定义。
         candidate-model-ids: [primary, backup]
+        # 当前档位要求的模型能力；不满足要求的候选不会发送请求。
         required-capabilities: [CHAT]
+        # 当前档位要求的质量标签，候选必须满足这些标签。
         quality-tags: [configured-baseline]
+        # 是否允许在可切换故障时使用兼容备用目标；结构校验错误的纠正仍固定原模型。
         allow-fallback: true
+      # 简单摘要档位。
       economy:
+        # 按优先顺序排列的候选模型 ID，引用 models 中的定义。
         candidate-model-ids: [primary, backup]
+        # 当前档位要求的模型能力；不满足要求的候选不会发送请求。
         required-capabilities: [CHAT]
+        # 当前档位要求的质量标签，候选必须满足这些标签。
         quality-tags: [configured-baseline]
+        # 是否允许在可切换故障时使用兼容备用目标；结构校验错误的纠正仍固定原模型。
         allow-fallback: true
+      # 数据分析档位。
       analysis:
+        # 按优先顺序排列的候选模型 ID，引用 models 中的定义。
         candidate-model-ids: [primary, backup]
+        # 当前档位要求的模型能力；不满足要求的候选不会发送请求。
         required-capabilities: [CHAT]
+        # 当前档位要求的质量标签，候选必须满足这些标签。
         quality-tags: [configured-baseline]
+        # 是否允许在可切换故障时使用兼容备用目标；结构校验错误的纠正仍固定原模型。
         allow-fallback: true
+      # 报告与资料生成档位。
       report:
+        # 按优先顺序排列的候选模型 ID，引用 models 中的定义。
         candidate-model-ids: [primary, backup]
+        # 当前档位要求的模型能力；不满足要求的候选不会发送请求。
         required-capabilities: [CHAT]
+        # 当前档位要求的质量标签，候选必须满足这些标签。
         quality-tags: [configured-baseline]
+        # 是否允许在可切换故障时使用兼容备用目标；结构校验错误的纠正仍固定原模型。
         allow-fallback: true
+      # 规划档位，要求结构化输出能力。
       planning:
+        # 按优先顺序排列的候选模型 ID，引用 models 中的定义。
         candidate-model-ids: [primary, backup]
+        # 当前档位要求的模型能力；不满足要求的候选不会发送请求。
         required-capabilities: [CHAT, STRUCTURED_OUTPUT]
+        # 当前档位要求的质量标签，候选必须满足这些标签。
         quality-tags: [configured-baseline]
+        # 是否允许在可切换故障时使用兼容备用目标；结构校验错误的纠正仍固定原模型。
         allow-fallback: true
+      # 向量生成档位。
       embedding:
+        # 按优先顺序排列的候选模型 ID，引用 models 中的定义。
         candidate-model-ids: [embedding]
+        # 当前档位要求的模型能力；不满足要求的候选不会发送请求。
         required-capabilities: [EMBEDDING]
+        # 当前档位要求的质量标签，候选必须满足这些标签。
         quality-tags: [configured-baseline]
+        # 是否允许在可切换故障时使用兼容备用目标；结构校验错误的纠正仍固定原模型。
         allow-fallback: false
+    # 逻辑任务到模型档位的路由与选择白名单。
     routing:
+      # 路由策略版本标识，写入路由记录用于追溯配置。
       policy-version: routing-s05-v1
+      # 质量标签策略版本；当前 configured-baseline-unverified 表示配置基线未冒称外部评测通过。
       quality-version: configured-baseline-unverified-v1
+      # 允许普通调用方选择的逻辑档位白名单。
       selectable-profiles: [knowledge, economy, analysis, report]
       # EXACT只开放服务端可信入口，普通HTTP不接受modelId。
+      # 可信服务端 EXACT 选择可指定的模型 ID；普通 HTTP 接口不接受直接指定 modelId。
       exact-model-ids: [primary, backup]
+      # 逻辑任务类型到默认模型档位的映射。
       task-profiles:
+        # 知识问答使用的模型档位。
         KNOWLEDGE_QA: knowledge
+        # 向量生成使用的模型档位。
         EMBEDDING: embedding
+        # 简单摘要使用的模型档位。
         SIMPLE_SUMMARY: economy
+        # 数据分析使用的模型档位。
         DATA_ANALYSIS: analysis
+        # 报告及资料工作流生成使用的模型档位。
         REPORT: report
+        # 规划任务使用的模型档位。
         PLANNING: planning
+    # 模型故障重试、备用切换和熔断冷却的有限策略。
     failover:
+      # 单次逻辑模型调用最多允许的实际尝试数，包含重试和备用；范围 1～3。
       max-attempts-per-logical-call: 3
+      # 触发目标故障熔断的连续失败阈值；范围 1～3。
       failure-threshold: 3
+      # 故障熔断后的冷却时长，单位秒；范围 1～300。
       cooldown-seconds: 30
+  # 图片及媒体生成的执行开关、提供方入口与报价配置。
   media:
     # 生图API配置
+    # 图片生成提交地址；当前配置为提供方的异步图片生成入口。
     image-submit-url: https://open.bigmodel.cn/api/paas/v4/async/images/generations
+    # 图片生成模型名称。
     image-model: glm-image
+    # 图片输出尺寸，格式为宽x高，单位像素。
     image-size: 1280x1280
     # 仅在核实异步结果查询不另收费后设为 true；未核验时审批和提交均拒绝生图。
+    # 是否已核实异步结果查询不另收费；未确认时现有审批和提交流程拒绝生图。
     query-free-verified: ${MEDIA_QUERY_FREE_VERIFIED:false}
+    # 媒体 API 使用的密钥环境变量名称；当前引用 MODEL_BACKUP_API_KEY。
     credential-ref: MODEL_BACKUP_API_KEY
     # 生图报价：每张图片计价
+    # 每张图片的服务端报价配置；与实际提供方计费依据保持一致。
     image-price:
+      # 图片报价的唯一引用标识。
       ref: glm-image-price
+      # 报价版本；历史记录使用当时的不可变价格快照。
       version: v1
+      # 图片报价币种，CNY 为人民币。
       currency: CNY
+      # 图片计价单位；PER_IMAGE 表示每张图片计价。
       unit: PER_IMAGE
+      # 报价生效时间，ISO-8601 UTC 格式；实际核验后通过环境变量设置。
       effective-at: ${IMAGE_PRICE_EFFECTIVE_AT:2026-10-01T00:00:00Z}
+      # 每个计价单位的输入侧费率；当前为每张图片单价，通过 IMAGE_UNIT_PRICE 覆盖。
       input-rate: ${IMAGE_UNIT_PRICE:0.1}
+      # 每个计价单位的输出侧费率；当前配置为 0。
       output-rate: 0
+    # 是否启用媒体生成能力；具体提交仍须满足审批、报价及提供方条件。
     enabled: true                 # 开启媒体能力
+    # 是否启用 PPT／视频后台处理。
     worker-enabled: true          # 开启PPT／视频后台处理
+    # 是否允许向媒体提供方发送已批准内容。
     external-data-allowed: true   # 允许向提供方发送批准内容
+  # PPT 排版与渲染配置。
   presentation:
+    # PPT 使用的字体名称；运行机器需要安装对应字体。
     font: Microsoft YaHei         # 本机已安装的中文字体
+  # 视频提供方的声明式协议目录；下面是各目标的独立定义。
   video-registry:
+    # 视频目标列表；使用默认 ASYNC_JSON 异步协议，未启用的目标不会供正常生成选择。
     profiles:
+      # 视频目标的本地唯一标识，供目录选择和历史请求引用。
       - id: zhipu-viduq1-text
+        # 协议定义版本，范围 1～10000；修改提供方协议时应使用新版本。
         version: 1
+        # 是否开放此视频目标；其他授权、报价和审批条件仍需满足。
         enabled: false
+        # 协议核验级别：REGISTERED 已登记、PROTOCOL_TESTED 协议已测试、REAL_VERIFIED 已真实核验。
         verification-status: REGISTERED
+        # 视频提供方标识。
         provider: bigmodel
+        # 提供方账户命名空间，用于区分账户与历史提交身份。
         account-namespace: bigmodel-account-1
+        # 提供方地域标识，须与账户和提交／查询地址匹配。
         region: cn
+        # 视频目标的提供方模型名称。
         model: viduq1-text
+        # 认证密钥所在的环境变量名称；不填写密钥正文。
         credential-ref: MODEL_BACKUP_API_KEY
+        # 发送认证信息的请求头名称，如 Authorization 或受支持的 API-key 头。
         auth-header: Authorization
+        # 认证值前缀；Bearer 后的空格需要保留。
         auth-prefix: 'Bearer '
+        # 视频生成提交地址，使用该账户和地域实际提供的 HTTPS 入口。
         submit-url: https://open.bigmodel.cn/api/paas/v4/videos/generations
+        # 查询已提交任务的地址；{id} 在运行时替换为原始提供方任务 ID。
         query-url: https://open.bigmodel.cn/api/paas/v4/async-result/{id}
+        # 额外协议请求头；当前视频适配仅接受 X-DashScope-Async。
         headers: { }
+        # 提交请求的固定 JSON 模板；inputs 指定的路径由实际任务参数填入。
         body:
+          # 提交模板中的提供方模型名，应与此目标的 model 保持一致。
           model: viduq1-text
+          # 提交模板中的固定画面比例，当前为 16:9。
           aspect_ratio: '16:9'
+        # 业务输入到提交 JSON 的字段映射；值使用 JSON Pointer 路径。
         inputs:
+          # 视频提示词在提交 JSON 中的写入路径。
           prompt: /prompt
+          # 视频时长在提交 JSON 中的写入路径，值的单位为秒。
           seconds: /duration
+        # 从提交响应读取提供方任务 ID 的 JSON Pointer 路径。
         id-path: /id
+        # 从查询响应读取提供方任务状态的 JSON Pointer 路径。
         status-path: /task_status
+        # 从完成响应读取视频下载地址的 JSON Pointer 路径；可包含数组索引。
         result-url-path: /video_result/0/url
+        # 提供方原始状态到本地 PROCESSING／SUCCESS／FAIL／UNKNOWN 的映射。
         statuses:
+          # 将提供方 PROCESSING 状态映射为本地 PROCESSING 状态。
           PROCESSING: PROCESSING
+          # 将提供方 SUCCESS 状态映射为本地 SUCCESS 状态。
           SUCCESS: SUCCESS
+          # 将提供方 FAIL 状态映射为本地 FAIL 状态。
           FAIL: FAIL
+        # 声明此目标支持的视频时长列表，单位秒；须按实际模型能力登记。
         durations: [ 5 ]
+        # 声明此目标支持的分辨率列表；须按实际模型能力登记。
         resolutions: [ 1080P ]
+        # 支持的音频模式：NATIVE 原生音轨、NONE 无音轨；当前提交不支持独立 TTS 配音。
         audio-modes: [ NONE ]
+        # 按能力选项登记的视频报价表；空表表示未配置报价，不代表免费。
         prices: { }
+        # 是否已核实该目标的查询不另收费；供现有预算与查询许可检查使用。
         query-free-verified: false
+        # 查询原视频任务的轮询间隔，单位秒；范围 5～60。
         poll-interval-seconds: 15
+        # 原视频任务的最大轮询次数；范围 1～60，还受任务剩余期限约束。
         max-polls: 60
+        # 视频提交／查询单个 HTTP 请求的超时，单位秒；范围 1～60，区别于整个视频任务期限。
         timeout-seconds: 30
+        # 视频提示词最大 Unicode 码点数；范围 1～20000，不按 UTF-8 字节计数。
         max-prompt-characters: 512
+      # 视频目标的本地唯一标识，供目录选择和历史请求引用。
       - id: bailian-wan3
+        # 协议定义版本，范围 1～10000；修改提供方协议时应使用新版本。
         version: 1
+        # 是否开放此视频目标；其他授权、报价和审批条件仍需满足。
         enabled: false
+        # 协议核验级别：REGISTERED 已登记、PROTOCOL_TESTED 协议已测试、REAL_VERIFIED 已真实核验。
         verification-status: REGISTERED
+        # 视频提供方标识。
         provider: bailian
+        # 提供方账户命名空间，用于区分账户与历史提交身份。
         account-namespace: bailian-beijing-account-1
+        # 提供方地域标识，须与账户和提交／查询地址匹配。
         region: cn-beijing
+        # 视频目标的提供方模型名称。
         model: wan3.0-video
+        # 认证密钥所在的环境变量名称；不填写密钥正文。
         credential-ref: BAILIAN_API_KEY
+        # 发送认证信息的请求头名称，如 Authorization 或受支持的 API-key 头。
         auth-header: Authorization
+        # 认证值前缀；Bearer 后的空格需要保留。
         auth-prefix: 'Bearer '
+        # 视频生成提交地址，使用该账户和地域实际提供的 HTTPS 入口。
         submit-url: https://${BAILIAN_WORKSPACE_ID:unconfigured}.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis
+        # 查询已提交任务的地址；{id} 在运行时替换为原始提供方任务 ID。
         query-url: https://${BAILIAN_WORKSPACE_ID:unconfigured}.cn-beijing.maas.aliyuncs.com/api/v1/tasks/{id}
+        # 额外协议请求头；当前视频适配仅接受 X-DashScope-Async。
         headers:
+          # 百炼异步提交协议头，enable 表示请求异步处理。
           X-DashScope-Async: enable
+        # 提交请求的固定 JSON 模板；inputs 指定的路径由实际任务参数填入。
         body:
+          # 提交模板中的提供方模型名，应与此目标的 model 保持一致。
           model: wan3.0-video
+          # 提供方提交模板的附加参数。
           parameters:
+            # 是否请求提供方扩写提示词；false 使用提交的提示内容。
             prompt_extend: false
+            # 是否请求提供方在视频中添加水印。
             watermark: true
+        # 业务输入到提交 JSON 的字段映射；值使用 JSON Pointer 路径。
         inputs:
+          # 视频提示词在提交 JSON 中的写入路径。
           prompt: /input/prompt
+          # 视频时长在提交 JSON 中的写入路径，值的单位为秒。
           seconds: /parameters/duration
+          # 分辨率在提交 JSON 中的写入路径。
           resolution: /parameters/resolution
+          # 画面比例在提交 JSON 中的写入路径。
           aspectRatio: /parameters/ratio
+          # 音频选项在提交 JSON 中的写入路径。
           audio: /parameters/audio
+        # 从提交响应读取提供方任务 ID 的 JSON Pointer 路径。
         id-path: /output/task_id
+        # 从查询响应读取提供方任务状态的 JSON Pointer 路径。
         status-path: /output/task_status
+        # 从完成响应读取视频下载地址的 JSON Pointer 路径；可包含数组索引。
         result-url-path: /output/video_url
+        # 从响应读取计费用量的 JSON Pointer 路径；当前百炼配置读取 duration。
         usage-path: /usage/duration
+        # 提供方原始状态到本地 PROCESSING／SUCCESS／FAIL／UNKNOWN 的映射。
         statuses:
+          # 将提供方 PENDING 状态映射为本地 PROCESSING 状态。
           PENDING: PROCESSING
+          # 将提供方 RUNNING 状态映射为本地 PROCESSING 状态。
           RUNNING: PROCESSING
+          # 将提供方 SUCCEEDED 状态映射为本地 SUCCESS 状态。
           SUCCEEDED: SUCCESS
+          # 将提供方 FAILED 状态映射为本地 FAIL 状态。
           FAILED: FAIL
+          # 将提供方 CANCELED 状态映射为本地 FAIL 状态。
           CANCELED: FAIL
+          # 将提供方 UNKNOWN 状态映射为本地 UNKNOWN 状态。
           UNKNOWN: UNKNOWN
+        # 声明此目标支持的视频时长列表，单位秒；须按实际模型能力登记。
         durations: [ 2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30 ]
+        # 声明此目标支持的分辨率列表；须按实际模型能力登记。
         resolutions: [ 480P, 720P, 1080P ]
+        # 支持的音频模式：NATIVE 原生音轨、NONE 无音轨；当前提交不支持独立 TTS 配音。
         audio-modes: [ NATIVE, NONE ]
+        # 按能力选项登记的视频报价表；空表表示未配置报价，不代表免费。
         prices: { }
+        # 是否已核实该目标的查询不另收费；供现有预算与查询许可检查使用。
         query-free-verified: false
+        # 查询原视频任务的轮询间隔，单位秒；范围 5～60。
         poll-interval-seconds: 15
+        # 原视频任务的最大轮询次数；范围 1～60，还受任务剩余期限约束。
         max-polls: 60
+        # 视频提交／查询单个 HTTP 请求的超时，单位秒；范围 1～60，区别于整个视频任务期限。
         timeout-seconds: 30
+        # 视频提示词最大 Unicode 码点数；范围 1～20000，不按 UTF-8 字节计数。
         max-prompt-characters: 20000

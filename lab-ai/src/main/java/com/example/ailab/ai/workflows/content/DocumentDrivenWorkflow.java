@@ -90,6 +90,7 @@ public final class DocumentDrivenWorkflow {
         private ContentLimits limits(){return ContentLimits.current();}
         Session(TaskLease lease,TraceContext trace,String runId) {
             this.lease=lease;
+            tasks.beginStep(lease,"prepare");
             var policy=tasks.contentPolicy(lease).orElseThrow(()->new LabException("WORKFLOW_STATE_CONFLICT","缺少创建时的资料资源策略"));
             var binding=router.binding(lease,workflows);
             source=store.sourcePlan(lease).orElseGet(()->{

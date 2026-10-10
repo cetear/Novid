@@ -9,7 +9,10 @@ import java.util.regex.Pattern;
 
 /** 私人排错快照统一过滤；失败静默略过，不记录请求头、配置对象或原始HTTP响应。 */
 public final class TracePayloadCapture {
-    private static final ObjectMapper JSON = new ObjectMapper();
+    // 非法JSON保留文本进入脱敏；不能覆盖重复字段或只保存第一个对象，丢掉校验失败证据。
+    private static final ObjectMapper JSON = new ObjectMapper()
+            .enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+            .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     private static final Pattern BEARER = Pattern.compile("(?i)Bearer\\s+[A-Za-z0-9._~+/=-]+");
     private static final Pattern SECRET = Pattern.compile("(?i)([\"']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|authorization|client[_-]?secret)[\"']?\\s*[=:]\\s*[\"']?)[^\\s,;\\\"'}]+|\\bsk-[A-Za-z0-9_-]{8,}|(?<=[?&])((?:x-amz-signature|x-goog-signature|sig|signature)=)[^&#\\s]+");
     private TracePayloadCapture() { }
