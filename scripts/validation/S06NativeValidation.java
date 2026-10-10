@@ -85,6 +85,7 @@ public final class S06NativeValidation {
         return new KnowledgeCapabilityPort() {
             /** 合成身份范围不声明SQL授权证据。 */
             public AuthorizedKnowledgeScope authorize(UserContext actor,ScopeRequest scope) {return null;}
+            public void verifySources(UserContext actor,List<SourceDependency> sources) {throw new IllegalStateException("合成端口不提供SQL权限核验证据");}
             /** 两角色只读同一短合成资料，来源标签由程序生成。 */
             public DocumentContent document(UserContext actor,ScopeRequest scope,long id) {return new DocumentContent(new DocumentSnapshot(10,1,1,"合成文档","txt",1,"READY",1L),"合成资料：持久追踪保存执行事实，观测失败不能改变预算。",List.of());}
             /** 真实工具执行得到固定统计，用于核对消息配对。 */

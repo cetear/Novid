@@ -41,6 +41,7 @@ public final class S05ModelNativeValidation {
             public AuthorizedKnowledgeScope authorize(UserContext user, ScopeRequest scope) { return null; }
             /** 本样本不允许读取文档。 */
             public DocumentContent document(UserContext user, ScopeRequest scope, long id) { throw new IllegalStateException(); }
+            public void verifySources(UserContext user, List<SourceDependency> sources) { throw new IllegalStateException("本样本不支持来源核验"); }
             /** 可核验的固定事实，必须经过真实工具请求才能返回给模型。 */
             public KnowledgeStatistics statistics(UserContext user, ScopeRequest scope) { return new KnowledgeStatistics(7,2,5); }
         };

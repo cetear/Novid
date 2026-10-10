@@ -204,12 +204,34 @@ public class IngestionRepository implements DocumentIngestionStorePort {
         if (actual != count || count == 0) throw new LabException("CONTEXT_MAPPING_INVALID", "批次切片不完整");
         int verified = sql.scalar(mapper.activateIngestionBatchesSelect(new Object[]{l.ingestionId()}), Integer.class);
         if (verified!=count) throw new LabException("INDEX_NOT_READY", "持久批次未全部验证");
+        bindCompilation(l);
         mapper.activateDocumentVersionsWrite(new Object[]{l.processingRevision(), l.documentId(), l.documentVersion()});
         mapper.activateDocumentIngestionsWrite(new Object[]{l.ingestionId()});
         // 激活与清理意图同事务；只清理严格更旧的内容版本／代次，保留本次及后续批次。
         sql.event("PRUNE_DOCUMENT", l.documentId(), l.ingestionId());
         mapper.activateOutboxEventsWrite(new Object[]{l.documentId(), l.documentVersion()});
         sql.changed();
+    }
+
+    private void bindCompilation(IngestionLease lease) {
+        var compilation=sql.mapper(com.example.ailab.data.persistence.mapper.CompilationMapper.class);
+        var rows=compilation.bindingOrigin(new Object[]{lease.documentId(),lease.documentVersion()});
+        if(rows.isEmpty())return;
+        var origin=rows.get(0);String text=origin.string("raw_text");
+        if(!text.equals(lease.text())||!SqlSupport.hash(text).equals(origin.string("content_hash")))throw ContentReading.invalid();
+        List<Compilation.SectionMapping> logical;
+        try{logical=json.readValue(origin.string("mapping_json"),json.getTypeFactory().constructCollectionType(List.class,Compilation.SectionMapping.class));}
+        catch(Exception invalid){throw ContentReading.invalid();}
+        var context=sql.mapper(com.example.ailab.data.persistence.mapper.DocumentContextMapper.class);
+        var sections=sql.project(context.sectionsDocumentSectionsSelect(new Object[]{lease.documentId(),lease.documentVersion(),lease.processingRevision(),5001,0}),DocumentContextRepository::section);
+        var expected=CompilationSectionBinder.bind(text,logical,sections,lease.processingRevision(),SqlSupport.hash(origin.string("mapping_json")));
+        var existing=compilation.bindings(new Object[]{lease.documentId(),lease.documentVersion(),lease.processingRevision()});
+        if(!existing.isEmpty()) {
+            var actual=existing.stream().map(CompilationRepository::parsedBinding).toList();
+            if(!actual.equals(expected))throw ContentReading.invalid();return;
+        }
+        for(var binding:expected)compilation.saveBinding(new Object[]{lease.documentId(),lease.documentVersion(),lease.processingRevision(),binding.chapterId(),binding.logicalSectionId(),
+                binding.parsedSectionId(),binding.startOffset(),binding.endOffset(),binding.mappingHash()});
     }
 
     /**

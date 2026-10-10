@@ -10,6 +10,14 @@ import static com.example.ailab.ai.model.RecordSchema.Reason.*;
 /** 长度单位显式声明；目标身份和证据不可由生成器更改。 */
 public final class LearningSchemas {
     private LearningSchemas() { }
+    public static RecordSchema<Question> question(Target target) {
+        var limits=ContentLimits.current();
+        return new RecordSchema<>(Question.class,"输出单个固定题位，id/type/itemIds保持不变；题干、答案和解析有明确原文依据。",
+                List.of(utf8("stem",limits.quizStem()),utf8("answer",limits.quizAnswer()),utf8("explanation",limits.quizExplanation()),utf8("options[]",limits.quizOption()),optionalUtf8("$",limits.question())),q->{
+            validateQuestion(q,target,"");
+            RecordSchema.require(withLocalQuizChecks(new Quiz("题位",List.of(q)),new Review("ACCEPT",List.of())).decision().equals("ACCEPT"),CONTENT_CONSTRAINT,"options","选项互不重复");
+        });
+    }
     public static RecordSchema<Quiz> quiz(List<Target> targets){return quiz(targets,ContentLimits.current());}
     public static RecordSchema<Quiz> quiz(List<Target> targets,ContentLimits limits) {
         var fields=List.of(utf8("title",limits.title()),utf8("questions[].stem",limits.quizStem()),utf8("questions[].answer",limits.quizAnswer()),utf8("questions[].explanation",limits.quizExplanation()),utf8("questions[].options[]",limits.quizOption()));

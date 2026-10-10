@@ -57,10 +57,25 @@ public class TaskController {
     }
 
     /** 资料内容计划；尚未完成资料规划返回204。 */
+    @GetMapping("/tasks/{id}/read-plan")
+    public ResponseEntity<ContentReading.Snapshot> readingPlan(Authentication a,@PathVariable long id) {
+        return service.readingPlan(CurrentUser.from(a),id).map(p->ResponseEntity.ok().header("Cache-Control","no-store").body(p))
+                .orElseGet(()->ResponseEntity.noContent().header("Cache-Control","no-store").build());
+    }
+
+    /** 资料内容计划；尚未完成资料规划返回204。 */
     @GetMapping("/tasks/{id}/content-plan")
     public ResponseEntity<ContentWorkflow.Snapshot> contentPlan(Authentication a,@PathVariable long id) {
         return service.contentPlan(CurrentUser.from(a),id).map(p->ResponseEntity.ok().header("Cache-Control","no-store").body(p))
                 .orElseGet(()->ResponseEntity.noContent().header("Cache-Control","no-store").build());
+    }
+
+    /** 工作包分页仅展示职责、依赖和状态，来源权限继续逐次复核。 */
+    @GetMapping("/tasks/{id}/work-packages")
+    public ResponseEntity<List<LearningContent.PackageStatus>> workPackages(Authentication a,@PathVariable long id,
+            @RequestParam(defaultValue="0") int page,@RequestParam(defaultValue="20") int size) {
+        if(page<0||size<1||size>100||(long)page*size>Integer.MAX_VALUE)throw com.example.ailab.contract.error.LabException.invalid("工作包分页范围无效");
+        return ResponseEntity.ok().header("Cache-Control","no-store").body(service.workPackages(CurrentUser.from(a),id,page*size,size));
     }
 
     /** 仅发布成功后的结构化学习结果；答案属于本人私人结果，不作为考试保密接口。 */

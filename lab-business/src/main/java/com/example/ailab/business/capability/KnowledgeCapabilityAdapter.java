@@ -36,6 +36,12 @@ public class KnowledgeCapabilityAdapter implements KnowledgeCapabilityPort {
         return documents.read(authorize(actor, scope), id);
     }
 
+    public void verifySources(UserContext actor, java.util.List<SourceDependency> sources) {
+        var scope = new ScopeRequest(actor.role() == UserContext.Role.ADMIN ? ScopeRequest.Mode.ALL : ScopeRequest.Mode.SELF,
+                java.util.List.of(), null);
+        documents.verifySources(authorize(actor, scope), sources);
+    }
+
     /**
      * 数值来自 SQL，模型只解释。
      */

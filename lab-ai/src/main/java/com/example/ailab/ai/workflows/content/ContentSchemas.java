@@ -39,7 +39,7 @@ public final class ContentSchemas {
     public static RecordSchema<Intent> intent(int maximumThemes){return intent(maximumThemes,ContentLimits.current());}
     public static RecordSchema<Intent> intent(int maximumThemes,ContentLimits limits) {
         return new RecordSchema<>(Intent.class,"输出title、themes(id/title/purpose)、requirements、reason、requestedUnits。主题根据资料归纳，theme id为t1起连续编号；"
-                +"仅用户明确要求精确题数、整编章数或PPT总页数时requestedUnits为十进制字符串，否则AUTO。requirements说明采用的备注要求及默认偏好。",
+                +"仅用户明确要求精确PPT总页数时requestedUnits为十进制字符串，否则AUTO。requirements说明采用的备注要求及默认偏好。",
                 List.of(utf8("title",limits.title()),utf8("requirements",limits.requirements()),utf8("reason",limits.reason()),
                         items("themes",maximumThemes),utf8("themes[].title",limits.title()),utf8("themes[].purpose",limits.purpose())),v->{
             require(!v.themes().isEmpty(),CONTENT_CONSTRAINT,"themes","至少一个主题");
@@ -56,10 +56,11 @@ public final class ContentSchemas {
     public static RecordSchema<UnitBatch> units(String type,Intent intent,List<Learning.Item> facts,TaskRequest request,int maxUnits,int images,int evidenceBytes,ContentLimits limits) {
         var allowed=facts.stream().map(Learning.Item::id).collect(java.util.stream.Collectors.toSet());
         var themes=intent.themes().stream().map(Theme::id).collect(java.util.stream.Collectors.toSet());
-        Set<String> kinds=type.equals("QUIZ_GENERATION")?new HashSet<>(request.quizOptions().questionTypes()):Set.of(type.equals("KNOWLEDGE_COMPILATION")?"SECTION":"SLIDE");
-        Set<String> imageModes=!type.equals("NOTES_PPT")?Set.of("NONE"):switch(request.presentationOptions().imagePolicy()){case "CONCEPT"->Set.of("NONE","GENERATED");case "FACTUAL"->Set.of("NONE","WEB_SEARCH");default->Set.of("NONE","GENERATED","WEB_SEARCH");};
+        if(!type.equals("NOTES_PPT"))throw new IllegalArgumentException("学习任务使用业务计划协议");
+        Set<String> kinds=Set.of("SLIDE");
+        Set<String> imageModes=switch(request.presentationOptions().imagePolicy()){case "CONCEPT"->Set.of("NONE","GENERATED");case "FACTUAL"->Set.of("NONE","WEB_SEARCH");default->Set.of("NONE","GENERATED","WEB_SEARCH");};
         return new RecordSchema<>(UnitBatch.class,"输出units及omittedItemIds、omissionReason。themeId引用统一主题，title/purpose描述目标。"
-                +"itemIds引用本批事实；目标数量按有效知识决定。整编全部条目恰好分配一次；自测与PPT未选条目须列入遗漏并说明选材理由。"
+                +"itemIds引用本批事实；目标数量按有效知识决定。PPT未选条目须列入遗漏并说明选材理由。"
                 +"PPT本批最多"+images+"个配图需求；imagePrompt为配图需求，NONE时为空。每个目标的事实JSON最多"+evidenceBytes+" UTF-8字节。",
                 List.of(items("units",maxUnits),choices("units[].kind",kinds),choices("units[].themeId",themes),
                         choices("units[].relation",Set.of("MERGE","COMPLEMENT","CONFLICT")),utf8("units[].title",limits.title()),utf8("units[].purpose",limits.purpose()),
@@ -71,12 +72,11 @@ public final class ContentSchemas {
                 int bytes=TextWindow.count(ContentJson.encode(facts.stream().filter(i->u.itemIds().contains(i.id())).toList()));
                 maximum(bytes<=evidenceBytes,CONTENT_CONSTRAINT,path+".itemIds",bytes,evidenceBytes,"UTF-8_BYTES");
                 if(!u.imageMode().equals("NONE")){count++;require(!u.imagePrompt().isBlank(),CONTENT_CONSTRAINT,path+".imagePrompt","非空配图需求");}
-                if(type.equals("KNOWLEDGE_COMPILATION"))for(String id:u.itemIds())require(assigned.add(id),CONTENT_CONSTRAINT,path+".itemIds","每条事实只分配一次");else assigned.addAll(u.itemIds());
+                assigned.addAll(u.itemIds());
             }
             maximum(count<=images,CONTENT_CONSTRAINT,"units.imageMode",count,images,"ITEMS");
             require(allowed.containsAll(v.omittedItemIds())&&Collections.disjoint(assigned,v.omittedItemIds()),CONTENT_CONSTRAINT,"omittedItemIds","本批未选且不重复分配的事实编号");
             if(!v.omittedItemIds().isEmpty())require(!v.omissionReason().isBlank(),CONTENT_CONSTRAINT,"omissionReason","非空选材理由");
-            if(type.equals("KNOWLEDGE_COMPILATION"))require(v.omittedItemIds().isEmpty(),CONTENT_CONSTRAINT,"omittedItemIds","整编不允许遗漏事实");
             assigned.addAll(v.omittedItemIds());require(assigned.equals(allowed),CONTENT_CONSTRAINT,"units.itemIds","全部事实须被分配或明确列入遗漏");
         });
     }

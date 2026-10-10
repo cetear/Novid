@@ -1,0 +1,1 @@
+根据全部轻量主题索引提出融合目录、受众、统一术语及各章职责。目录按知识组织；章节说明 purpose 和 exclusions。只有需要另一章真实写作结果时声明 resultDependencies，结构父子关系不等于执行依赖。relatedChapterIds 记录可合包的相关小章。

@@ -1,6 +1,7 @@
 package com.example.ailab.data.repository;
 
 import com.example.ailab.data.persistence.mapper.ApprovalMapper;
+import com.example.ailab.data.persistence.mapper.CompilationMapper;
 import com.example.ailab.data.persistence.po.SqlRow;
 import com.example.ailab.contract.context.UserContext;
 import com.example.ailab.contract.dto.*;
@@ -83,9 +84,23 @@ public class ApprovalRepository implements OperationStorePort {
         long doc = docs.insert(actor, a.knowledgeBaseId(), a.title(), "md", a.content(), true);
         for (var source : a.sourceDependencies())
             mapper.decideSourceDependenciesWrite(new Object[]{doc, source.knowledgeBaseId(), source.documentId(), source.documentVersion()});
+        saveCompilation(actor, a, doc);
         mapper.decideOperationsWrite(new Object[]{a.operationId(), actor.userId(), hash, doc});
         mapper.decideApprovalsWrite2(new Object[]{doc, id});
         return load(actor, id, false);
+    }
+
+    /** 与文档、权限依赖、Outbox在同一确认事务内登记直接关系和版本化映射。 */
+    private void saveCompilation(UserContext actor, ApprovalSnapshot approval, long doc) {
+        var compilation = sql.mapper(CompilationMapper.class);
+        var rows = compilation.approval(new Object[]{approval.approvalId(), actor.userId()});
+        if (rows.isEmpty()) return;
+        var row = rows.get(0);
+        compilation.saveOrigin(new Object[]{doc, row.longValue("task_id"), row.string("result_hash"),
+                SqlSupport.hash(approval.content()), row.string("mapping_json")});
+        int order = 0;
+        for (var source : decode(row.string("direct_source_json")))
+            compilation.saveSource(new Object[]{doc, approval.knowledgeBaseId(), source.documentId(), source.documentVersion(), source.knowledgeBaseId(), order++});
     }
 
     /**

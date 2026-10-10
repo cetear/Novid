@@ -1,6 +1,7 @@
 package com.example.ailab.ai.workflows.support;
 
 import com.example.ailab.contract.dto.Learning.*;
+import com.example.ailab.contract.dto.LearningHierarchy;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -24,13 +25,16 @@ public final class LearningRenderer {
                     .append(refs(q.itemIds(), citations)).append("\n\n");
         } else {
             out.append("## 目录\n\n");
-            result.outline().chapters().forEach(c -> out.append("- ").append(text(c.title())).append("\n")); out.append("\n");
-            for (int i = 0; i < result.chapters().size(); i++) {
-                var chapter = result.chapters().get(i); var plan = result.outline().chapters().get(i);
-                out.append("## ").append(text(chapter.title())).append("\n\n");
+            var plans=LearningHierarchy.ordered(result.outline().chapters(),ChapterPlan::id,ChapterPlan::parentId);
+            var parents=plans.stream().collect(Collectors.toMap(ChapterPlan::id,ChapterPlan::parentId));
+            var chapters=result.chapters().stream().collect(Collectors.toMap(Chapter::id,c->c));
+            plans.forEach(c -> out.append("  ".repeat(LearningHierarchy.depth(c.id(),parents)-1)).append("- ").append(text(c.title())).append("\n")); out.append("\n");
+            for (var plan:plans) {
+                var chapter = chapters.get(plan.id());int depth=LearningHierarchy.depth(plan.id(),parents);
+                out.append("#".repeat(depth+1)).append(" ").append(text(chapter.title())).append("\n\n");
                 for (int j = 0; j < chapter.sections().size(); j++) {
                     var section = chapter.sections().get(j); var group = plan.groups().get(j);
-                    out.append("### ").append(text(group.heading())).append("\n\n");
+                    out.append("#".repeat(depth+2)).append(" ").append(text(group.heading())).append("\n\n");
                     if (group.relation().equals("CONFLICT")) out.append("**资料存在不同说法，需结合来源核对。**\n\n");
                     out.append(text(section.body())).append("\n\n来源：").append(refs(section.itemIds(), citations)).append("\n\n");
                 }

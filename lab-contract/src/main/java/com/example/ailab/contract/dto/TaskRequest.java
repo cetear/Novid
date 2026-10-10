@@ -10,6 +10,11 @@ public record TaskRequest(String taskType, String topic, ScopeRequest scope, Lis
         Learning.CompilationOptions compilationOptions, String remarks) {
     public boolean documentDriven() { return Learning.supports(taskType) || "NOTES_PPT".equals(taskType); }
     public String instructions() { return remarks == null ? "" : remarks; }
+    /** 创建入口在去重或资料访问前调用；重复ID不得静默压成单文档。 */
+    public void validateSourceCardinality() {
+        if ("QUIZ_GENERATION".equals(taskType) && documentIds.size() != 1)
+            throw com.example.ailab.contract.error.LabException.invalid("学习自测必须恰好选择一份文档；多份资料请先整编并保存入库，再选择整编文档自测");
+    }
     public static boolean supported(String type) {
         return type != null && java.util.Set.of("NOTES_PPT", "NOTES_VIDEO", "QUIZ_GENERATION", "KNOWLEDGE_COMPILATION").contains(type);
     }

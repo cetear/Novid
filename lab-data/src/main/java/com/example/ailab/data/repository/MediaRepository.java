@@ -450,7 +450,7 @@ public class MediaRepository implements MediaStorePort {
         if("NOTES_VIDEO".equals(task.taskType())) {if(preview.contentPlan()!=null)throw conflict();return;}
         var ref=preview.contentPlan();if(ref==null)throw conflict();
         if(contentWorkflows==null)throw conflict();
-        var snapshot=contentWorkflows.readPlan(actor,id).orElseThrow(this::conflict);var plan=snapshot.plan();
+        var snapshot=contentWorkflows.readPlan(actor,id).orElseThrow(this::conflict);if(!(snapshot.plan() instanceof ContentWorkflow.OutputPlan plan))throw conflict();
         if(!"NOTES_PPT".equals(plan.taskType())||preview.planVersion()!=plan.version()||!ref.planHash().equals(snapshot.planHash())||!ref.title().equals(plan.intent().title())
                 ||ref.contentSlides()!=plan.counts().contentSlides()||ref.sourceSlides()!=plan.counts().sourceSlides()
                 ||ref.totalSlides()!=plan.counts().totalSlides()||preview.units().size()!=ref.contentSlides()

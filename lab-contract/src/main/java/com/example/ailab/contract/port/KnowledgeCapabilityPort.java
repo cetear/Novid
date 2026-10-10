@@ -20,6 +20,9 @@ public interface KnowledgeCapabilityPort {
      */
     DocumentContent document(UserContext actor, ScopeRequest request, long documentId);
 
+    /** 只核验历史来源存在和当前权限，不读取祖先正文，也不受本次正文scope限制。 */
+    void verifySources(UserContext actor, List<SourceDependency> sources);
+
     /**
      * 读取真实 SQL 统计。
      */

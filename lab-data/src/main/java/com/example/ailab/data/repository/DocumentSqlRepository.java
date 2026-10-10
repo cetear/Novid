@@ -128,6 +128,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
         sql.owner(actor, doc.knowledgeBaseId(), false);
         if (mapper.deleteDocumentsWrite(new Object[]{id, version}) != 1)
             throw new LabException("OPERATION_CONFLICT", "文档版本已变化");
+        sql.mapper(com.example.ailab.data.persistence.mapper.CompilationMapper.class).deleteDocument(new Object[]{id});
         sql.event("DELETE_DOCUMENT", id, version);
         sql.changed();
     }

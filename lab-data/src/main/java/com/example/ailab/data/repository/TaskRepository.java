@@ -55,6 +55,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
      */
     @Transactional
     public TaskSnapshot create(UserContext actor, TaskRequest request) {
+        request.validateSourceCardinality();
         if (TaskRequest.retired(request.taskType())) throw new LabException("WORKFLOW_RETIRED", "此工作流已移除");
         if (!TaskRequest.supported(request.taskType())) throw LabException.invalid("未登记的任务类型");
         sql.actor(actor, true);
@@ -70,6 +71,8 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
         var binding = workflowRoutes.route(request.taskType());
         var policy = request.documentDriven() ? contentProperties.snapshot() : null;
         var limits = policy == null ? Learning.Limits.video() : policy.limits();
+        // 去重命中不重新捕获；新学习任务在创建事务中固定直接正文和解析代次。
+        ContentReading.Plan reading = request.documentDriven() ? captureReading(actor, request, policy) : null;
         long id = sql.insert(command -> mapper.createAiTasksInsert(command), actor.userId(), request.taskType(), serialized, hash,
                 limits.turns(), limits.attempts(), limits.tools(), policy == null ? 1200 : policy.executionSeconds(), policy == null ? 1 : policy.turns());
         var bindingJson = encode(binding);
@@ -77,11 +80,33 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
                 .bind(new Object[]{id, SqlSupport.hash(bindingJson), bindingJson});
         if (policy != null) sql.mapper(com.example.ailab.data.persistence.mapper.ContentWorkflowMapper.class)
                 .savePolicy(new Object[]{id, SqlSupport.hash(encode(policy)), encode(policy)});
+        if(reading != null) {
+            var contentMapper=sql.mapper(com.example.ailab.data.persistence.mapper.ContentWorkflowMapper.class);
+            String text=ContentWorkflowRepository.readingJson(reading);
+            contentMapper.saveReading(new Object[]{id,SqlSupport.hash(text),text});
+            contentMapper.markReading(new Object[]{id,ContentReading.PROTOCOL});
+        }
         // 与任务创建同事务初始化步骤，202 返回时就有完整的待执行列表。
         for (String step : TaskProgress.stepIds(request.taskType()))
             mapper.createTaskStepProgressWrite(new Object[]{id, step});
         mapper.createRequestDeduplicationsWrite(new Object[]{actor.userId(), request.idempotencyKey(), hash, id});
         return read(actor, id);
+    }
+
+    private ContentReading.Plan captureReading(UserContext actor, TaskRequest request, ContentWorkflow.Policy policy) {
+        var scope=new AuthorizedKnowledgeScope(actor,request.scope().mode(),request.scope().knowledgeBaseIds(),request.scope().ownerUserId(),Instant.now());
+        var context=sql.mapper(com.example.ailab.data.persistence.mapper.DocumentContextMapper.class);
+        var input=new ArrayList<StructuredReadPlanner.Input>();
+        for(long id:request.documentIds().stream().distinct().sorted().toList()) {
+            var content=docs.read(scope,id);var d=content.document();
+            if(d.activeProcessingRevision()==null)throw new LabException("INDEX_NOT_READY","资料须先完成结构入库");
+            var args=new Object[]{id,d.documentVersion(),d.activeProcessingRevision(),5001,0};
+            var sections=sql.project(context.sectionsDocumentSectionsSelect(args),DocumentContextRepository::section);
+            var chunks=sql.project(context.chunksChunksSelect(args),DocumentContextRepository::chunk);
+            if(chunks.isEmpty()||chunks.size()>5000)throw new LabException("INDEX_NOT_READY","资料缺少完整解析块");
+            input.add(new StructuredReadPlanner.Input(content,sections,chunks.stream().flatMap(c->c.sourceMap().stream()).toList()));
+        }
+        return StructuredReadPlanner.build(input,policy);
     }
 
     /**

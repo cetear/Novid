@@ -33,6 +33,9 @@ public final class DocumentDrivenWorkflow {
     private final KnowledgeCapabilityPort knowledge;
     private final ModelGateway model;
     private PresentationPort presentation;
+    private CompilationStorePort compilations;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void compilations(CompilationStorePort value){this.compilations=value;}
     @org.springframework.beans.factory.annotation.Autowired
     public void presentation(PresentationPort value) { this.presentation=value; }
     public DocumentDrivenWorkflow(TaskStorePort tasks,ContentWorkflowStorePort store,WorkflowRunStorePort workflows,WorkflowRouter router,
@@ -41,47 +44,32 @@ public final class DocumentDrivenWorkflow {
     }
     public record PptResult(OutputPlan plan,List<Media.Unit> units,List<SourceDependency> sources) { }
     private record Indexed<T>(int index,T value) { }
-    private record LearningExecution(OutputPlan plan, Learning.Result result) { }
+    private record LearningExecution(LearningContent.Plan plan, LearningExecutor.Completed completed) { }
     private record GenerationReceipt(String modelId,int corrections,String json) { }
     public void learning(TaskLease lease,TraceContext trace,String runId) {
         try(var session=new Session(lease,trace,runId)) {
             var completed=router.execute(lease,workflows,session.budget,FixedWorkflowProgram.of(()-> {
-                session.extract();var plan=session.plan();
-                if(lease.request().taskType().equals("QUIZ_GENERATION")) {
-                    var questions=session.parallel(plan.units(),u->session.question(plan,u));
-                    var quiz=new Learning.Quiz(plan.intent().title(),questions);
-                    quiz=session.checkQuiz(plan,quiz);
-                    return new LearningExecution(plan,new Learning.Result("learning-quiz",quiz.title(),quiz,null,List.of(),session.citations(),true,"MODEL_REVIEW_PASSED_PENDING_HUMAN"));
-                } else {
-                    var sections=session.parallel(plan.units(),u->session.section(plan,u));
-                    var chapters=new ArrayList<Learning.Chapter>();var chapterPlans=new ArrayList<Learning.ChapterPlan>();
-                    for(var theme:plan.intent().themes()) {
-                        var assigned=plan.units().stream().filter(u->u.themeId().equals(theme.id())).toList();
-                        if(assigned.isEmpty())continue;
-                        var groups=assigned.stream().map(u->new Learning.Group(u.id(),u.title(),u.relation(),u.itemIds())).toList();
-                        chapterPlans.add(new Learning.ChapterPlan(theme.id(),theme.title(),groups));
-                        var byId=sections.stream().collect(Collectors.toMap(Learning.Section::groupId,Function.identity()));
-                        chapters.add(new Learning.Chapter(theme.id(),theme.title(),assigned.stream().map(u->byId.get(u.id())).toList()));
-                    }
-                    var outline=new Learning.Outline(plan.intent().title(),chapterPlans);
-                    return new LearningExecution(plan,new Learning.Result("knowledge-compilation",outline.title(),null,outline,chapters,session.citations(),true,"MODEL_REVIEW_PASSED_PENDING_HUMAN"));
-                }
+                session.extract();var plan=new LearningPlanner(session).plan();
+                return new LearningExecution(plan,new LearningExecutor(session,plan).execute(session.citations()));
             }));
-            session.publish(completed.plan(),completed.result());
+            session.publish(completed.plan(),completed.completed());
         }
     }
     public PptResult presentation(TaskLease lease,TraceContext trace,String runId) {
         try(var session=new Session(lease,trace,runId)) {
             return router.execute(lease,workflows,session.budget,FixedWorkflowProgram.of(()-> {
-                session.extract();var plan=session.plan();var units=session.parallel(plan.units(),u->session.slide(plan,u));
+                session.extract();var plan=session.planPpt();var units=session.parallel(plan.units(),u->session.slide(plan,u));
                 session.finishGeneration(plan);store.verifyComplete(lease);
                 return new PptResult(plan,units,session.source.sources());
             }));
         }
     }
-    private final class Session implements AutoCloseable {
+    private final class Session implements AutoCloseable,LearningRuntime {
         private final TaskLease lease;
         private final SourcePlan source;
+        private final ContentReading.Plan reading;
+        private final List<ContentReading.TopicCard> topicCards=new ArrayList<>();
+        private final Map<Long,String> documentsRaw=new HashMap<>();
         private final ExecutionBudget budget;
         private final ExecutorService pool;
         private final Map<String,String> raw=new LinkedHashMap<>();
@@ -93,12 +81,22 @@ public final class DocumentDrivenWorkflow {
             tasks.beginStep(lease,"prepare");
             var policy=tasks.contentPolicy(lease).orElseThrow(()->new LabException("WORKFLOW_STATE_CONFLICT","缺少创建时的资料资源策略"));
             var binding=router.binding(lease,workflows);
+            reading=store.readingPlan(lease).orElseThrow(()->new LabException("WORKFLOW_STATE_CONFLICT","新任务缺少创建时固定的结构阅读计划"));
+            reading.validate(policy.readingPackBytes());
             source=store.sourcePlan(lease).orElseGet(()->{
-                var skill=skills.contentBinding(tools.contracts());var prepared=prepare(lease,binding,skill,policy);store.bind(lease,prepared);return prepared;
+                var skill=skills.contentBinding(tools.contracts());var prepared=new SourcePlan(binding,skill,ContentJson.hash(lease.request()),policy,reading.fragments().stream().map(ContentReading.Fragment::source).toList(),reading.sources());
+                store.bind(lease,prepared);return prepared;
             });
+            if((!reading.fragments().stream().map(ContentReading.Fragment::source).toList().equals(source.slices())||!reading.sources().equals(source.sources())))throw changed();
             if(!source.policy().equals(policy)||!source.workflow().equals(binding))throw changed();
             SkillCatalog.verify(source.skill());
             trace.payloadSources(source.sources());
+            for(var d:reading.documents()) {
+                var c=knowledge.document(lease.actor(),lease.request().scope(),d.documentId());
+                if(c.document().documentVersion()!=d.documentVersion()||!Objects.equals(c.document().activeProcessingRevision(),d.processingRevision())
+                        ||c.document().knowledgeBaseId()!=d.knowledgeBaseId()||!Learning.digest(c.text()).equals(d.textHash()))throw changed();
+                documentsRaw.put(d.documentId(),c.text());
+            }
             for(var slice:source.slices())raw.put(slice.id(),read(slice));
             long elapsed=lease.task().progress()==null?0:lease.task().progress().elapsedExecutionSeconds();
             budget=new ExecutionBudget(Duration.ofSeconds(Math.max(1,policy.executionSeconds()-elapsed)),policy.attempts(),()->tasks.reserveModelAttempt(lease),
@@ -112,21 +110,41 @@ public final class DocumentDrivenWorkflow {
             knowledge.authorize(lease.actor(),lease.request().scope());tools.verifyContracts(source.skill().toolContracts());
             if(!source.requestHash().equals(ContentJson.hash(lease.request())))throw changed();
             var docs=new HashMap<Long,DocumentContent>();
-            for(var dependency:source.sources()) {
-                var d=docs.computeIfAbsent(dependency.documentId(),id->knowledge.document(lease.actor(),lease.request().scope(),id)).document();
-                if(d.documentVersion()!=dependency.documentVersion()||d.knowledgeBaseId()!=dependency.knowledgeBaseId())throw changed();
-            }
+            knowledge.verifySources(lease.actor(),source.sources());
             for(var slice:source.slices()) {
                 var doc=docs.computeIfAbsent(slice.documentId(),id->knowledge.document(lease.actor(),lease.request().scope(),id));
-                if(!Objects.equals(doc.document().activeProcessingRevision(),slice.processingRevision())||slice.endOffset()>doc.text().length()
+                if(doc.document().documentVersion()!=slice.documentVersion()||doc.document().knowledgeBaseId()!=slice.knowledgeBaseId()
+                        ||!Objects.equals(doc.document().activeProcessingRevision(),slice.processingRevision())||slice.endOffset()>doc.text().length()
                         ||!Learning.digest(doc.text().substring(slice.startOffset(),slice.endOffset())).equals(slice.textHash()))throw changed();
             }
         }
         String read(Learning.SourceSlice slice) {
-            var content=knowledge.document(lease.actor(),lease.request().scope(),slice.documentId());
-            if(content.document().documentVersion()!=slice.documentVersion()||!Objects.equals(content.document().activeProcessingRevision(),slice.processingRevision())
-                    ||!TextWindow.boundary(content.text(),slice.endOffset())||slice.startOffset()>=slice.endOffset())throw changed();
-            var value=content.text().substring(slice.startOffset(),slice.endOffset());if(!Learning.digest(value).equals(slice.textHash()))throw changed();return value;
+            String text=documentsRaw.get(slice.documentId());
+            if(text==null||slice.startOffset()<0||slice.endOffset()>text.length()||slice.startOffset()>=slice.endOffset()
+                    ||!TextWindow.boundary(text,slice.startOffset())||!TextWindow.boundary(text,slice.endOffset()))throw changed();
+            String value=text.substring(slice.startOffset(),slice.endOffset());if(!Learning.digest(value).equals(slice.textHash()))throw changed();return value;
+        }
+        private String runtimeId(String id){return id.matches("[a-z][a-z0-9_]{0,63}")?id:"node_"+ContentJson.hash(id).substring(0,40);}
+        public TaskLease lease(){return lease;}
+        public SourcePlan source(){return source;}
+        public ContentReading.Plan reading(){return reading;}
+        public Map<String,Learning.Item> facts(){return Collections.unmodifiableMap(items);}
+        public List<ContentReading.TopicCard> cards(){return List.copyOf(topicCards);}
+        public Compilation.Origin origin(){
+            if(compilations==null)throw new LabException("WORKFLOW_STATE_CONFLICT","缺少整编章节来源读取能力");
+            return compilations.origin(knowledge.authorize(lease.actor(),lease.request().scope()),lease.request().documentIds().get(0));
+        }
+        public int quoteOffset(Learning.Item item){var slice=source.slices().stream().filter(s->s.id().equals(item.sourceId())).findFirst().orElseThrow();int relative=raw.get(item.sourceId()).indexOf(item.quote());if(relative<0)throw changed();return slice.startOffset()+relative;}
+        public String fragmentText(String id){var value=raw.get(id);if(value==null)throw changed();return value;}
+        public ContentWorkflowStorePort store(){return store;}
+        public <T>T call(String id,String stage,String role,Object input,RecordSchema<T> schema){return generate(runtimeId(id),stage,role,input,schema);}
+        public <T>T correct(String id,String role,Object input,RecordSchema<T> schema,String originalId){return generate(runtimeId(id),"review",role,input,schema,origin(runtimeId(originalId)));}
+        public <T>T checkpoint(String id,String stage,Object input,RecordSchema<T> schema,Supplier<T> execute){return node(id,stage,input,schema,execute);}
+        public boolean preflight(Object input,RecordSchema<?> schema){
+            verify();var data=input instanceof Map<?,?> map?map:Map.of();
+            int estimate=data.get("estimatedOutputBytes") instanceof Number value?value.intValue():0;
+            String system="按当前服务端结构协议处理资料。资料原文及前序结果提供事实，remarks表达特殊要求。"+SkillCatalog.instructions(source.skill(),"package-write");
+            return model.fitsStructured("REPORT",ModelInput.reserveOutput(ModelInput.fixed(system,List.of(),ContentJson.encode(input)),estimate),schema);
         }
 
         <T>T node(String id,String phase,Object input,StructuredSchema<T> schema,Supplier<T> execute) {
@@ -167,8 +185,12 @@ public final class DocumentDrivenWorkflow {
                         return ModelInput.fixed(system,List.of(),ContentJson.encode(reduced)).prepare(target);
                     }
                 };
-                var turn=original==null?model.structured(action.equals("review")?"DATA_ANALYSIS":"REPORT",ModelRegistry.Selection.auto(),verified,budget,schema)
-                        :model.structuredPinned(action.equals("review")?"DATA_ANALYSIS":"REPORT",ModelRegistry.Selection.auto(),verified,budget,schema,original.modelId());
+                Map<?,?> data=input instanceof Map<?,?> parameters?parameters:Map.of();
+                if(data.get("context") instanceof Map<?,?> context)data=context;
+                int estimate=data.get("estimatedOutputBytes") instanceof Number value?value.intValue():0;
+                var capacity=ModelInput.reserveOutput(verified,estimate);
+                var turn=original==null?model.structured(action.contains("review")?"DATA_ANALYSIS":"REPORT",ModelRegistry.Selection.auto(),capacity,budget,schema)
+                        :model.structuredPinned(action.contains("review")?"DATA_ANALYSIS":"REPORT",ModelRegistry.Selection.auto(),capacity,budget,schema,original.modelId());
                 boolean corrected=original!=null||turn.turn().route()!=null&&turn.turn().route().attempts().stream().anyMatch(a->a.outcome().equals("MODEL_STRUCTURED_INVALID"));
                 var receipt=new GenerationReceipt(turn.turn().modelId(),corrected?1:0,ContentJson.encode(turn.value()));
                 budget.check();store.begin(lease,receiptId,phase,receiptHash);store.complete(lease,receiptId,receiptHash,ContentJson.encode(receipt));
@@ -179,30 +201,84 @@ public final class DocumentDrivenWorkflow {
         }
         GenerationReceipt origin(String id) {
             var value=origins.get(id);
+            if(value==null){var saved=store.completedNode(lease,"origin_"+ContentJson.hash(id).substring(0,32));if(saved.isPresent()){
+                value=new RecordSchema<>(GenerationReceipt.class,"保存的模型生成回执",v->RecordSchema.require(!v.modelId().isBlank()&&v.corrections()>=0&&v.corrections()<=1,RecordSchema.Reason.CONTENT_CONSTRAINT)).validate(saved.get(),Set.of());origins.put(id,value);
+            }}
             if(value==null)throw new LabException("WORKFLOW_STATE_CONFLICT","生成节点缺少模型回执");
             return value;
         }
-        <A,B>List<B> parallel(List<A> input,Function<A,B> execute) {
+        public <A,B>List<B> parallel(List<A> input,Function<A,B> execute) {
             if(input.isEmpty())return List.of();var context=budget.trace();var futures=new ArrayList<Future<Indexed<B>>>();
             var completion=new ExecutorCompletionService<Indexed<B>>(pool);
             try {
-                for(int i=0;i<input.size();i++){int index=i;var item=input.get(i);futures.add(completion.submit(()->{try(var ignored=budget.activate(context)){budget.check();return new Indexed<>(index,execute.apply(item));}}));}
+                int next=0;
+                for(;next<Math.min(input.size(),source.policy().parallelism());next++){int index=next;var item=input.get(index);futures.add(completion.submit(()->{try(var ignored=budget.activate(context)){budget.check();return new Indexed<>(index,execute.apply(item));}}));}
                 var output=new ArrayList<B>(Collections.nCopies(input.size(),null));
-                for(int i=0;i<input.size();i++){var value=completion.take().get();output.set(value.index(),value.value());}return List.copyOf(output);
+                for(int done=0;done<input.size();done++){
+                    var value=completion.take().get();output.set(value.index(),value.value());
+                    if(next<input.size()){int index=next++;var item=input.get(index);futures.add(completion.submit(()->{try(var ignored=budget.activate(context)){budget.check();return new Indexed<>(index,execute.apply(item));}}));}
+                }return List.copyOf(output);
             } catch(InterruptedException e){Thread.currentThread().interrupt();throw new LabException("REQUEST_CANCELLED","资料工作流已取消");}
             catch(ExecutionException e){if(e.getCause() instanceof RuntimeException r)throw r;throw new IllegalStateException("资料子任务失败",e.getCause());}
             finally{futures.forEach(f->{if(!f.isDone())f.cancel(true);});}
         }
-        void extract() {
-            var batches=parallel(source.slices(),slice->{
-                var input=Map.of("source",slice,"text",raw.get(slice.id()));
-                return node("read_"+slice.id(),"extract",input,ContentSchemas.facts(slice.id(),slice.id(),raw.get(slice.id()),source.policy().maximumItems(),true,limits()),
-                        ()->extractPart(slice,raw.get(slice.id()),0));
+        void extract() {extractStructured();}
+        void extractStructured() {
+            var fragments=reading.fragments().stream().collect(Collectors.toMap(f->f.source().id(),Function.identity()));
+            var packages=parallel(reading.packs(),pack->{
+                var group=pack.fragmentIds().stream().map(fragments::get).toList();
+                return node("readpack_"+pack.packId(),"extract",Map.of("protocol",reading.protocol(),"pack",pack,"fragments",group),
+                        new RecordSchema<>(ContentReading.Batch.class,"程序合并的完整阅读结果",v->{
+                            RecordSchema.require("COMPLETE".equals(v.status())&&v.fragments().stream().map(ContentReading.Observation::fragmentId).toList().equals(pack.fragmentIds()),RecordSchema.Reason.CONTENT_CONSTRAINT);
+                            for(var observation:v.fragments()) {
+                                var id=observation.fragmentId();ContentSchemas.facts(id,id,raw.get(id),source.policy().maximumItems(),true,limits())
+                                        .validate(ContentJson.encode(new Facts(observation.items(),"COMPLETE")),Set.of());
+                            }
+                        }),()->readPack(pack.packId(),group));
             });
-            batches.forEach(b->b.items().forEach(i->{if(items.putIfAbsent(i.id(),i)!=null)throw changed();}));
-            if(items.isEmpty())throw new LabException("WORKFLOW_NEEDS_INPUT","资料没有可用于当前工作流的知识，请补充有效资料");
-            if(items.size()>source.policy().maximumItems())throw new LabException("WORKFLOW_INPUT_TOO_LARGE","事实条目超过保存的资源策略，请缩小范围或调整策略");
+            for(var batch:packages)for(var observation:batch.fragments()) {
+                String id=observation.fragmentId();var f=fragments.get(id);var slice=f.source();
+                var facts=node("read_"+id,"extract",Map.of("fragment",f,"observation",observation),
+                        ContentSchemas.facts(id,id,raw.get(id),source.policy().maximumItems(),true,limits()),()->new Facts(observation.items(),"COMPLETE"));
+                facts.items().forEach(item->{if(items.putIfAbsent(item.id(),item)!=null)throw changed();});
+                var cards=node("topics_"+id,"extract",Map.of("fragment",f,"topics",observation.topics()),
+                        new RecordSchema<>(ContentReading.Cards.class,"程序绑定主题卡位置和计数",v->{}),
+                        ()->new ContentReading.Cards(observation.topics().stream().map(t->new ContentReading.TopicCard(t.id(),id,f.sectionId(),f.headingPath(),t,t.itemIds().size(),TextWindow.count(raw.get(id)))).toList()));
+                topicCards.addAll(cards.cards());
+                node("evidence_"+id,"extract",Map.of("fragment",f,"items",facts.items()),
+                        new RecordSchema<>(ContentReading.Evidences.class,"程序定位原文证据",v->{}),()->new ContentReading.Evidences(facts.items().stream().map(item->{
+                            int start=raw.get(id).indexOf(item.quote());if(start<0)throw changed();
+                            return new ContentReading.Evidence(item.id(),id,slice.startOffset()+start,slice.startOffset()+start+item.quote().length(),Learning.digest(item.quote()));
+                        }).toList()));
+            }
+            if(items.isEmpty())throw new LabException("WORKFLOW_NEEDS_INPUT","资料没有可用于当前工作流的知识");
+            if(items.size()>source.policy().maximumItems())throw new LabException("WORKFLOW_INPUT_TOO_LARGE","事实条目超过保存的资源策略");
             store.finish(lease,"extract",source.slices().stream().map(s->"read_"+s.id()).toList());
+        }
+        ContentReading.Batch readPack(String id,List<ContentReading.Fragment> group) {
+            try {
+                var input=group.stream().map(f->{
+                    var s=f.source();String full=documentsRaw.get(s.documentId());
+                    return Map.of("fragmentId",s.id(),"headingPath",f.headingPath(),"blockType",f.blockType(),"ownedText",raw.get(s.id()),
+                            "background",f.contexts().stream().map(c->Map.of("role",c.role(),"text",full.substring(c.startOffset(),c.endOffset()))).toList());
+                }).toList();
+                var batch=generate("reading_"+id,"extract","read",Map.of("protocol",reading.protocol(),"fragments",input),ReadingSchemas.batch(group,raw,limits()));
+                if("COMPLETE".equals(batch.status()))return batch;
+            } catch(LabException failure) {
+                if(!capacityFailure(failure)&&RecordSchema.reason(failure).orElse(null)!=RecordSchema.Reason.FACT_QUOTE)throw failure;
+            }
+            if(group.size()>1) {
+                int mid=group.size()/2;var first=readPack(id+"_a",group.subList(0,mid));var second=readPack(id+"_b",group.subList(mid,group.size()));
+                var merged=new ArrayList<>(first.fragments());merged.addAll(second.fragments());return new ContentReading.Batch(merged,"COMPLETE");
+            }
+            var fragment=group.get(0);var slice=fragment.source();var facts=extractPart(slice,raw.get(slice.id()),0);
+            var topics=new ArrayList<ContentReading.TopicDraft>();int index=0;
+            for(var portion:partition(facts.items(),source.policy().indexBytes(),ContentJson::encode)) {
+                String prefix=slice.id()+"_g"+(index++);
+                var result=generate("topicdraft_"+prefix,"extract","read",Map.of("headingPath",fragment.headingPath(),"items",portion),ReadingSchemas.topics(prefix,portion));
+                topics.addAll(result.topics());
+            }
+            return new ContentReading.Batch(List.of(new ContentReading.Observation(slice.id(),facts.items(),topics)),"COMPLETE");
         }
         Facts extractPart(Learning.SourceSlice slice,String text,int offset) {
             String prefix=slice.id()+"_"+offset;
@@ -224,14 +300,13 @@ public final class DocumentDrivenWorkflow {
             var merged=new ArrayList<>(first.items());merged.addAll(second.items());return new Facts(merged,"COMPLETE");
         }
         record IndexNode(String id,Summary summary,List<String> itemIds) { }
-        OutputPlan plan() {
+        OutputPlan planPpt() {
             var leaves=new ArrayList<IndexNode>();
-            var ordered=items.values().stream().sorted(Comparator.comparing(Learning.Item::category).thenComparing(Learning.Item::content).thenComparing(Learning.Item::id)).toList();
-            var factGroups=partition(ordered,source.policy().indexBytes(),ContentJson::encode);
-            var groups=parallel(java.util.stream.IntStream.range(0,factGroups.size()).boxed().toList(),i->{
-                String id="index_0_"+i;var group=factGroups.get(i);
-                var summary=generate(id,"organize","index",Map.of("items",group),ContentSchemas.summary(limits()));
-                return new IndexNode(id,summary,group.stream().map(Learning.Item::id).toList());
+            var cardGroups=partition(topicCards,source.policy().indexBytes(),ContentJson::encode);
+            var groups=parallel(java.util.stream.IntStream.range(0,cardGroups.size()).boxed().toList(),i->{
+                String id="index_0_"+i;
+                var summary=generate(id,"organize","index",Map.of("topicCards",cardGroups.get(i)),ContentSchemas.summary(limits()));
+                return new IndexNode(id,summary,cardGroups.get(i).stream().flatMap(c->c.topic().itemIds().stream()).distinct().toList());
             });leaves.addAll(groups);List<IndexNode> level=List.copyOf(leaves);int depth=1;
             while(TextWindow.count(ContentJson.encode(level.stream().map(this::overview).toList()))>source.policy().indexBytes()) {
                 var chunks=partition(level,source.policy().indexBytes(),n->ContentJson.encode(overview(n)));int current=depth++;
@@ -278,9 +353,8 @@ public final class DocumentDrivenWorkflow {
             var result=new ArrayList<UnitPlan>();for(var draft:drafts)result.add(new UnitPlan(String.format(Locale.ROOT,"u%04d",result.size()+1),draft.kind(),draft.themeId(),draft.title(),draft.purpose(),draft.relation(),draft.imageMode(),draft.imagePrompt(),draft.itemIds()));return result;
         }
         Counts counts(List<UnitPlan> targets) {
-            boolean ppt=lease.request().taskType().equals("NOTES_PPT"),quiz=lease.request().taskType().equals("QUIZ_GENERATION");
-            int images=(int)targets.stream().filter(u->!u.imageMode().equals("NONE")).count();int sourcePages=ppt?Math.max(1,(source.sources().size()+images+11)/12):0;
-            return new Counts(quiz?targets.size():0,!quiz&&!ppt?(int)targets.stream().map(UnitPlan::themeId).distinct().count():0,!quiz&&!ppt?targets.size():0,ppt?targets.size():0,sourcePages,ppt?targets.size()+sourcePages:0);
+            int images=(int)targets.stream().filter(u->!u.imageMode().equals("NONE")).count();int sourcePages=Math.max(1,(source.sources().size()+images+11)/12);
+            return new Counts(0,0,0,targets.size(),sourcePages,targets.size()+sourcePages);
         }
         boolean capacityFailure(LabException failure){return Set.of("MODEL_TRUNCATED","MODEL_CONTEXT_INSUFFICIENT").contains(failure.code());}
         UnitBatch combine(UnitBatch first,UnitBatch second) {
@@ -337,15 +411,11 @@ public final class DocumentDrivenWorkflow {
             }
         }
         Object overview(IndexNode node){return Map.of("id",node.id(),"title",node.summary().title(),"summary",node.summary().summary(),"facts",node.itemIds().size());}
-        Object options(){return switch(lease.request().taskType()){case "QUIZ_GENERATION"->lease.request().quizOptions();case "KNOWLEDGE_COMPILATION"->lease.request().compilationOptions();default->lease.request().presentationOptions();};}
+        Object options(){return lease.request().presentationOptions();}
         void validateRequested(Intent intent,Counts counts) {
-            int requested=intent.requestedUnits().equals("AUTO")?0:Integer.parseInt(intent.requestedUnits());
-            int actual=switch(lease.request().taskType()){case "NOTES_PPT"->counts.totalSlides();case "KNOWLEDGE_COMPILATION"->counts.chapters();default->counts.questions();};
-            if(lease.request().taskType().equals("QUIZ_GENERATION")&&lease.request().quizOptions().questionCount()>0)requested=lease.request().quizOptions().questionCount();
-            if(lease.request().taskType().equals("NOTES_PPT")&&lease.request().presentationOptions().pageCount()>0)requested=lease.request().presentationOptions().pageCount();
-            if(requested>0&&requested!=actual)throw new LabException("WORKFLOW_REQUIREMENTS_UNSATISFIED","资料规划数量与显式数量要求不一致",List.of(new ValidationIssue("counts","EXACT_COUNT",actual,requested,"ITEMS","必须等于用户要求数量；PPT总页数包含来源页")));
-            if(lease.request().taskType().equals("KNOWLEDGE_COMPILATION")&&lease.request().compilationOptions().maximumChapters()>0
-                    &&counts.chapters()>lease.request().compilationOptions().maximumChapters())throw new LabException("WORKFLOW_REQUIREMENTS_UNSATISFIED","资料目录超过显式章节上限",List.of(new ValidationIssue("counts.chapters","MAXIMUM",counts.chapters(),lease.request().compilationOptions().maximumChapters(),"ITEMS","不得超过用户章节上限")));
+            int requested=lease.request().presentationOptions().pageCount();
+            if(requested==0&&!intent.requestedUnits().equals("AUTO"))requested=Integer.parseInt(intent.requestedUnits());
+            if(requested>0&&requested!=counts.totalSlides())throw new LabException("WORKFLOW_REQUIREMENTS_UNSATISFIED","PPT总页数与显式要求不一致",List.of(new ValidationIssue("counts","EXACT_COUNT",counts.totalSlides(),requested,"ITEMS","PPT总页数包含来源页")));
         }
         Map<String,Object> context(OutputPlan plan,UnitPlan target) {
             var facts=target.itemIds().stream().map(items::get).toList();
@@ -366,7 +436,6 @@ public final class DocumentDrivenWorkflow {
             if(result instanceof Media.Unit unit && presentation != null && !presentation.validateLayout(List.of(unit)).isEmpty())
                 throw new LabException("PPT_TEXT_OVERFLOW","页面版式预检未通过，请调整备注或资料范围");
             final T accepted=result;
-            if(lease.request().taskType().equals("QUIZ_GENERATION"))return accepted;
             return node("accepted_"+target.id(),"review",Map.of("planHash",ContentJson.hash(plan),"target",target,"result",accepted),schema,()->accepted);
         }
         <T>Learning.Review review(OutputPlan plan,UnitPlan target,String id,Map<String,Object> input,T result) {
@@ -376,56 +445,6 @@ public final class DocumentDrivenWorkflow {
             var issues=new ArrayList<>(review.issues());
             layout.forEach(i->issues.add(new Learning.Issue(target.id(),"BAD_ORGANIZATION",i.code(),"保持页面目标和证据，缩短页面正文并将解释放入备注")));
             return new Learning.Review("REPAIR",issues);
-        }
-        Learning.Question question(OutputPlan plan,UnitPlan target) {
-            return checked(plan,target,"generate",questionSchema(plan,target),UnaryOperator.identity());
-        }
-        RecordSchema<Learning.Question> questionSchema(OutputPlan plan,UnitPlan target) {
-            var expected=new Learning.Target(target.id(),target.kind(),target.itemIds());var original=LearningSchemas.quiz(List.of(expected),limits());
-            var fields=new ArrayList<RecordSchema.FieldRule>();
-            original.fieldRules().stream().filter(f->f.path().startsWith("questions[].")).forEach(f->fields.add(new RecordSchema.FieldRule(f.path().substring("questions[].".length()),f.maximum(),f.unit(),f.nonBlank(),f.allowed())));
-            fields.add(RecordSchema.FieldRule.optionalUtf8("$",limits().question()));
-            var schema=new RecordSchema<>(Learning.Question.class,"输出一题，id="+target.id()+"，type="+target.kind()+"，itemIds与目标完全一致。单选四个选项，答案A/B/C/D；简答options为空。答案和explanation有证据。"
-                    ,fields,q->{
-                LearningSchemas.validateQuestion(q,expected,"");
-                RecordSchema.require(LearningSchemas.withLocalQuizChecks(new Learning.Quiz(plan.intent().title(),List.of(q)),new Learning.Review("ACCEPT",List.of())).decision().equals("ACCEPT"),RecordSchema.Reason.CONTENT_CONSTRAINT,"options","选项文本互不重复");
-            });
-            return schema;
-        }
-        Learning.Quiz checkQuiz(OutputPlan plan,Learning.Quiz quiz) {
-            var questions=new ArrayList<>(quiz.questions());
-            var local=LearningSchemas.withLocalQuizChecks(quiz,new Learning.Review("ACCEPT",List.of()));
-            for(var issue:local.issues()) {
-                var target=plan.units().stream().filter(u->u.id().equals(issue.unitId())).findFirst().orElseThrow();
-                int index=java.util.stream.IntStream.range(0,questions.size()).filter(i->questions.get(i).id().equals(target.id())).findFirst().orElseThrow();
-                var others=questions.stream().filter(q->!q.id().equals(target.id())).toList();
-                var context=context(plan,target);var original=origins.get("repair_"+target.id());if(original==null)original=origin("generate_"+target.id());
-                var schema=questionSchema(plan,target).withChecks(q->{
-                    var candidates=new ArrayList<>(others);candidates.add(q);
-                    var check=LearningSchemas.withLocalQuizChecks(new Learning.Quiz(quiz.title(),candidates),new Learning.Review("ACCEPT",List.of()));
-                    RecordSchema.require(check.issues().stream().noneMatch(i->i.unitId().equals(q.id())),RecordSchema.Reason.CONTENT_CONSTRAINT,"stem/options","题干与其他题不同，选项互不重复");
-                });
-                var fixed=generate("global_repair_"+target.id(),"review","generate",Map.of("context",context,"result",questions.get(index),"issues",List.of(issue),
-                        "otherQuestions",others.stream().map(q->Map.of("id",q.id(),"stem",q.stem())).toList()),schema,original);
-                if(!review(plan,target,"review_global_repair_"+target.id(),context,fixed).decision().equals("ACCEPT"))
-                    throw new LabException("WORKFLOW_REVIEW_REJECTED","跨题纠正后仍未通过内容质检");
-                questions.set(index,fixed);
-            }
-            var accepted=new Learning.Quiz(quiz.title(),questions);
-            if(!LearningSchemas.withLocalQuizChecks(accepted,new Learning.Review("ACCEPT",List.of())).decision().equals("ACCEPT"))
-                throw new LabException("WORKFLOW_REVIEW_REJECTED","跨题纠正后仍存在重复或歧义");
-            for(var target:plan.units()) {
-                var value=questions.stream().filter(q->q.id().equals(target.id())).findFirst().orElseThrow();
-                node("accepted_"+target.id(),"review",Map.of("planHash",ContentJson.hash(plan),"target",target,"result",value),questionSchema(plan,target),()->value);
-            }
-            return accepted;
-        }
-        Learning.Section section(OutputPlan plan,UnitPlan target) {
-            var schema=new RecordSchema<>(Learning.Section.class,"输出groupId="+target.id()+"、body与itemIds。正文完整表达目标事实、条件及例外，itemIds保持计划顺序。",
-                    List.of(RecordSchema.FieldRule.utf8("body",limits().section())),s->{
-                RecordSchema.require(s.groupId().equals(target.id()),RecordSchema.Reason.CONTENT_CONSTRAINT,"groupId",target.id());
-                RecordSchema.require(s.itemIds().equals(target.itemIds()),RecordSchema.Reason.CONTENT_CONSTRAINT,"itemIds","保持目标事实编号与顺序");
-            });return checked(plan,target,"generate",schema,UnaryOperator.identity());
         }
         Media.Unit slide(OutputPlan plan,UnitPlan target) {
             var references=target.itemIds().stream().map(items::get).map(i->source.slices().stream().filter(s->s.id().equals(i.sourceId())).findFirst().orElseThrow())
@@ -441,36 +460,20 @@ public final class DocumentDrivenWorkflow {
             store.finish(lease,"generate",plan.units().stream().map(u->"generate_"+u.id()).toList());
             store.finish(lease,"review",plan.requiredNodes());
         }
-        void publish(OutputPlan plan,Learning.Result value) {
-            finishGeneration(plan);store.verifyComplete(lease);
-            var result=com.example.ailab.ai.tools.ToolSchema.JSON.valueToTree(value);
-            ((com.fasterxml.jackson.databind.node.ObjectNode)result).set("contentPlan",com.example.ailab.ai.tools.ToolSchema.JSON.valueToTree(plan));
+        void publish(LearningContent.Plan plan,LearningExecutor.Completed completed) {
+            store.verifyComplete(lease);var value=completed.result();
+            var result=(com.fasterxml.jackson.databind.node.ObjectNode)com.example.ailab.ai.tools.ToolSchema.JSON.valueToTree(value);
+            result.set("contentPlan",com.example.ailab.ai.tools.ToolSchema.JSON.valueToTree(plan));
+            result.set("coverageReport",com.example.ailab.ai.tools.ToolSchema.JSON.valueToTree(completed.coverage()));
             String json=ContentJson.encode(result);String hash=ContentJson.hash(Map.of("plan",plan,"result",json));
             var old=store.completed(lease,"result",hash);
             if(old.isEmpty()){store.begin(lease,"result","publish",hash);store.complete(lease,"result",hash,json);}
             else if(!old.get().equals(json))throw changed();
-            String coverage="\n\n产出计划："+plan.counts().questions()+"题，"+plan.counts().chapters()+"章，"+plan.counts().sections()+"节。\n"
-                    +"选材与数量理由："+plan.intent().reason()+"\n采用的要求："+plan.intent().requirements()+"\n";
-            for(var omission:plan.omissions())coverage+="未纳入当前产出："+omission.itemIds()+"；原因："+omission.reason()+"\n";
+            StringBuilder coverage=new StringBuilder("\n\n覆盖报告：\n");
+            for(var c:completed.coverage())coverage.append("- ").append(c.kind()).append(" ").append(c.id()).append(": ").append(c.selected()).append("/").append(c.available()).append("；").append(c.reason()).append("\n");
             store.publish(lease,json,LearningRenderer.render(value)+coverage);
         }
         public void close(){pool.shutdownNow();try{pool.awaitTermination(5,TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}}
-    }
-    private SourcePlan prepare(TaskLease lease,WorkflowExecutionBinding binding,TaskExecutionBinding skill,Policy policy) {
-        knowledge.authorize(lease.actor(),lease.request().scope());var slices=new ArrayList<Learning.SourceSlice>();var sources=new LinkedHashSet<SourceDependency>();long bytes=0;
-        for(long id:lease.request().documentIds().stream().distinct().sorted().toList()) {
-            var content=knowledge.document(lease.actor(),lease.request().scope(),id);var doc=content.document();
-            if(doc.activeProcessingRevision()==null)throw new LabException("INDEX_NOT_READY","资料须先完成结构入库");
-            if(content.text().isBlank())throw new LabException("WORKFLOW_NEEDS_INPUT","所选资料正文为空");
-            bytes+=TextWindow.count(content.text());if(bytes>policy.sourceBytes())throw new LabException("WORKFLOW_INPUT_TOO_LARGE","资料超过创建时保存的原文容量，请调整范围或服务器策略");
-            sources.add(new SourceDependency(doc.knowledgeBaseId(),id,doc.documentVersion()));sources.addAll(content.sourceDependencies());
-            int start=0;while(start<content.text().length()) {
-                int end=TextWindow.end(content.text(),start,content.text().length(),policy.pageBytes());if(end<=start)throw changed();
-                slices.add(new Learning.SourceSlice(String.format(Locale.ROOT,"p%04d",slices.size()+1),doc.knowledgeBaseId(),id,doc.documentVersion(),doc.activeProcessingRevision(),doc.title(),start,end,Learning.digest(content.text().substring(start,end))));start=end;
-            }
-        }
-        if(sources.size()>32)throw new LabException("WORKFLOW_INPUT_TOO_LARGE","派生来源闭包超过32项");
-        return new SourcePlan(binding,skill,ContentJson.hash(lease.request()),policy,slices,List.copyOf(sources));
     }
     private static <T>List<List<T>> partition(List<T> input,int maximum,Function<T,String> encode) {
         var output=new ArrayList<List<T>>();var current=new ArrayList<T>();int bytes=2;

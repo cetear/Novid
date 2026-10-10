@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.ailab.data.persistence.mapper.CompilationMapper">
+    <select id="bindingOrigin" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT o.*,v.raw_text FROM document_compilation_origins o JOIN document_versions v ON v.document_id=o.document_id AND v.document_version=o.document_version WHERE o.document_id=#{args[0]} AND o.document_version=#{args[1]}</select>
+    <select id="bindings" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM document_compilation_section_bindings WHERE document_id=#{args[0]} AND document_version=#{args[1]} AND processing_revision=#{args[2]} ORDER BY start_offset,logical_section_id,parsed_section_id</select>
+    <insert id="saveBinding">INSERT INTO document_compilation_section_bindings(document_id,document_version,processing_revision,chapter_id,logical_section_id,parsed_section_id,start_offset,end_offset,mapping_hash) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]},#{args[8]})</insert>
+    <select id="preparation" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM compilation_save_preparations WHERE actor_user_id=#{args[0]} AND request_key=#{args[1]}
+    </select>
+    <select id="approval" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM compilation_save_preparations WHERE approval_id=#{args[0]} AND actor_user_id=#{args[1]}
+    </select>
+    <insert id="prepare">
+        INSERT INTO compilation_save_preparations(approval_id,actor_user_id,request_key,task_id,target_base_id,result_hash,direct_source_json,mapping_json)
+        VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]})
+    </insert>
+    <insert id="saveOrigin">
+        INSERT INTO document_compilation_origins(document_id,document_version,task_id,result_hash,content_hash,mapping_json)
+        VALUES(#{args[0]},1,#{args[1]},#{args[2]},#{args[3]},#{args[4]})
+    </insert>
+    <insert id="saveSource">
+        INSERT INTO document_compilation_sources(compiled_document_id,compiled_document_version,compiled_base_id,source_document_id,source_document_version,source_base_id,source_order)
+        VALUES(#{args[0]},1,#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]})
+    </insert>
+    <select id="origin" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM document_compilation_origins WHERE document_id=#{args[0]} AND document_version &lt;= #{args[1]}
+        ORDER BY document_version DESC LIMIT 1
+    </select>
+    <select id="sources" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT * FROM document_compilation_sources WHERE compiled_document_id=#{args[0]} AND compiled_document_version=#{args[1]} ORDER BY source_order
+    </select>
+    <select id="participations" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT DISTINCT compiled_document_id FROM document_compilation_sources s
+        JOIN documents d ON d.id=s.compiled_document_id JOIN knowledge_bases k ON k.id=d.knowledge_base_id
+        WHERE source_document_id=#{args[0]} AND d.deleted=FALSE AND k.deleted=FALSE AND k.enabled=TRUE
+        ORDER BY compiled_document_id LIMIT #{args[2]} OFFSET #{args[1]}
+    </select>
+    <select id="sourceVersions" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT DISTINCT source_document_version FROM document_compilation_sources
+        WHERE source_document_id=#{args[0]} AND compiled_document_id=#{args[1]} ORDER BY source_document_version
+    </select>
+    <select id="generated" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT `generated` FROM documents WHERE id=#{args[0]}
+    </select>
+    <delete id="deleteDocument">
+        DELETE FROM document_compilation_sources WHERE compiled_document_id=#{args[0]} OR source_document_id=#{args[0]}
+    </delete>
+    <delete id="deleteBase">
+        DELETE FROM document_compilation_sources WHERE compiled_base_id=#{args[0]} OR source_base_id=#{args[0]}
+    </delete>
+</mapper>

@@ -44,7 +44,10 @@ public final class Learning {
     }
     public record Quiz(String title, List<Question> questions) { public Quiz { questions = List.copyOf(questions); } }
     public record Group(String id, String heading, String relation, List<String> itemIds) { public Group { itemIds = List.copyOf(itemIds); } }
-    public record ChapterPlan(String id, String title, List<Group> groups) { public ChapterPlan { groups = List.copyOf(groups); } }
+    public record ChapterPlan(String id, String title, String parentId, List<Group> groups) {
+        public ChapterPlan { groups = List.copyOf(groups); parentId = parentId == null ? "" : parentId; }
+        public ChapterPlan(String id,String title,List<Group> groups) { this(id,title,"",groups); }
+    }
     public record Outline(String title, List<ChapterPlan> chapters) { public Outline { chapters = List.copyOf(chapters); } }
     public record Section(String groupId, String body, List<String> itemIds) { public Section { itemIds = List.copyOf(itemIds); } }
     public record Chapter(String id, String title, List<Section> sections) { public Chapter { sections = List.copyOf(sections); } }

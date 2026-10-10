@@ -167,7 +167,7 @@ public final class SkillCatalog {
 
 
     public TaskExecutionBinding contentBinding(Map<String, String> contracts) {
-        return binding("document-content", "document-content-v2", contracts);
+        return binding("document-content", "document-content-v3", contracts);
     }
 
     private TaskExecutionBinding binding(String id, String policy, Map<String, String> contracts) {
@@ -185,7 +185,7 @@ public final class SkillCatalog {
     }
 
     public static void verify(TaskExecutionBinding binding) {
-        if (binding.schemaVersion() != 1 || !"document-content-v2".equals(binding.actionPolicyVersion())
+        if (binding.schemaVersion() != 1 || !"document-content-v3".equals(binding.actionPolicyVersion())
                 || !binding.skillHash().equals(hash(binding.resources(), binding.allowedTools())) || !binding.resources().containsKey("SKILL.md")
                 || !binding.toolContracts().keySet().equals(binding.allowedTools()))
             throw new LabException("SKILL_SNAPSHOT_INVALID", "Skill快照不完整或版本不兼容");

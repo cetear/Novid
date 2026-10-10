@@ -36,7 +36,7 @@ public class DocumentContextRepository implements DocumentContextPort {
     public List<SectionSnapshot> sections(AuthorizedKnowledgeScope scope, long id, int offset, int limit) {
         sql.actor(scope.actor(), true); var d = docs.read(scope, id).document();
         ready(d);
-        return sql.project(mapper.sectionsDocumentSectionsSelect(new Object[]{id, d.documentVersion(), d.activeProcessingRevision(), limit, offset}), this::section);
+        return sql.project(mapper.sectionsDocumentSectionsSelect(new Object[]{id, d.documentVersion(), d.activeProcessingRevision(), limit, offset}), DocumentContextRepository::section);
     }
     /** 小片只返回当前版本，与原文位置一起交付；旧批次无映射仍保持 LEGACY。 */
     @Transactional
@@ -52,7 +52,7 @@ public class DocumentContextRepository implements DocumentContextPort {
         if (d.documentVersion() != version || d.activeProcessingRevision() != revision) throw new LabException("CONTEXT_VERSION_CONFLICT", "文档版本或处理代次已变化，请重新加载目录");
 
 
-        var s = sql.project(mapper.sectionPageDocumentSectionsSelect(new Object[]{id, version, revision}, sectionId), this::section).stream().findFirst().orElseThrow(() -> new LabException("CONTEXT_MAPPING_INVALID", "章节不属于指定版本和代次"));
+        var s = sql.project(mapper.sectionPageDocumentSectionsSelect(new Object[]{id, version, revision}, sectionId), DocumentContextRepository::section).stream().findFirst().orElseThrow(() -> new LabException("CONTEXT_MAPPING_INVALID", "章节不属于指定版本和代次"));
         int start = after == null ? s.startOffset() : after;
         if (s.startOffset() < 0 || s.endOffset() > content.text().length() || !TextWindow.boundary(content.text(), s.startOffset()) || !TextWindow.boundary(content.text(), s.endOffset())) throw mappingInvalid();
         if (start < s.startOffset() || start > s.endOffset() || !TextWindow.boundary(content.text(), start)) throw LabException.invalid("章节游标不合法");
@@ -84,7 +84,7 @@ public class DocumentContextRepository implements DocumentContextPort {
     @Transactional
     public SectionPage documentPage(AuthorizedKnowledgeScope scope,long id,int version,long revision,int after,int maxTokens) {
         var page = sectionPage(scope,id,version,revision,null,after,maxTokens);
-        var owner = sql.project(mapper.documentPageDocumentSectionsSelect(new Object[]{id, version, revision, after}), this::section).stream().findFirst().orElseThrow(this::mappingInvalid);
+        var owner = sql.project(mapper.documentPageDocumentSectionsSelect(new Object[]{id, version, revision, after}), DocumentContextRepository::section).stream().findFirst().orElseThrow(this::mappingInvalid);
         Integer nextHeading = sql.scalar(mapper.documentPageDocumentSectionsSelect2(new Object[]{id, version, revision, owner.ordinal()}), Integer.class);
         int ownEnd = nextHeading == null ? page.sectionEndOffset() : nextHeading;
         int end = Math.min(page.endOffset(),ownEnd); String text = page.text().substring(0,end-after);
@@ -107,7 +107,7 @@ public class DocumentContextRepository implements DocumentContextPort {
             var seeds = sql.project(mapper.expandChunksSelect(new Object[]{candidate.chunkId(), candidate.documentId(), candidate.documentVersion(), candidate.processingRevision()}), DocumentContextRepository::chunk);
             if (seeds.isEmpty()) continue;
             var seed = seeds.get(0); validChunk(content.text(),seed);
-            var section = sql.project(mapper.expandDocumentSectionsSelect(new Object[]{seed.sectionId(), d.id(), d.documentVersion(), candidate.processingRevision()}), this::section).stream().findFirst().orElseThrow(this::mappingInvalid);
+            var section = sql.project(mapper.expandDocumentSectionsSelect(new Object[]{seed.sectionId(), d.id(), d.documentVersion(), candidate.processingRevision()}), DocumentContextRepository::section).stream().findFirst().orElseThrow(this::mappingInvalid);
             var parent = sql.project(mapper.expandContextParentsSelect(new Object[]{seed.contextParentId(), seed.sectionId(), d.id(), d.documentVersion(), candidate.processingRevision()}), (r,n) -> new ParentSnapshot(r.string("parent_id"),r.string("section_id"),r.intValue("ordinal"),r.intValue("start_offset"),r.intValue("end_offset"))).stream().findFirst().orElseThrow(this::mappingInvalid);
             if (seed.startOffset() < parent.startOffset() || seed.endOffset() > parent.endOffset() || parent.startOffset() < section.startOffset() || parent.endOffset() > section.endOffset()) throw mappingInvalid();
             if (validSeeds++ >= policy.candidateChunks()) break;
@@ -184,7 +184,7 @@ public class DocumentContextRepository implements DocumentContextPort {
     /** 返回稳定错误，不泄露损坏的数据行或内部查询。 */
     private LabException mappingInvalid() { return new LabException("CONTEXT_MAPPING_INVALID","原文或结构关系损坏"); }
     /** 章节祖先只解码固定字符串列表。 */
-    private SectionSnapshot section(SqlRow r,int n) {
+    static SectionSnapshot section(SqlRow r,int n) {
         return new SectionSnapshot(r.string("section_id"),r.string("parent_section_id"),decode(r.string("ancestor_json"),new TypeReference<List<String>>(){}),r.string("heading_path"),r.intValue("ordinal"),r.intValue("start_offset"),r.intValue("end_offset"));
     }
     /** V6 空字段视为旧处理批次，无重新解析事实不补假映射。 */

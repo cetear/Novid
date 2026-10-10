@@ -5,18 +5,20 @@ import java.util.*;
 /** 资料驱动执行协议。来源、产出计划和资源策略独立于创建请求，均不可变。 */
 public final class ContentWorkflow {
     private ContentWorkflow() { }
-    public record Policy(int sourceBytes, int pageBytes, int maximumItems, int indexBytes, int unitInputBytes,
+    public record Policy(int sourceBytes, int pageBytes, int readingPackBytes, int maximumItems, int indexBytes, int unitInputBytes, int packageOutputBytes,
                          int maximumUnits, int parallelism, int turns, int attempts, int tools,
                          int executionSeconds, int resultBytes) {
         public Policy {
-            if (sourceBytes < 3000 || sourceBytes > 10000000 || pageBytes < 500 || pageBytes > 6000
-                    || maximumItems < 8 || maximumItems > 20000 || indexBytes < 6000 || indexBytes > 24000
-                    || unitInputBytes < indexBytes || unitInputBytes > 32000 || maximumUnits < 1 || maximumUnits > 512
+            if (sourceBytes < 3000 || sourceBytes > 10000000 || pageBytes < 500 || pageBytes > 12000
+                    || readingPackBytes < pageBytes || readingPackBytes > 96000
+                    || maximumItems < 8 || maximumItems > 20000 || indexBytes < 6000 || indexBytes > 64000
+                    || unitInputBytes < Math.max(indexBytes,readingPackBytes) || unitInputBytes > 128000
+                    || packageOutputBytes < 6000 || packageOutputBytes > 30000 || maximumUnits < 1 || maximumUnits > 512
                     || parallelism < 1 || parallelism > 16 || turns < 10 || turns > 10000 || attempts < turns || attempts > 20000
                     || tools < 1 || tools > 10000 || executionSeconds < 1200 || executionSeconds > 86400
                     || resultBytes < 500000 || resultBytes > 16000000) throw new IllegalArgumentException("资料工作流资源策略无效");
         }
-        public static Policy defaults() { return new Policy(1000000, 3000, 4096, 8000, 8000, 256, 8, 1200, 1800, 1200, 7200, 4000000); }
+        public static Policy defaults() { return new Policy(1000000, 6000, 24000, 4096, 32000, 64000, 24000, 256, 8, 1200, 1800, 1200, 7200, 4000000); }
         public Learning.Limits limits() { return new Learning.Limits(turns, attempts, tools); }
     }
     public record SourcePlan(WorkflowExecutionBinding workflow, TaskExecutionBinding skill, String requestHash,
@@ -40,10 +42,16 @@ public final class ContentWorkflow {
     }
     public record Omission(List<String> itemIds, String reason) { public Omission { itemIds = List.copyOf(itemIds); } }
     public record Counts(int questions, int chapters, int sections, int contentSlides, int sourceSlides, int totalSlides) { }
+    public sealed interface ContentPlan permits OutputPlan,LearningContent.Plan {
+        int version(); String taskType(); String sourceHash(); Counts counts(); List<String> requiredNodes();
+        int estimatedTurns(); int estimatedAttempts(); int estimatedOutputBytes();
+    }
     public record OutputPlan(int version, String taskType, String sourceHash, Intent intent, List<UnitPlan> units,
                              List<Omission> omissions, Counts counts, List<String> requiredNodes, int estimatedTurns,
-                             int estimatedAttempts, int estimatedOutputBytes) {
+                             int estimatedAttempts, int estimatedOutputBytes) implements ContentPlan {
         public OutputPlan { units = List.copyOf(units); omissions = List.copyOf(omissions); requiredNodes = List.copyOf(requiredNodes); }
     }
-    public record Snapshot(OutputPlan plan, String planHash, int completedUnits, boolean fullSourceRead) { }
+    public record Snapshot(ContentPlan plan, String planHash, int completedUnits, boolean fullSourceRead,int completedChapters,int totalChapters) {
+        public Snapshot(ContentPlan plan,String hash,int completed,boolean read){this(plan,hash,completed,read,0,plan instanceof LearningContent.Plan learning?learning.counts().chapters():0);}
+    }
 }

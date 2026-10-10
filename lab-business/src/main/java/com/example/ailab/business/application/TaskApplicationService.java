@@ -42,6 +42,7 @@ public class TaskApplicationService {
      * 只创建登记中的学习或媒体任务，已移除的工作流不映射为新功能。
      */
     public TaskSnapshot create(UserContext actor, TaskRequest r) {
+        r.validateSourceCardinality();
         if (TaskRequest.retired(r.taskType())) throw new LabException("WORKFLOW_RETIRED", "旧FAQ与研究报告已移除，请使用学习自测或资料整编");
         boolean mediaType = Set.of("NOTES_PPT", "NOTES_VIDEO").contains(r.taskType());
         if (!TaskRequest.supported(r.taskType()) || !r.documentDriven() && (r.topic() == null || r.topic().isBlank())
@@ -61,7 +62,11 @@ public class TaskApplicationService {
             throw LabException.invalid("工作流选项与任务类型不匹配");
         DocumentApplicationService.validateKey(r.idempotencyKey());
         policy.authorize(actor, r.scope());
-        for (long id : r.documentIds()) knowledge.document(actor, r.scope(), id);
+        for (long id : r.documentIds()) {
+            var document = knowledge.document(actor, r.scope(), id);
+            if ("QUIZ_GENERATION".equals(r.taskType()) && document.document().activeProcessingRevision() == null)
+                throw new LabException("INDEX_NOT_READY", "自测文档须先完成结构入库");
+        }
         if (mediaType) {
             if (media == null) throw new LabException("MEDIA_CAPABILITY_UNAVAILABLE", "媒体未装配");
             media.validate(actor, r);
@@ -93,6 +98,12 @@ public class TaskApplicationService {
     public Optional<ContentWorkflow.Snapshot> contentPlan(UserContext actor,long id) {
         actor=policy.current(actor);tasks.read(actor,id);
         return content.readPlan(actor,id);
+    }
+    public Optional<ContentReading.Snapshot> readingPlan(UserContext actor,long id) {
+        return content.readingPlan(policy.current(actor),id);
+    }
+    public java.util.List<LearningContent.PackageStatus> workPackages(UserContext actor,long id,int offset,int limit) {
+        return content.packages(policy.current(actor),id,offset,limit);
     }
 
     /**

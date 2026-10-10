@@ -109,6 +109,20 @@ public class ModelGateway {
         return generate(task, selection, input, budget, null, "", new ArrayList<>(), null, List.of());
     }
 
+    /** 只核验注册路由及完整消息容量；不取得执行权、不调用远程服务、不消费额度。 */
+    public boolean fitsStructured(String task,ModelInput input,StructuredSchema<?> schema) {
+        var route=registry.route(task,ModelRegistry.Selection.auto(),Set.of("CHAT","STRUCTURED_OUTPUT"));
+        for(String id:route.ids()) {
+            var definition=registry.definition(id);if(input.requiredOutputTokens()>definition.outputLimit())continue;
+            try {
+                var prepared=input.prepare(withReservedSchema(definition,schema,""));
+                var messages=new ArrayList<>(prepared.messages());messages.add(SystemMessage.from(schema.instruction(referenceIds(prepared.evidence()))));
+                if(ModelInput.count(messages)+definition.outputLimit()<=definition.contextWindow())return true;
+            }catch(com.example.ailab.contract.error.LabException error){if(!error.code().equals("MODEL_CONTEXT_INSUFFICIENT"))throw error;}
+        }
+        return false;
+    }
+
     /**
      * 手写工具循环入口；续轮固定已产生申请的目标，禁止跨提供方搬运协议或重放工具。
      */
@@ -157,7 +171,7 @@ public class ModelGateway {
                                              ExecutionBudget budget,StructuredSchema<T> schema,String pinned,boolean allowRepair) {
         var attempts = new ArrayList<ModelRoute.Attempt>();
         var preparedInput=new java.util.concurrent.atomic.AtomicReference<ModelInput.Prepared>();
-        ModelInput capture=target->{var prepared=input.prepare(target);preparedInput.set(prepared);return prepared;};
+        ModelInput capture=ModelInput.reserveOutput(target->{var prepared=input.prepare(target);preparedInput.set(prepared);return prepared;},input.requiredOutputTokens());
         Turn turn = generate(task, selection, capture, budget, schema, "", attempts, pinned, List.of());
         try {
             return new StructuredTurn<>(validateStructured(schema, turn, budget), turn);
@@ -184,7 +198,7 @@ public class ModelGateway {
                 }
                 return new ModelInput.Prepared(messages,original.evidence(),ModelInput.count(messages));
             };
-            turn = generate(task, selection, correction, budget, schema, schema.repairInstruction(invalid), attempts, turn.modelId(), List.of());
+            turn = generate(task, selection, ModelInput.reserveOutput(correction,input.requiredOutputTokens()), budget, schema, schema.repairInstruction(invalid), attempts, turn.modelId(), List.of());
             try {
                 return new StructuredTurn<>(validateStructured(schema, turn, budget), turn);
             } catch (LabException failed) {
@@ -243,6 +257,12 @@ public class ModelGateway {
         for (String id : ids) {
             var d = registry.definition(id);
             if (blockedQuotas.contains(d.quotaGroup())) continue;
+            if (input.requiredOutputTokens() > d.outputLimit()) {
+                failure = "MODEL_CONTEXT_INSUFFICIENT";
+                if (decision.mode().equals("EXACT") || repair)
+                    throw new LabException(failure, "完整输出估计超过实际注册模型输出窗口");
+                continue;
+            }
             for (int retry = 0; retry < 2 && attempts < registry.configuration().failover().maxAttemptsPerLogicalCall(); retry++) {
                 budget.check();
                 var permit = health.acquire(id, d.quotaGroup());
@@ -386,7 +406,7 @@ public class ModelGateway {
                 }
             }
         }
-        throw new LabException(decision.mode().equals("EXACT") || repair ? failure : ids.size() < 2 ? "NO_COMPATIBLE_FALLBACK" : failure,
+        throw new LabException(decision.mode().equals("EXACT") || repair || failure.equals("MODEL_CONTEXT_INSUFFICIENT") ? failure : ids.size() < 2 ? "NO_COMPATIBLE_FALLBACK" : failure,
                 "模型暂不可用，未获得合法结果");
     }
 

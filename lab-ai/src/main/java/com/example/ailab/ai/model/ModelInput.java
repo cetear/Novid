@@ -15,6 +15,18 @@ public interface ModelInput {
      * 在消费attempt和发送前按实际窗口重装，保留本次真实证据集合。
      */
     Prepared prepare(ModelProperties.Definition target);
+    /** 完整输出的保守词元上界，由实际注册模型的输出窗口另行核验。 */
+    default int requiredOutputTokens(){return 0;}
+    static ModelInput reserveOutput(ModelInput input,int required) {
+        if(required<0)throw new IllegalArgumentException("输出预留不能为负");
+        return new ModelInput(){
+            public int requiredOutputTokens(){return Math.max(required,input.requiredOutputTokens());}
+            public Prepared prepare(ModelProperties.Definition target){
+                if(requiredOutputTokens()>target.outputLimit())throw new LabException("MODEL_CONTEXT_INSUFFICIENT","完整执行包输出超过候选模型输出窗口");
+                return input.prepare(target);
+            }
+        };
+    }
 
     record Prepared(List<ChatMessage> messages, List<EvidenceBundle> evidence, int inputTokens) {
         /**

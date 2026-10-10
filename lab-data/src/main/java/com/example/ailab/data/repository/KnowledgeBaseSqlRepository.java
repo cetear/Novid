@@ -86,6 +86,7 @@ public class KnowledgeBaseSqlRepository implements KnowledgeBaseRepository {
         if (mapper.update(null, new UpdateWrapper<KnowledgeBasePo>().eq("id", id).eq("version", version)
                 .set("deleted", true).setSql("version=version+1")) != 1)
             throw new LabException("OPERATION_CONFLICT", "知识库版本已变化");
+        sql.mapper(com.example.ailab.data.persistence.mapper.CompilationMapper.class).deleteBase(new Object[]{id});
         sql.event("DELETE_BASE", id, version + 1);
         sql.changed();
     }

@@ -28,6 +28,51 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         this.tasks=tasks; this.documents=documents; this.workflows=workflows; this.mapper=sql.mapper(ContentWorkflowMapper.class);
     }
     public Optional<SourcePlan> sourcePlan(TaskLease lease) { valid(lease); return source(lease.task().taskId()); }
+    public Optional<ContentReading.Plan> readingPlan(TaskLease lease) {
+        valid(lease);var plan=reading(lease.task().taskId());
+        if(plan.isEmpty())throw conflict();
+        plan.ifPresent(p->verifyReading(lease.actor(),lease.request().scope(),p,tasks.contentPolicy(lease).orElseThrow(ContentWorkflowRepository::conflict)));
+        return plan;
+    }
+    private Optional<ContentReading.Plan> reading(long id) {
+        var rows=mapper.reading(new Object[]{id});
+        if(rows.isEmpty()||rows.get(0).get("reading_protocol")==null)return Optional.empty();
+        var r=rows.get(0);
+        if(!ContentReading.PROTOCOL.equals(r.string("reading_protocol"))||r.get("plan_json")==null)throw conflict();
+        return Optional.of(decode(r.string("plan_json"),r.string("plan_hash"),ContentReading.Plan.class));
+    }
+    private void verifyReading(UserContext actor,ScopeRequest request,ContentReading.Plan p,Policy policy) {
+        p.validate(policy.readingPackBytes());
+        var scope=new AuthorizedKnowledgeScope(actor,request.mode(),request.knowledgeBaseIds(),request.ownerUserId(),Instant.now());
+        documents.verifySources(scope,p.sources());
+        for(var d:p.documents()) {
+            var c=documents.read(scope,d.documentId());var current=c.document();
+            if(current.documentVersion()!=d.documentVersion()||current.knowledgeBaseId()!=d.knowledgeBaseId()
+                    ||!Objects.equals(current.activeProcessingRevision(),d.processingRevision())||c.text().length()!=d.textLength()
+                    ||!Learning.digest(c.text()).equals(d.textHash()))throw new LabException("CONTEXT_VERSION_CONFLICT","创建时固定的正文版本或解析代次已变化");
+        }
+    }
+    public Optional<ContentReading.Snapshot> readingPlan(UserContext actor,long id) {
+        tasks.read(actor,id);var frozen=reading(id);if(frozen.isEmpty())return Optional.empty();
+        var p=frozen.get();
+        // 即使尚未运行也复核全部来源权限，避免泄露章节标题及主题卡。
+        var scope=new AuthorizedKnowledgeScope(actor,actor.role()==UserContext.Role.ADMIN?ScopeRequest.Mode.ALL:ScopeRequest.Mode.SELF,List.of(),null,Instant.now());
+        documents.verifySources(scope,p.sources());
+        var nodes=mapper.nodes(new Object[]{id}).stream().filter(n->"COMPLETED".equals(n.string("status"))).collect(Collectors.toMap(n->n.string("node_id"),n->n));
+        var completed=new HashSet<String>();var cards=new ArrayList<ContentReading.TopicCard>();
+        for(var f:p.fragments()) {
+            String fragment=f.source().id();var n=nodes.get("read_"+fragment);var t=nodes.get("topics_"+fragment);var e=nodes.get("evidence_"+fragment);
+            if(n!=null&&t!=null&&e!=null) {
+                output(n);output(e);
+                try{cards.addAll(JSON.readValue(output(t),ContentReading.Cards.class).cards());}
+                catch(Exception invalid){throw conflict();}
+                completed.add(fragment);
+            }
+        }
+        int packs=(int)p.packs().stream().filter(pack->completed.containsAll(pack.fragmentIds())&&nodes.containsKey("readpack_"+pack.packId())).count();
+        if(completed.size()==p.fragments().size()&&packs==p.packs().size())verifyReadingProof(id,actor,null,p);
+        return Optional.of(new ContentReading.Snapshot(p,hash(p),completed.size(),packs,completed.size()==p.fragments().size()&&packs==p.packs().size(),cards));
+    }
     private Optional<SourcePlan> source(long id) {
         var rows=mapper.run(new Object[]{id});
         return rows.isEmpty() ? Optional.empty() : Optional.of(decode(rows.get(0).string("source_json"),rows.get(0).string("source_hash"),SourcePlan.class));
@@ -40,6 +85,7 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
                 || !tasks.contentPolicy(lease).filter(value.policy()::equals).isPresent() || value.slices().isEmpty()
                 || !value.slices().stream().map(Learning.SourceSlice::documentId).collect(Collectors.toSet()).equals(new HashSet<>(lease.request().documentIds())))throw conflict();
         verify(documents,lease.actor(),lease.request().scope(),value);
+        readingPlan(lease).ifPresent(p->{if(!p.fragments().stream().map(ContentReading.Fragment::source).toList().equals(value.slices())||!p.sources().equals(value.sources()))throw conflict();});
         mapper.bind(new Object[]{lease.task().taskId(),hash(value),encode(value)});
     }
     public Optional<String> completed(TaskLease lease,String id,String inputHash) {
@@ -66,12 +112,18 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         if(mapper.complete(new Object[]{SqlSupport.hash(value),value,lease.task().taskId(),id,inputHash})!=1)throw conflict();
         mapper.progress(new Object[]{lease.task().taskId()});
     }
+    public Optional<String> completedNode(TaskLease lease,String id) {
+        valid(lease);var rows=mapper.node(new Object[]{lease.task().taskId(),id});
+        return rows.isEmpty()||!"COMPLETED".equals(rows.get(0).string("status"))?Optional.empty():Optional.of(output(rows.get(0)));
+    }
     public void accept(TaskLease lease,OutputPlan plan) {
         valid(lease);
+        if(!"NOTES_PPT".equals(lease.request().taskType()))throw conflict();
         var row=run(lease.task().taskId());var source=source(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict);
         verify(documents,lease.actor(),lease.request().scope(),source);
         if(row.get("plan_hash")!=null){if(!hash(plan).equals(row.string("plan_hash")))throw conflict();return;}
         requireNodes(lease.task().taskId(),source.slices().stream().map(s->"read_"+s.id()).toList());
+        verifyReadingProof(lease.task().taskId(),lease.actor(),lease.request().scope(),reading(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict));
         if(plan.version()!=2 || !plan.taskType().equals(lease.request().taskType()) || !plan.sourceHash().equals(row.string("source_hash"))
                 || plan.units().isEmpty() || plan.units().size()>source.policy().maximumUnits()
                 || plan.requiredNodes().size()!=new HashSet<>(plan.requiredNodes()).size()
@@ -87,7 +139,6 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
             if(!unit.id().equals(String.format(Locale.ROOT,"u%04d",++index))||!themeIds.contains(unit.themeId())||unit.itemIds().isEmpty()
                     ||new HashSet<>(unit.itemIds()).size()!=unit.itemIds().size()||!facts.containsAll(unit.itemIds()))throw conflict();
             if(!"NONE".equals(unit.imageMode()))imageCount++;
-            if("KNOWLEDGE_COMPILATION".equals(plan.taskType())&&!Collections.disjoint(selected,unit.itemIds()))throw conflict();
             selected.addAll(unit.itemIds());
         }
         for(var omission:plan.omissions()) {
@@ -95,11 +146,9 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
             selected.addAll(omission.itemIds());
         }
         if(!selected.equals(facts))throw conflict();
-        boolean ppt="NOTES_PPT".equals(plan.taskType()),quiz="QUIZ_GENERATION".equals(plan.taskType());
-        int sourcePages=ppt?Math.max(1,(source.sources().size()+imageCount+11)/12):0;
-        var counts=new Counts(quiz?index:0,!ppt&&!quiz?(int)plan.units().stream().map(UnitPlan::themeId).distinct().count():0,
-                !ppt&&!quiz?index:0,ppt?index:0,sourcePages,ppt?index+sourcePages:0);
-        if(!counts.equals(plan.counts())||imageCount>8||!ppt&&imageCount>0||!ppt&&!quiz&&!plan.omissions().isEmpty())throw conflict();
+        int sourcePages=Math.max(1,(source.sources().size()+imageCount+11)/12);
+        var counts=new Counts(0,0,0,index,sourcePages,index+sourcePages);
+        if(!counts.equals(plan.counts())||imageCount>8)throw conflict();
         if(plan.estimatedTurns()<plan.units().size()*2 || plan.estimatedAttempts()<plan.estimatedTurns()
                 || plan.estimatedTurns()>tasks.remainingModelTurns(lease) || plan.estimatedAttempts()>tasks.remainingModelAttempts(lease)
                 || plan.estimatedOutputBytes()>source.policy().resultBytes())
@@ -112,6 +161,13 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         if(!TaskProgress.stepIds(lease.request().taskType()).contains(stage))throw conflict();
         var source=source(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict);
         if(stage.equals("extract")) {
+            Optional.of(reading(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict)).ifPresent(p->{
+                p.validate(source.policy().readingPackBytes());var required=new ArrayList<String>();
+                p.packs().forEach(pack->required.add("readpack_"+pack.packId()));
+                p.fragments().forEach(f->{required.add("topics_"+f.source().id());required.add("evidence_"+f.source().id());});
+                requireNodes(lease.task().taskId(),required);
+                verifyReadingProof(lease.task().taskId(),lease.actor(),lease.request().scope(),p);
+            });
             var expected=source.slices().stream().map(s->"read_"+s.id()).toList();
             if(!new HashSet<>(nodes).equals(new HashSet<>(expected)))throw conflict();
             for(var entry:source.slices().stream().collect(Collectors.groupingBy(Learning.SourceSlice::documentId)).entrySet()) {
@@ -125,8 +181,13 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         valid(lease);var source=source(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict);
         verify(documents,lease.actor(),lease.request().scope(),source);
         var row=run(lease.task().taskId());if(row.get("plan_hash")==null)throw conflict();
-        var plan=decode(row.string("plan_json"),row.string("plan_hash"),OutputPlan.class);
+        var plan=contentPlan(row,lease.request().taskType());
         requireNodes(lease.task().taskId(),plan.requiredNodes());
+        if(plan instanceof LearningContent.Plan learning){
+            requireNodes(lease.task().taskId(),List.of("global_accepted"));var packs=packages(lease).stream().collect(Collectors.toMap(p->p.workPackage().id(),p->p));
+            requireNodes(lease.task().taskId(),learning.compilation()!=null?learning.compilation().directory().chapters().stream().map(c->"chapter_accepted_"+c.id()).toList():learning.quiz().chapters().stream().map(c->"chapter_accepted_"+c.id()).toList());
+            if(learning.execution().packages().stream().anyMatch(p->!resolved(p.id(),packs,new HashSet<>())))throw conflict();
+        }
     }
     public void publish(TaskLease lease,String resultJson,String markdown) {
         verifyComplete(lease);
@@ -140,25 +201,175 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         if(rows.isEmpty()||rows.get(0).get("plan_hash")==null)return Optional.empty();
         var row=rows.get(0);var source=decode(row.string("source_json"),row.string("source_hash"),SourcePlan.class);
         verify(documents,actor,null,source);
-        var plan=decode(row.string("plan_json"),row.string("plan_hash"),OutputPlan.class);
+        var plan=contentPlan(row,tasks.read(actor,id).taskType());
         var nodes=mapper.nodes(new Object[]{id}).stream().filter(n->n.string("status").equals("COMPLETED")).peek(ContentWorkflowRepository::output).map(n->n.string("node_id")).collect(Collectors.toSet());
-        return Optional.of(new Snapshot(plan,row.string("plan_hash"),(int)plan.requiredNodes().stream().filter(nodes::contains).count(),true));
+        int chapters=plan instanceof LearningContent.Plan learning?learning.counts().chapters():0;
+        return Optional.of(new Snapshot(plan,row.string("plan_hash"),(int)plan.requiredNodes().stream().filter(nodes::contains).count(),true,(int)nodes.stream().filter(n->n.startsWith("chapter_accepted_")).count(),chapters));
     }
     public String result(UserContext actor,long id) {
         var task=tasks.read(actor,id);if(!Learning.supports(task.taskType())||!task.status().equals("SUCCEEDED"))throw new LabException("WORKFLOW_RESULT_UNAVAILABLE","学习结果尚未发布");
         var plan=readPlan(actor,id).orElseThrow(ContentWorkflowRepository::conflict);requireNodes(id,plan.plan().requiredNodes());
         var rows=mapper.node(new Object[]{id,"result"});if(rows.isEmpty())throw conflict();return output(rows.get(0));
     }
+    public List<SourceDependency> publishedSources(UserContext actor,long id) {
+        var task=tasks.read(actor,id);
+        if(!Learning.supports(task.taskType())||!"SUCCEEDED".equals(task.status()))
+            throw new LabException("WORKFLOW_RESULT_UNAVAILABLE","学习结果尚未发布");
+        var source=source(id).orElseThrow(ContentWorkflowRepository::conflict);
+        documents.verifySources(new AuthorizedKnowledgeScope(actor,actor.role()==UserContext.Role.ADMIN?ScopeRequest.Mode.ALL:ScopeRequest.Mode.SELF,
+                List.of(),null,Instant.now()),source.sources());
+        return source.sources();
+    }
     private SqlRow run(long id) {var rows=mapper.run(new Object[]{id});if(rows.isEmpty())throw conflict();return rows.get(0);}
+    private static ContentPlan contentPlan(SqlRow row,String type) {
+        return Learning.supports(type)?decode(row.string("plan_json"),row.string("plan_hash"),LearningContent.Plan.class)
+                :decode(row.string("plan_json"),row.string("plan_hash"),OutputPlan.class);
+    }
+    public Optional<LearningContent.Plan> acceptedLearningPlan(TaskLease lease) {
+        valid(lease);var rows=mapper.run(new Object[]{lease.task().taskId()});
+        if(rows.isEmpty()||rows.get(0).get("plan_hash")==null)return Optional.empty();
+        return Optional.of((LearningContent.Plan)contentPlan(rows.get(0),lease.request().taskType()));
+    }
+    public void accept(TaskLease lease,LearningContent.Plan plan) {
+        valid(lease);var source=source(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict);var row=run(lease.task().taskId());
+        if(row.get("plan_hash")!=null){if(!hash(plan).equals(row.string("plan_hash")))throw conflict();return;}
+        verify(documents,lease.actor(),lease.request().scope(),source);var p=readingPlan(lease).orElseThrow(ContentWorkflowRepository::conflict);
+        verifyReadingProof(lease.task().taskId(),lease.actor(),lease.request().scope(),p);
+        var facts=new HashSet<String>();var nodes=mapper.nodes(new Object[]{lease.task().taskId()}).stream().collect(Collectors.toMap(n->n.string("node_id"),n->n));
+        for(var slice:source.slices())readingNode(nodes,"read_"+slice.id(),Facts.class).items().forEach(i->facts.add(i.id()));
+        LearningPlanRules.validate(plan,lease.request(),facts,source.policy());
+        if(plan.quiz()!=null){var fragments=p.fragments().stream().collect(Collectors.toMap(f->f.source().id(),f->f));var evidence=new HashMap<String,ContentReading.Evidence>();
+            for(var f:p.fragments())readingNode(nodes,"evidence_"+f.source().id(),ContentReading.Evidences.class).evidence().forEach(e->evidence.put(e.itemId(),e));
+            for(var chapter:plan.quiz().chapters()) {
+                if(chapter.ranges().isEmpty()&&!chapter.itemIds().isEmpty())throw conflict();
+                for(var range:chapter.ranges()){var f=fragments.get(range.fragmentId());if(f==null||!range.sectionId().equals(f.sectionId())||range.startOffset()<f.source().startOffset()||range.endOffset()>f.source().endOffset()||range.startOffset()>=range.endOffset())throw conflict();}
+                for(String id:chapter.itemIds()){var e=evidence.get(id);if(e==null||chapter.ranges().stream().noneMatch(range->range.fragmentId().equals(e.fragmentId())&&range.startOffset()<=e.quoteStartOffset()&&e.quoteEndOffset()<=range.endOffset()))throw conflict();}
+            }
+        }
+        if(!plan.sourceHash().equals(hash(source))||plan.estimatedTurns()>tasks.remainingModelTurns(lease)||plan.estimatedAttempts()>tasks.remainingModelAttempts(lease))
+            throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","业务计划与执行包超过剩余父任务预算");
+        if(mapper.accept(new Object[]{hash(plan),encode(plan),lease.task().taskId()})!=1)throw conflict();
+        for(var pack:plan.execution().packages())savePackage(lease,pack,plan.execution().parts().stream().filter(part->pack.partIds().contains(part.id())).toList());
+        mapper.progress(new Object[]{lease.task().taskId()});
+    }
+    private void savePackage(TaskLease lease,LearningContent.WorkPackage pack,List<LearningContent.Part> parts) {
+        mapper.savePackage(new Object[]{lease.task().taskId(),pack.id(),pack.parentId(),hash(Map.of("package",pack,"parts",parts)),encode(pack),encode(parts)});
+    }
+    public List<LearningContent.PackageStatus> packages(TaskLease lease) {valid(lease);return packageRows(lease.task().taskId());}
+    public List<LearningContent.PackageStatus> packages(UserContext actor,long id,int offset,int limit) {
+        tasks.read(actor,id);if(offset<0||limit<1||limit>100)throw LabException.invalid("工作包分页范围无效");
+        var source=source(id);if(source.isEmpty())return List.of();verify(documents,actor,null,source.get());
+        return packageRows(id).stream().skip(offset).limit(limit).toList();
+    }
+    private List<LearningContent.PackageStatus> packageRows(long id) {
+        var rows=mapper.packages(new Object[]{id});var accepted=mapper.nodes(new Object[]{id}).stream().filter(n->n.string("node_id").startsWith("partaccepted_")&&"COMPLETED".equals(n.string("status"))).peek(ContentWorkflowRepository::output).map(n->n.string("node_id").substring(13)).collect(Collectors.toSet());
+        return rows.stream().map(r->{try {
+            var pack=JSON.readValue(r.string("package_json"),LearningContent.WorkPackage.class);
+            List<LearningContent.Part> parts=JSON.readValue(r.string("parts_json"),JSON.getTypeFactory().constructCollectionType(List.class,LearningContent.Part.class));
+            if(!hash(Map.of("package",pack,"parts",parts)).equals(r.string("input_hash")))throw conflict();
+            return new LearningContent.PackageStatus(pack,parts,r.string("status"),r.intValue("attempts"),r.string("result_hash"),r.string("error_code"),
+                    rows.stream().filter(child->pack.id().equals(child.string("parent_id"))).map(child->child.string("package_id")).toList(),(int)pack.partIds().stream().filter(accepted::contains).count());
+        }catch(Exception invalid){throw conflict();}}).toList();
+    }
+    private LearningContent.PackageStatus packageById(TaskLease lease,String id) {return packages(lease).stream().filter(p->p.workPackage().id().equals(id)).findFirst().orElseThrow(ContentWorkflowRepository::conflict);}
+    private boolean resolved(String id,Map<String,LearningContent.PackageStatus> rows,Set<String> visiting) {
+        if(!visiting.add(id))throw conflict();var p=rows.get(id);if(p==null)throw conflict();
+        boolean ready=p.status().equals("ACCEPTED")||p.status().equals("REPLACED")&&!p.children().isEmpty()&&p.children().stream().allMatch(child->resolved(child,rows,new HashSet<>(visiting)));return ready;
+    }
+    public void beginPackage(TaskLease lease,String id) {
+        valid(lease);var p=packageById(lease,id);var rows=packages(lease).stream().collect(Collectors.toMap(v->v.workPackage().id(),v->v));
+        if(p.status().equals("ACCEPTED"))return;if(p.status().equals("REPLACED")||!p.workPackage().dependencies().stream().allMatch(dep->resolved(dep,rows,new HashSet<>())))throw conflict();
+        if(mapper.beginPackage(new Object[]{lease.task().taskId(),id})!=1)throw conflict();
+    }
+    public void completePackage(TaskLease lease,String id,String resultHash) {
+        valid(lease);identity(id,resultHash);var p=packageById(lease,id);
+        if(p.status().equals("ACCEPTED")){if(!resultHash.equals(p.resultHash()))throw conflict();return;}
+        requireNodes(lease.task().taskId(),p.workPackage().partIds().stream().map(part->"partaccepted_"+part).toList());
+        var rows=mapper.nodes(new Object[]{lease.task().taskId()}).stream().collect(Collectors.toMap(n->n.string("node_id"),n->n));
+        for(var part:p.parts())try{
+            var receipt=JSON.readTree(output(rows.get("partaccepted_"+part.id())));
+            if(!part.id().equals(receipt.path("partId").asText())||receipt.path("producerId").asText().isBlank())throw conflict();
+            var value=JSON.readTree(receipt.path("json").asText());var items=JSON.convertValue(value.path("itemIds"),JSON.getTypeFactory().constructCollectionType(List.class,String.class));
+            if(!part.itemIds().equals(items)||!(part.kind().equals("QUESTION")?part.logicalId().equals(value.path("id").asText()):part.id().equals(value.path("partId").asText())))throw conflict();
+        }catch(Exception invalid){throw conflict();}
+        var expected=hash(p.workPackage().partIds().stream().map(part->output(rows.get("partaccepted_"+part))).toList());if(!expected.equals(resultHash))throw conflict();
+        if(mapper.completePackage(new Object[]{lease.task().taskId(),id,resultHash})!=1)throw conflict();mapper.progress(new Object[]{lease.task().taskId()});
+    }
+    public void failPackage(TaskLease lease,String id,String code){
+        valid(lease);if(code==null||!code.matches("[A-Z0-9_]{1,64}"))throw conflict();var pack=packageById(lease,id);
+        if(pack.status().equals("FAILED")&&Objects.equals(code,pack.errorCode()))return;
+        if(!pack.status().equals("RUNNING")||mapper.failPackage(new Object[]{lease.task().taskId(),id,code})!=1)throw conflict();
+        mapper.progress(new Object[]{lease.task().taskId()});
+    }
+    public void splitPackage(TaskLease lease,String id,List<LearningContent.Part> parts,List<LearningContent.WorkPackage> children) {
+        valid(lease);var parent=packageById(lease,id);var plan=acceptedLearningPlan(lease).orElseThrow(ContentWorkflowRepository::conflict);
+        if(parent.status().equals("ACCEPTED")||children.size()<2||parent.workPackage().depth()>=plan.execution().maximumSplitDepth())throw conflict();
+        LearningPlanRules.split(parent.parts(),parts,parent.workPackage(),children);
+        var policy=source(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict).policy();
+        if(children.stream().anyMatch(child->child.inputBytes()>policy.unitInputBytes()||child.outputBytes()>policy.packageOutputBytes()))throw conflict();
+        if(parent.status().equals("REPLACED")){
+            var saved=packages(lease).stream().collect(Collectors.toMap(p->p.workPackage().id(),p->p));
+            if(!new HashSet<>(parent.children()).equals(children.stream().map(LearningContent.WorkPackage::id).collect(Collectors.toSet())))throw conflict();
+            for(var child:children){var found=saved.get(child.id());if(found==null||!found.workPackage().equals(child)||!found.parts().equals(parts.stream().filter(p->child.partIds().contains(p.id())).toList()))throw conflict();}return;
+        }
+        if(packages(lease).size()+children.size()>plan.execution().maximumPackages())throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","追加执行包超过父任务限制");
+        for(var child:children)savePackage(lease,child,parts.stream().filter(p->child.partIds().contains(p.id())).toList());
+        if(mapper.replacePackage(new Object[]{lease.task().taskId(),id})!=1)throw conflict();mapper.progress(new Object[]{lease.task().taskId()});
+    }
     private void requireNodes(long taskId,List<String> ids) {
         var rows=mapper.nodes(new Object[]{taskId});var nodes=new HashMap<String,SqlRow>();rows.forEach(n->nodes.put(n.string("node_id"),n));
         for(String id:ids){var row=nodes.get(id);if(row==null)throw conflict();output(row);}
     }
     private void valid(TaskLease lease) {tasks.valid(lease);if(!lease.request().documentDriven())throw conflict();}
+    private void verifyReadingProof(long taskId,UserContext actor,ScopeRequest request,ContentReading.Plan p) {
+        var scope=request==null?new AuthorizedKnowledgeScope(actor,actor.role()==UserContext.Role.ADMIN?ScopeRequest.Mode.ALL:ScopeRequest.Mode.SELF,List.of(),null,Instant.now())
+                :new AuthorizedKnowledgeScope(actor,request.mode(),request.knowledgeBaseIds(),request.ownerUserId(),Instant.now());
+        var rows=mapper.nodes(new Object[]{taskId});var nodes=rows.stream().collect(Collectors.toMap(n->n.string("node_id"),n->n));
+        var texts=new HashMap<Long,String>();var facts=new HashMap<String,Facts>();var allFacts=new HashSet<String>();
+        for(var d:p.documents()) {
+            var c=documents.read(scope,d.documentId());
+            if(c.document().documentVersion()!=d.documentVersion()||!Objects.equals(c.document().activeProcessingRevision(),d.processingRevision())
+                    ||!Learning.digest(c.text()).equals(d.textHash()))throw conflict();texts.put(d.documentId(),c.text());
+        }
+        for(var f:p.fragments()) {
+            var s=f.source();String id=s.id(),text=texts.get(s.documentId());
+            Facts value=readingNode(nodes,"read_"+id,Facts.class);facts.put(id,value);
+            if(!"COMPLETE".equals(value.status()))throw conflict();
+            var owned=new HashMap<String,Learning.Item>();
+            for(var item:value.items())if(!allFacts.add(item.id())||!item.sourceId().equals(id)||owned.put(item.id(),item)!=null
+                    ||item.quote().isBlank()||!text.substring(s.startOffset(),s.endOffset()).contains(item.quote()))throw conflict();
+            var covered=new HashSet<String>();
+            for(var card:readingNode(nodes,"topics_"+id,ContentReading.Cards.class).cards()) {
+                if(!card.fragmentId().equals(id)||!card.sectionId().equals(f.sectionId())||!card.headingPath().equals(f.headingPath())
+                        ||!card.id().equals(card.topic().id())||card.factCount()!=card.topic().itemIds().size()
+                        ||card.sourceBytes()!=TextWindow.count(text.substring(s.startOffset(),s.endOffset()))||card.topic().itemIds().isEmpty()
+                        ||!owned.keySet().containsAll(card.topic().itemIds())||!owned.keySet().containsAll(card.topic().dependencyItemIds()))throw conflict();
+                for(String fact:card.topic().itemIds())if(!covered.add(fact))throw conflict();
+            }
+            if(!covered.equals(owned.keySet()))throw conflict();var evidenced=new HashSet<String>();
+            for(var e:readingNode(nodes,"evidence_"+id,ContentReading.Evidences.class).evidence()) {
+                var item=owned.get(e.itemId());
+                if(item==null||!evidenced.add(e.itemId())||!id.equals(e.fragmentId())||e.quoteStartOffset()<s.startOffset()
+                        ||e.quoteEndOffset()>s.endOffset()||e.quoteStartOffset()>=e.quoteEndOffset()
+                        ||!text.substring(e.quoteStartOffset(),e.quoteEndOffset()).equals(item.quote())||!Learning.digest(item.quote()).equals(e.quoteHash()))throw conflict();
+            }
+            if(!evidenced.equals(owned.keySet()))throw conflict();
+        }
+        for(var pack:p.packs()) {
+            var batch=readingNode(nodes,"readpack_"+pack.packId(),ContentReading.Batch.class);
+            if(!"COMPLETE".equals(batch.status())||!batch.fragments().stream().map(ContentReading.Observation::fragmentId).toList().equals(pack.fragmentIds()))throw conflict();
+            for(var observation:batch.fragments())if(!observation.items().equals(facts.get(observation.fragmentId()).items())
+                    ||!observation.topics().equals(readingNode(nodes,"topics_"+observation.fragmentId(),ContentReading.Cards.class).cards().stream().map(ContentReading.TopicCard::topic).toList()))throw conflict();
+        }
+    }
+    private static <T>T readingNode(Map<String,SqlRow> nodes,String id,Class<T> type) {
+        var row=nodes.get(id);if(row==null)throw conflict();try{return JSON.readValue(output(row),type);}catch(Exception invalid){throw conflict();}
+    }
     private static void identity(String id,String hash) {if(id==null||!id.matches("[a-z][a-z0-9_]{0,63}")||hash==null||!hash.matches("[a-f0-9]{64}"))throw conflict();}
     private static String output(SqlRow row){if(!row.string("status").equals("COMPLETED"))throw conflict();String v=canonical(row.string("output_json"));if(!SqlSupport.hash(v).equals(row.string("output_hash")))throw conflict();return v;}
     private static String canonical(String text){try{return JSON.writeValueAsString(JSON.readValue(text,Object.class));}catch(Exception e){throw conflict();}}
     private static String encode(Object value){try{return canonical(JSON.writeValueAsString(value));}catch(Exception e){throw conflict();}}
+    static String readingJson(ContentReading.Plan value){return encode(value);}
     private static String hash(Object value){return SqlSupport.hash(encode(value));}
     private static <T>T decode(String text,String hash,Class<T> type){try{if(!SqlSupport.hash(canonical(text)).equals(hash))throw conflict();return JSON.readValue(text,type);}catch(Exception e){throw conflict();}}
     public static void verifyArtifactBaseline(SqlRow row,UserContext actor,DocumentSqlRepository documents) {
@@ -168,12 +379,12 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
     public static void verifyPublication(SqlRow row,List<SqlRow> rows,TaskLease lease,TaskCheckpoint result,DocumentSqlRepository documents) {
         var source=decode(row.string("source_json"),row.string("source_hash"),SourcePlan.class);
         verify(documents,lease.actor(),lease.request().scope(),source);
-        var plan=decode(row.string("plan_json"),row.string("plan_hash"),OutputPlan.class);
+        var plan=contentPlan(row,lease.request().taskType());
         if(result.partial()||!result.sourceDependencies().equals(source.sources())||!plan.sourceHash().equals(row.string("source_hash")))throw conflict();
         var nodes=rows.stream().collect(Collectors.toMap(n->n.string("node_id"),n->n));
-        var required=new ArrayList<>(plan.requiredNodes());source.slices().forEach(s->required.add("read_"+s.id()));required.add("result");
+        var required=new ArrayList<>(plan.requiredNodes());if(plan instanceof LearningContent.Plan learning){required.add("global_accepted");required.addAll(learning.compilation()!=null?learning.compilation().directory().chapters().stream().map(c->"chapter_accepted_"+c.id()).toList():learning.quiz().chapters().stream().map(c->"chapter_accepted_"+c.id()).toList());}source.slices().forEach(s->required.add("read_"+s.id()));required.add("result");
         for(String id:required){var node=nodes.get(id);if(node==null)throw conflict();output(node);}
-        try {var saved=JSON.readTree(output(nodes.get("result")));if(!SqlSupport.hash(canonical(saved.get("contentPlan").toString())).equals(row.string("plan_hash")))throw conflict();}
+        try {if(plan instanceof LearningContent.Plan&&!"ACCEPT".equals(JSON.readTree(output(nodes.get("global_accepted"))).path("decision").asText()))throw conflict();for(String id:required)if(id.startsWith("chapter_accepted_")&&!"ACCEPT".equals(JSON.readTree(output(nodes.get(id))).path("decision").asText()))throw conflict();var saved=JSON.readTree(output(nodes.get("result")));if(!SqlSupport.hash(canonical(saved.get("contentPlan").toString())).equals(row.string("plan_hash")))throw conflict();}
         catch(Exception invalid){throw conflict();}
     }
     private static void verify(DocumentSqlRepository documents,UserContext actor,ScopeRequest request,SourcePlan source) {
