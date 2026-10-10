@@ -23,6 +23,7 @@ import java.util.stream.Collectors;
 /** 固定阶段、动态内容目标；所有子调用共享父任务资源与不可变来源和计划。 */
 @Component
 public final class DocumentDrivenWorkflow {
+    private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(DocumentDrivenWorkflow.class);
     private final TaskStorePort tasks;
     private final ContentWorkflowStorePort store;
     private final WorkflowRunStorePort workflows;
@@ -94,6 +95,7 @@ public final class DocumentDrivenWorkflow {
             });
             if(!source.policy().equals(policy)||!source.workflow().equals(binding))throw changed();
             SkillCatalog.verify(source.skill());
+            trace.payloadSources(source.sources());
             for(var slice:source.slices())raw.put(slice.id(),read(slice));
             long elapsed=lease.task().progress()==null?0:lease.task().progress().elapsedExecutionSeconds();
             budget=new ExecutionBudget(Duration.ofSeconds(Math.max(1,policy.executionSeconds()-elapsed)),policy.attempts(),()->tasks.reserveModelAttempt(lease),
@@ -127,9 +129,12 @@ public final class DocumentDrivenWorkflow {
         <T>T node(String id,String phase,Object input,StructuredSchema<T> schema,Supplier<T> execute) {
             budget.check();String hash=ContentJson.hash(Map.of("source",ContentJson.hash(source),"node",id,"input",input));
             try(var span=budget.trace().span("AGENT",id);var activation=budget.activate(span.context())) {
-                var old=store.completed(lease,id,hash);if(old.isPresent()){span.status("REUSED");return schema.validate(old.get(),Set.of());}
-                store.begin(lease,id,phase,hash);T value=execute.get();String json=ContentJson.encode(value);value=schema.validate(json,Set.of());
-                budget.check();store.complete(lease,id,hash,json);return value;
+                com.example.ailab.ai.runtime.TracePayloadCapture.input(span,input);
+                try {
+                    var old=store.completed(lease,id,hash);if(old.isPresent()){span.status("REUSED");var value=schema.validate(old.get(),Set.of());com.example.ailab.ai.runtime.TracePayloadCapture.output(span,value);return value;}
+                    store.begin(lease,id,phase,hash);T value=execute.get();String json=ContentJson.encode(value);value=schema.validate(json,Set.of());
+                    budget.check();store.complete(lease,id,hash,json);com.example.ailab.ai.runtime.TracePayloadCapture.output(span,json);return value;
+                } catch(RuntimeException failure) {span.fail(failure);throw failure;}
             }
         }
         <T>T generate(String id,String phase,String action,Object input,StructuredSchema<T> schema) {
@@ -163,11 +168,19 @@ public final class DocumentDrivenWorkflow {
         }
         Facts extractPart(Learning.SourceSlice slice,String text,int offset) {
             String prefix=slice.id()+"_"+offset;
+            LabException quoteFailure=null;
             try {
                 var result=generate("extract_"+prefix+"_"+text.length(),"extract","extract",Map.of("sourceId",slice.id(),"prefix",prefix,"text",text),ContentSchemas.facts(prefix,slice.id(),text,32,false));
                 if(result.status().equals("COMPLETE"))return result;
-            } catch(LabException capacity) {if(!capacityFailure(capacity))throw capacity;}
-            if(TextWindow.count(text)<=500)throw new LabException("WORKFLOW_EXTRACTION_CAPACITY_EXCEEDED","高密度资料最小分片仍超出事实协议容量");
+            } catch(LabException failure) {
+                if(RecordSchema.reason(failure).orElse(null)==RecordSchema.Reason.FACT_QUOTE)quoteFailure=failure;
+                else if(!capacityFailure(failure))throw failure;
+            }
+            if(TextWindow.count(text)<=500) {
+                if(quoteFailure!=null)throw quoteFailure;
+                throw new LabException("WORKFLOW_EXTRACTION_CAPACITY_EXCEEDED","高密度资料最小分片仍超出事实协议容量");
+            }
+            LOG.info("event=content.extract_split sourceId={} offset={} bytes={} reason={}",slice.id(),offset,TextWindow.count(text),quoteFailure==null?"CAPACITY":"FACT_QUOTE");
             int split=TextWindow.end(text,0,text.length(),Math.max(1,TextWindow.count(text)/2));if(split<=0||split>=text.length())throw changed();
             var first=extractPart(slice,text.substring(0,split),offset);var second=extractPart(slice,text.substring(split),offset+split);
             var merged=new ArrayList<>(first.items());merged.addAll(second.items());return new Facts(merged,"COMPLETE");

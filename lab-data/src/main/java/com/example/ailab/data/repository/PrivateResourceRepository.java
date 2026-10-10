@@ -19,6 +19,7 @@ import java.util.*;
 public class PrivateResourceRepository implements MemoryStorePort, TraceRecordPort {
     private final PrivateResourceMapper mapper;
     private final SqlSupport sql;
+    private DocumentSqlRepository documents;
     private final com.fasterxml.jackson.databind.ObjectMapper traceJson = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
 
     /**
@@ -27,6 +28,10 @@ public class PrivateResourceRepository implements MemoryStorePort, TraceRecordPo
     public PrivateResourceRepository(SqlSupport sql) {
         this.sql = sql; this.mapper = sql.mapper(PrivateResourceMapper.class);
     }
+
+    /** 内容快照沿用资料当前权限和版本复核；无装配时拒绝返回正文。 */
+    @org.springframework.beans.factory.annotation.Autowired
+    public void documents(DocumentSqlRepository documents) { this.documents = documents; }
 
     /**
      * 返回本人尚未删除的偏好。
@@ -90,12 +95,12 @@ public class PrivateResourceRepository implements MemoryStorePort, TraceRecordPo
     public void recordGraph(TraceSnapshot run,List<TraceNode> nodes) {
         if(nodes.size()>2000 || nodes.size()!=run.nodeCount()) throw LabException.invalid("观测节点数量不匹配");
         record(run);
-        var rows=new ArrayList<Object[]>();
+        var rows=new ArrayList<com.example.ailab.data.persistence.po.TraceSpanRow>();
         for(var node:nodes) {
             try {
                 String json=traceJson.writeValueAsString(node);
-                if(json.getBytes(java.nio.charset.StandardCharsets.UTF_8).length>2048) throw LabException.invalid("观测节点超限");
-                rows.add(new Object[]{run.traceId(),node.spanId(),node.parentSpanId(),node.sequence(),node.type(),node.status(),Timestamp.from(node.startedAt()),node.endedAt()==null?null:Timestamp.from(node.endedAt()),json});
+                if(json.getBytes(java.nio.charset.StandardCharsets.UTF_8).length>262144) throw LabException.invalid("观测节点超限");
+                rows.add(new com.example.ailab.data.persistence.po.TraceSpanRow(run.traceId(),node.spanId(),node.parentSpanId(),node.sequence(),node.type(),node.status(),Timestamp.from(node.startedAt()),node.endedAt()==null?null:Timestamp.from(node.endedAt()),json));
             } catch(com.fasterxml.jackson.core.JsonProcessingException invalid) { throw new IllegalStateException("观测编码失败"); }
         }
         // 批量发送有界排错记录，减少SQL往返；终态与节点仍在同一短事务。
@@ -109,6 +114,20 @@ public class PrivateResourceRepository implements MemoryStorePort, TraceRecordPo
             try { return traceJson.readValue(r.string(1),TraceNode.class); }
             catch(com.fasterxml.jackson.core.JsonProcessingException invalid) { throw new IllegalStateException("观测读取失败"); }
         });
+        // 内容与元数据分别交付：来源撤销或缺少权限装配时仍可查看状态和耗时。
+        var sources=nodes.stream().flatMap(n->n.payloadSources().stream()).distinct().toList();
+        boolean readable=documents!=null;
+        if(readable && !sources.isEmpty()) {
+            try {
+                documents.verifySources(new AuthorizedKnowledgeScope(actor,
+                        actor.role()==UserContext.Role.ADMIN?ScopeRequest.Mode.ALL:ScopeRequest.Mode.SELF,
+                        List.of(),null,java.time.Instant.now()),sources);
+            } catch(LabException denied) {
+                if(!Set.of("ACCESS_DENIED","CONTEXT_MAPPING_INVALID").contains(denied.code()))throw denied;
+                readable=false;
+            }
+        }
+        if(!readable)nodes=nodes.stream().map(n->n.payloads(null,null,n.payloadSources())).toList();
         var graph=TraceGraph.from(run,nodes);
         // 终态声明的数量与实际存储也核对，不用父子树猜测执行完整性。
         return nodes.size()==run.nodeCount()?graph:new TraceGraph(run,graph.nodes(),graph.edges(),graph.missingNodeIds(),true,"UNKNOWN");

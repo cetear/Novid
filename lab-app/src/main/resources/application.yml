@@ -75,9 +75,9 @@ lab:
     online-limit: 10
     task-limit: 30
     ingestion-limit: 30
-    online-tokens: 300000
-    task-tokens: 300000
-    ingestion-tokens: 2500000
+    online-tokens: 10000000
+    task-tokens: 10000000
+    ingestion-tokens: 10000000
     prices: {}
   observability:
     max-nodes: 2000
@@ -89,8 +89,8 @@ lab:
   tools:
     # S05：只读模型工具暴露开关；写工具仍只能通过本人确认API。
     enabled: true
-    # 包含排队、授权复核、远程向量和检索；范围1～120秒，在线仍受30秒单次上限限制。
-    timeout-seconds: ${TOOL_TIMEOUT_SECONDS:90}
+    # 包含排队、授权复核、远程向量和检索；范围1～1800秒，在线仍受30秒单次上限限制。
+    timeout-seconds: ${TOOL_TIMEOUT_SECONDS:1800}
     mcp:
       enabled: true
       # 服务、远端工具名到本地别名及任务范围由服务端显式配置。
@@ -157,7 +157,7 @@ lab:
         data-classifications: [PRIVATE]
         context-window: 16000
         output-limit: 2048
-        # 后台生成可等待更长完整响应，在线仍受30秒单次上限限制。
+        # 模型配置范围1～1800秒；资料任务可等待30分钟，在线仍受30秒单次上限限制。
         timeout-seconds: ${MODEL_PRIMARY_TIMEOUT_SECONDS:90}
       backup:
         provider-id: openai-compatible

@@ -34,7 +34,7 @@ public class ModelRegistry {
             throw new IllegalArgumentException("real 模式必须明确接受模型数据外发");
         for (var entry : config.models().entrySet()) {
             var d = entry.getValue();
-            if (d.contextWindow() < 1024 || d.outputLimit() < 1 || d.outputLimit() >= d.contextWindow() || d.timeoutSeconds() < 1 || d.timeoutSeconds() > 120)
+            if (d.contextWindow() < 1024 || d.outputLimit() < 1 || d.outputLimit() >= d.contextWindow() || d.timeoutSeconds() < 1 || d.timeoutSeconds() > 1800)
                 throw new IllegalArgumentException("模型窗口或超时配置不合法");
             if (config.mode().equals("real") && d.enabled() && (d.modelName() == null || d.modelName().isBlank() || d.modelName().startsWith("mock-") || d.endpoint() == null || credentialValue(d) == null || credentialValue(d).isBlank()))
                 throw new IllegalArgumentException("真实模型缺名称、地址或环境凭证：" + entry.getKey());

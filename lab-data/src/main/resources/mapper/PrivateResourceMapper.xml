@@ -30,7 +30,7 @@
     </insert>
 
     <insert id="recordGraphAiSpansWrite">
-        INSERT INTO ai_spans(trace_id,span_id,parent_span_id,sequence_no,node_type,status,started_at,ended_at,node_json) VALUES <foreach collection="rows" item="row" separator=",">(#{row[0]},#{row[1]},#{row[2]},#{row[3]},#{row[4]},#{row[5]},#{row[6]},#{row[7]},#{row[8]})</foreach> ON DUPLICATE KEY UPDATE span_id=span_id
+        INSERT INTO ai_spans(trace_id,span_id,parent_span_id,sequence_no,node_type,status,started_at,ended_at,node_json) VALUES <foreach collection="rows" item="row" separator=",">(#{row.traceId},#{row.spanId},#{row.parentSpanId},#{row.sequence},#{row.type},#{row.status},#{row.startedAt},#{row.endedAt},#{row.json})</foreach> ON DUPLICATE KEY UPDATE span_id=span_id
     </insert>
 
     <select id="graphAiSpansSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">

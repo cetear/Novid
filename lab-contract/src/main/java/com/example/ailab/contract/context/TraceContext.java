@@ -1,6 +1,8 @@
 package com.example.ailab.contract.context;
 
 import com.example.ailab.contract.dto.TraceNode;
+import com.example.ailab.contract.dto.TracePayload;
+import com.example.ailab.contract.dto.SourceDependency;
 import com.example.ailab.contract.error.LabException;
 
 import java.time.Instant;
@@ -21,6 +23,9 @@ public final class TraceContext {
         final int maximum;
         final java.util.function.BiConsumer<List<TraceNode>, Boolean> finish;
         boolean incomplete, closed;
+        boolean payloadsEnabled;
+        int payloadChars;
+        final Set<SourceDependency> sources = new LinkedHashSet<>();
 
         /**
          * 状态只持有限额和类型化完成回调，不访问业务存储。
@@ -32,7 +37,7 @@ public final class TraceContext {
     }
 
     /**
-     * 创建根上下文；完成回调只接收类型化节点，不能外发正文。
+     * 创建根上下文；完成回调可持久化本人有界快照，外部导出必须过滤正文。
      */
     public TraceContext(int maximum, java.util.function.BiConsumer<List<TraceNode>, Boolean> finish) {
         this(new State(maximum, finish), null, null, null);
@@ -74,6 +79,19 @@ public final class TraceContext {
         synchronized (state) {
             return state.incomplete;
         }
+    }
+
+    /** 工作流绑定已授权来源后才允许采集内容，来源并集覆盖全部并行节点。 */
+    public void payloadSources(List<SourceDependency> sources) {
+        synchronized (state) {
+            if (state.closed) return;
+            state.sources.addAll(sources);
+            state.payloadsEnabled = true;
+        }
+    }
+
+    public boolean capturesPayloads() {
+        synchronized (state) { return state.maximum > 0 && state.payloadsEnabled && !state.closed && state.payloadChars < 524288; }
     }
 
     /**
@@ -122,7 +140,9 @@ public final class TraceContext {
             state.closed = true;
             if (state.nodes.stream().anyMatch(n -> n.endedAt() == null)) state.incomplete = true;
             try {
-                state.finish.accept(List.copyOf(state.nodes), state.incomplete);
+                var sources = List.copyOf(state.sources);
+                state.finish.accept(state.nodes.stream().map(n -> n.payloads(n.input(), n.output(),
+                        n.input() == null && n.output() == null ? List.of() : sources)).toList(), state.incomplete);
             } catch (RuntimeException ignored) {
                 state.incomplete = true;
             }
@@ -144,6 +164,20 @@ public final class TraceContext {
         private int attempt;
         private Integer in, out;
         private boolean ended;
+        private TracePayload input, output;
+
+        /** 只接受已过滤的文本；每侧16K字符、每运行512K字符，观测不改变业务结果。 */
+        public void input(String content) { input = payload(content); }
+        public void output(String content) { output = payload(content); }
+        private TracePayload payload(String content) {
+            synchronized (state) {
+                if (index < 0 || ended || !context.capturesPayloads() || content == null) return null;
+                int length = Math.min(content.length(), Math.min(16384, 524288 - state.payloadChars));
+                if (length > 0 && length < content.length() && Character.isHighSurrogate(content.charAt(length - 1))) length--;
+                state.payloadChars += length;
+                return new TracePayload(content.substring(0, length), length < content.length(), content.length());
+            }
+        }
 
         /**
          * 不创建空节点；截断后的子上下文继续共享同一不完整状态。
@@ -221,7 +255,7 @@ public final class TraceContext {
                     return;
                 }
                 var n = state.nodes.get(index);
-                state.nodes.set(index, new TraceNode(n.spanId(), n.parentSpanId(), n.type(), n.name(), n.stepId(), n.agentId(), n.dependsOn(), n.sequence(), status, n.startedAt(), Instant.now(), error, model, task, profile, policy, reason, attempt, in, out, usage, toolHash));
+                state.nodes.set(index, new TraceNode(n.spanId(), n.parentSpanId(), n.type(), n.name(), n.stepId(), n.agentId(), n.dependsOn(), n.sequence(), status, n.startedAt(), Instant.now(), error, model, task, profile, policy, reason, attempt, in, out, usage, toolHash, input, output, List.of()));
             }
         }
     }

@@ -26,7 +26,7 @@ public final class LearningTaskWorker {
         try(var span=observation.span("TASK","document_learning_workflow")) {
             try { workflow.learning(lease,span.context(),runId); }
             catch(LabException failure) {span.fail(failure);tasks.fail(lease,failure.code());LOG.warn("event=learning.failed code={}",failure.code());}
-            catch(Exception failure) {span.fail(failure);tasks.fail(lease,"TASK_FAILED");LOG.error("event=learning.failed code=TASK_FAILED");}
+            catch(Exception failure) {span.fail(failure);LOG.error("event=learning.failed code=TASK_FAILED",com.example.ailab.contract.error.DiagnosticFailure.sanitized(failure));tasks.fail(lease,"TASK_FAILED");}
         } finally {renewal.cancel(false);observation.finish();}
     }
     @PreDestroy public void close(){heartbeat.shutdownNow();}

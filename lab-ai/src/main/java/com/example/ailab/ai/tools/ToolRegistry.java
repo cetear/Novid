@@ -21,7 +21,7 @@ public final class ToolRegistry {
             var d = tool.definition();
             if (d.name() == null || !d.name().matches("[a-z_]{1,64}") || d.version() == null || d.version().isBlank()
                     || d.description() == null || d.description().isBlank() || !Set.of("READ", "WRITE").contains(d.type())
-                    || d.timeoutSeconds() < 1 || d.timeoutSeconds() > 120 || registered.putIfAbsent(d.name(), tool) != null)
+                    || d.timeoutSeconds() < 1 || d.timeoutSeconds() > 1800 || registered.putIfAbsent(d.name(), tool) != null)
                 throw new IllegalArgumentException("工具注册定义、名称或执行器不合法");
             validators.put(d.name(), ToolSchema.compile(d.parameters()));
             specification(d);

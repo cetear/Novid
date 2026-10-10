@@ -55,7 +55,9 @@ public final class WorkflowRouter implements WorkflowRoutingPort {
         budget.check();
         try (var span = budget.trace().span("ARCHITECTURE", saved.architecture().name()); var active = budget.activate(span.context())) {
             try {
-                var result = executor.execute(program, budget); budget.check(); return result;
+                com.example.ailab.ai.runtime.TracePayloadCapture.input(span, lease.request());
+                var result = executor.execute(program, budget); budget.check();
+                com.example.ailab.ai.runtime.TracePayloadCapture.output(span, result); return result;
             } catch (Exception failure) {
                 Throwable cause = failure;
                 while ((cause instanceof ExecutionException || cause instanceof CompletionException) && cause.getCause() != null) cause = cause.getCause();

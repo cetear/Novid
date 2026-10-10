@@ -40,7 +40,7 @@ public final class ExecutionBudget {
     private final ThreadLocal<Integer> observedIndex = new ThreadLocal<>();
     public ExecutionBudget content(com.example.ailab.contract.dto.ContentWorkflow.Policy policy) {
         if (maxAttempts != policy.attempts()) throw new IllegalArgumentException("资料工作流预算不匹配");
-        maxTurns = policy.turns(); maxTools = policy.tools(); maximumWaitSeconds = 120;
+        maxTurns = policy.turns(); maxTools = policy.tools(); maximumWaitSeconds = 1800;
         maxRepairs = policy.turns();
         return this;
     }
@@ -208,7 +208,7 @@ public final class ExecutionBudget {
     }
 
     /**
-     * 在线单次等待最多30秒，登记媒体最多120秒；均不能超过原任务剩余期限。
+     * 在线单次等待最多30秒，登记媒体最多120秒，资料任务最多1800秒；均不能超过原任务剩余期限。
      */
     public Duration timeout() {
         check();

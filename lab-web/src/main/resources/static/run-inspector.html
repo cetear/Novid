@@ -3,5 +3,5 @@
 <body><main><h1>本人运行检查</h1><p>查看实际执行树、时间线、依赖图与可靠费用。链路不完整时，未记录的步骤仍可能发生；未知金额不代表免费。</p>
 <form id="login"><label>用户名 <input id="username" autocomplete="username" required></label><label>密码 <input id="password" type="password" autocomplete="current-password" required></label><button>登录</button></form>
 <button id="logout" hidden>退出</button><button id="refresh" hidden>刷新本人记录</button><p id="message" role="status"></p>
-<section id="runs" aria-label="运行列表"></section><section id="detail" aria-label="运行详情"></section><svg id="graph" aria-label="实际执行依赖图" role="img"></svg><section id="nodes" aria-label="节点时间线"></section>
+<section id="runs" aria-label="运行列表"></section><section id="detail" aria-label="运行详情"></section><p>点击图中节点查看输入、输出和耗时。</p><svg id="graph" aria-label="实际执行依赖图" role="group"></svg><section id="node-detail" aria-label="节点详情" tabindex="-1" hidden></section><section id="nodes" aria-label="节点时间线"></section>
 </main><script src="/run-inspector.js"></script></body></html>

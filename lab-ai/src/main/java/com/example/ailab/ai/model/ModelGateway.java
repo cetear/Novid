@@ -251,6 +251,10 @@ public class ModelGateway {
                     sent = true;
                     // 额度可靠消费成功之后才登记实际尝试，每次失败、修复和备用各一叶节点。
                     modelSpan = budget.trace().span("MODEL", "chat");
+                    if (budget.trace().capturesPayloads()) budget.trace().payloadSources(prepared.evidence().stream()
+                            .map(e -> new SourceDependency(e.document().knowledgeBaseId(), e.document().id(), e.document().documentVersion())).toList());
+                    com.example.ailab.ai.runtime.TracePayloadCapture.input(modelSpan, messages.stream()
+                            .map(m -> Map.of("role", m.type().name(), "content", m.toString())).toList());
                     budget.lastModelNode(modelSpan.id());
                     if (registry.mock()) {
                         if (d.modelName().contains("timeout"))
@@ -260,6 +264,7 @@ public class ModelGateway {
                         String text = "Mock 验证结果（非真实模型回答）：\n" + messages.get(messages.size() - 1);
                         if (schema instanceof KnowledgeAnswerSchema)
                             text = "{\"status\":\"NEEDS_INPUT\",\"answer\":\"Mock结构验证（非真实模型）\",\"references\":[]}";
+                        com.example.ailab.ai.runtime.TracePayloadCapture.output(modelSpan, text);
                         log.add(usage(id, outcome, reserved, null, null, d));
                         budget.observe(log.get(log.size() - 1));
                         return turn(text, id, null, null, true, AiMessage.from(text), decision, log, prepared.evidence());
@@ -274,6 +279,8 @@ public class ModelGateway {
                     inputUsage = usage == null ? null : usage.inputTokenCount();
                     outputUsage = usage == null ? null : usage.outputTokenCount();
                     String text = response.aiMessage().text();
+                    com.example.ailab.ai.runtime.TracePayloadCapture.output(modelSpan, response.aiMessage().hasToolExecutionRequests()
+                            ? response.aiMessage().toString() : text);
                     // SDK可能只返回文字，原始协议refusal必须独立检查，不能修复安全拒绝。
                     if (refused(raw.get()) || response.finishReason() == FinishReason.CONTENT_FILTER)
                         throw new LabException("MODEL_REFUSED", "模型拒绝本次请求");
@@ -450,6 +457,7 @@ public class ModelGateway {
                 feeSending = true;
             }
             embeddingSpan = budget.trace().span("EMBEDDING", "embed");
+            com.example.ailab.ai.runtime.TracePayloadCapture.input(embeddingSpan, texts);
             if (registry.mock()) {
                 var vectors = new ArrayList<List<Float>>();
                 for (String text : texts) {
@@ -463,6 +471,7 @@ public class ModelGateway {
                     vectors.add(List.copyOf(result));
                 }
                 outcome = "SUCCESS";
+                com.example.ailab.ai.runtime.TracePayloadCapture.output(embeddingSpan, Map.of("vectors", vectors));
                 return new Vectors(List.copyOf(vectors), d.modelName(), true);
             }
             DeadlineHttpClient.CURRENT.set(new DeadlineHttpClient.Scope(budget, d.timeoutSeconds(), raw));
@@ -480,6 +489,7 @@ public class ModelGateway {
             }).toList();
             if (vectors.size() != texts.size())
                 throw new LabException("MODEL_INVALID_OUTPUT", "Embedding 返回数量不符");
+            com.example.ailab.ai.runtime.TracePayloadCapture.output(embeddingSpan, Map.of("vectors", vectors));
             outcome = "SUCCESS";
             return new Vectors(vectors, d.modelName(), false, used);
         } catch (LabException e) {

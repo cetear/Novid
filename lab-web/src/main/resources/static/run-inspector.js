@@ -27,6 +27,7 @@ async function show(id) {
   const requestedToken = token, generation = ++detailGeneration;
   const current = () => token === requestedToken && generation === detailGeneration;
   byId("detail").replaceChildren(); byId("nodes").replaceChildren(); byId("graph").replaceChildren();
+  byId("node-detail").replaceChildren(); byId("node-detail").hidden = true;
   try {
     const g = await api("/api/v1/runs/" + encodeURIComponent(id) + "/graph");
     if (!current()) return;
@@ -51,7 +52,8 @@ async function show(id) {
       article.append(bar, text("p", "开始：" + node.startedAt + "；耗时：" + (duration === null ? "未结束" : duration + "毫秒")));
       const details = document.createElement("details");
       details.append(text("summary", "查看节点详情"), text("pre", JSON.stringify(node, null, 2)));
-      article.append(details); byId("nodes").append(article);
+      const inspect = text("button", "查看输入、输出和耗时"); inspect.onclick = () => selectNode(node);
+      article.append(inspect, details); byId("nodes").append(article);
     }
     draw(g);
   } catch (error) { if (current()) byId("message").textContent = error.message; }
@@ -63,7 +65,33 @@ function draw(g) {
   svg.setAttribute("viewBox", "0 0 1000 " + Math.max(70, g.nodes.length * 48));
   g.nodes.forEach((n, i) => positions.set(n.spanId, {x: n.type === "AGENT" ? 350 : n.type === "MODEL" ? 650 : 70, y: i * 48 + 18}));
   for (const edge of g.edges) { const a = positions.get(edge.from), b = positions.get(edge.to); if (!a || !b) continue; svg.append(make("line", {x1: a.x + 20, y1: a.y + 10, x2: b.x, y2: b.y + 10, stroke: edge.kind === "CALL" ? "#9eb0c3" : "#ce7c27", "stroke-width": edge.kind === "CALL" ? 1 : 3})); }
-  for (const n of g.nodes) { const p = positions.get(n.spanId); svg.append(make("rect", {x: p.x, y: p.y, width: 260, height: 27, fill: "#e5eef8", rx: 4})); const label = make("text", {x: p.x + 5, y: p.y + 18}); label.textContent = n.sequence + " " + n.name + " " + n.status; svg.append(label); }
+  for (const n of g.nodes) {
+    const p = positions.get(n.spanId);
+    const group = make("g", {role: "button", tabindex: 0, "aria-label": "查看节点 " + n.name, "aria-pressed": "false", "data-span-id": n.spanId});
+    group.append(make("rect", {x: p.x, y: p.y, width: 260, height: 36, rx: 4}));
+    const label = make("text", {x: p.x + 5, y: p.y + 23}); label.textContent = n.sequence + " " + n.name + " " + n.status; group.append(label);
+    group.onclick = () => selectNode(n);
+    group.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(n); } };
+    svg.append(group);
+  }
+}
+// 内容只按纯文本交付，未记录、截断和来源隐藏分别说明。
+function selectNode(node) {
+  const panel = byId("node-detail"); panel.replaceChildren(); panel.hidden = false;
+  panel.append(text("h2", node.name + " · " + node.status));
+  const duration = node.endedAt ? Date.parse(node.endedAt) - Date.parse(node.startedAt) : null;
+  panel.append(text("p", "开始：" + node.startedAt + "；结束：" + (node.endedAt ?? "未结束") + "；耗时：" + (duration === null ? "未知" : duration + "毫秒")));
+  if (!node.input && !node.output && node.payloadSources?.length) panel.append(text("p", "来源当前不可访问，输入和输出内容已隐藏。"));
+  for (const [label, payload] of [["节点输入", node.input], ["节点输出", node.output]]) {
+    panel.append(text("h3", label));
+    if (!payload) panel.append(text("p", "未记录内容；历史运行或未采集快照的节点无法补回输入和输出。"));
+    else {
+      if (payload.truncated) panel.append(text("p", "快照已截断：展示 " + payload.content.length + " / " + payload.originalChars + " 个字符。"));
+      panel.append(text("pre", payload.content === "" ? "（空内容）" : payload.content));
+    }
+  }
+  for (const group of byId("graph").querySelectorAll("g[role=button]")) group.setAttribute("aria-pressed", String(group.dataset.spanId === node.spanId));
+  panel.scrollIntoView({block: "nearest"}); panel.focus({preventScroll: true});
 }
 // 登录成功后清空密码，token只存当前页面生命周期。
 byId("login").onsubmit = async event => {
@@ -72,5 +100,5 @@ byId("login").onsubmit = async event => {
   catch (error) { byId("password").value = ""; byId("message").textContent = error.message; }
 };
 // 注销后清除页面中所有私人数据，无论远程注销是否成功。
-byId("logout").onclick = async () => { try { await api("/api/v1/auth/logout", {method: "POST"}); } finally { token = null; byId("runs").replaceChildren(); byId("detail").replaceChildren(); byId("nodes").replaceChildren(); byId("graph").replaceChildren(); byId("login").hidden = false; byId("logout").hidden = true; byId("refresh").hidden = true; } };
+byId("logout").onclick = async () => { try { await api("/api/v1/auth/logout", {method: "POST"}); } finally { token = null; byId("runs").replaceChildren(); byId("detail").replaceChildren(); byId("nodes").replaceChildren(); byId("graph").replaceChildren(); byId("node-detail").replaceChildren(); byId("node-detail").hidden = true; byId("login").hidden = false; byId("logout").hidden = true; byId("refresh").hidden = true; } };
 byId("refresh").onclick = refresh;

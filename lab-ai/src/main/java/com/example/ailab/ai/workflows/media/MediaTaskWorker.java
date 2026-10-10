@@ -140,6 +140,7 @@ public class MediaTaskWorker {
                 String evidence=prepareVideo(lease,budget);
                 tasks.completePreparation(lease);
                 sources=tasks.pages(lease).stream().flatMap(p->p.sourceDependencies().stream()).distinct().toList();
+                root.context().payloadSources(sources);
                 execution=executeVideo(lease,budget,evidence,sources,saved);
             }
             var results = execution.results();
@@ -352,6 +353,7 @@ public class MediaTaskWorker {
         String hash = MediaModelGateway.hash(input + encode(step) + stepRepair);
         try (var span = budget.trace().span("AGENT", step.agentId(), step.stepId(), step.agentId(), step.dependsOn().stream().map(nodes::get).filter(Objects::nonNull).toList()); var activation = budget.activate(span.context())) {
             nodes.put(step.stepId(), span.id());
+            com.example.ailab.ai.runtime.TracePayloadCapture.input(span, input);
             budget.check();
             var saved = existing.get(step.stepId());
             if (saved == null) saved = reusable.get(step.stepId());
@@ -359,6 +361,8 @@ public class MediaTaskWorker {
                 verify(lease, saved.sourceDependencies());
                 span.status("REUSED");
                 media.result(lease, plan.planVersion(), saved);
+                budget.trace().payloadSources(saved.sourceDependencies());
+                com.example.ailab.ai.runtime.TracePayloadCapture.output(span, encode(saved));
                 return saved;
             }
             var used = new LinkedHashSet<>(sources);
@@ -381,6 +385,8 @@ public class MediaTaskWorker {
             }, budget, new MediaSchemas.ResultSchema(step, lease.request().taskType(), hash, refs, plan.steps())).value();
             var value = new Media.WorkerResult(result.stepId(), result.agentId(), hash, result.units(), result.review(), List.of(), List.copyOf(used));
             media.result(lease, plan.planVersion(), value);
+            budget.trace().payloadSources(value.sourceDependencies());
+            com.example.ailab.ai.runtime.TracePayloadCapture.output(span, encode(value));
             return value;
         }
     }

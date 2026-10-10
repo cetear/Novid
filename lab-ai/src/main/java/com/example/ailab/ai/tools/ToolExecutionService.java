@@ -109,7 +109,11 @@ public class ToolExecutionService implements AutoCloseable {
             span.tool(callId);
             try (var active = budget.activate(span.context())) {
                 try {
+                    com.example.ailab.ai.runtime.TracePayloadCapture.input(span, arguments);
                     var result = executeObserved(actor, scope, task, callId, name, arguments, evidenceId, budget, vector);
+                    if (budget.trace().capturesPayloads()) budget.trace().payloadSources(result.evidence().stream()
+                            .map(e -> new SourceDependency(e.document().knowledgeBaseId(), e.document().id(), e.document().documentVersion())).toList());
+                    com.example.ailab.ai.runtime.TracePayloadCapture.output(span, result.result());
                     span.status(result.status());
                     return result;
                 } catch (RuntimeException error) {

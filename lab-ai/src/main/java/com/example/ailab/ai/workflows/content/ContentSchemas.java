@@ -7,6 +7,7 @@ import com.example.ailab.contract.dto.*;
 import com.example.ailab.contract.dto.ContentWorkflow.*;
 import java.util.*;
 import static com.example.ailab.ai.workflows.support.LearningSchemas.require;
+import static com.example.ailab.ai.model.RecordSchema.Reason.*;
 
 /** 模型只提议内容，数量、引用、遗漏及资源边界由本地协议核验。 */
 public final class ContentSchemas {
@@ -15,12 +16,17 @@ public final class ContentSchemas {
     public static RecordSchema<Facts> facts(String prefix,String sourceId,String raw,int maximum,boolean merged) {
         return new RecordSchema<>(Facts.class,"输出items及status。status为COMPLETE或OVERFLOW；全部事实超过"+maximum+"项时返回OVERFLOW，程序会继续分批。"
                 +"id使用"+prefix+"_i1起连续编号，sourceId="+sourceId+"。category按内容归纳；content最多1000 UTF-8字节，复杂知识拆为相关条目；quote为连续原文，最多600 UTF-8字节。", value->{
-            require(Set.of("COMPLETE","OVERFLOW").contains(value.status())&&value.items().size()<=maximum);
+            RecordSchema.require(Set.of("COMPLETE","OVERFLOW").contains(value.status()),FACT_STATUS);
+            RecordSchema.require(value.items().size()<=maximum,FACT_COUNT);
             var ids=new HashSet<String>();int index=0;
             for(var item:value.items()) {
-                require(ids.add(item.id())&&item.sourceId().equals(sourceId)&&raw.contains(item.quote()));
-                if(!merged)require(item.id().equals(prefix+"_i"+(++index)));
-                text(item.category(),200);text(item.content(),1000);text(item.quote(),600);
+                RecordSchema.require(ids.add(item.id()),FACT_ID);
+                RecordSchema.require(item.sourceId().equals(sourceId),FACT_SOURCE);
+                RecordSchema.require(raw.contains(item.quote()),FACT_QUOTE);
+                if(!merged)RecordSchema.require(item.id().equals(prefix+"_i"+(++index)),FACT_ID);
+                RecordSchema.require(!item.category().isBlank()&&TextWindow.count(item.category())<=200
+                        &&!item.content().isBlank()&&TextWindow.count(item.content())<=1000
+                        &&!item.quote().isBlank()&&TextWindow.count(item.quote())<=600,FACT_TEXT_SIZE);
             }
         });
     }
