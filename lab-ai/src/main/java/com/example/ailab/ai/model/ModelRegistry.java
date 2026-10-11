@@ -72,8 +72,8 @@ public class ModelRegistry {
         }
         if (path != null) {
             path = path.replaceAll("/+$", "");
-            if (path.endsWith("/chat/completions") || path.endsWith("/embeddings"))
-                throw new IllegalArgumentException("模型endpoint必须是基础地址，不能包含chat/completions或embeddings操作路径");
+            if (path.endsWith("/chat/completions") || path.endsWith("/embeddings") || path.endsWith("/responses"))
+                throw new IllegalArgumentException("模型endpoint必须是基础地址，不能包含chat/completions、embeddings或responses操作路径");
         }
     }
 

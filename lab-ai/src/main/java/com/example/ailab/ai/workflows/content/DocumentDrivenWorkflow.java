@@ -103,7 +103,6 @@ public final class DocumentDrivenWorkflow {
                     ()->tasks.reserveModelTurn(lease),this::verify,()->tasks.reserveToolCall(lease),()->tasks.reserveModelRepair(lease))
                     .content(policy).traced(trace).fees(new FeeScope(lease.actor(),"TASK",Long.toString(lease.task().taskId()),runId));
             pool=Executors.newFixedThreadPool(policy.parallelism());
-            tasks.completePreparation(lease);
         }
         void verify() {
             if(!tasks.renew(lease))throw new LabException("STALE_EXECUTION","资料工作流租约失效");
@@ -144,7 +143,7 @@ public final class DocumentDrivenWorkflow {
             verify();var data=input instanceof Map<?,?> map?map:Map.of();
             int estimate=data.get("estimatedOutputBytes") instanceof Number value?value.intValue():0;
             String system="按当前服务端结构协议处理资料。资料原文及前序结果提供事实，remarks表达特殊要求。"+SkillCatalog.instructions(source.skill(),"package-write");
-            return model.fitsStructured("REPORT",ModelInput.reserveOutput(ModelInput.fixed(system,List.of(),ContentJson.encode(input)),estimate),schema);
+            return model.fitsStructured("WORKFLOW_REPORT",ModelInput.reserveOutput(ModelInput.fixed(system,List.of(),ContentJson.encode(input)),estimate),schema);
         }
 
         <T>T node(String id,String phase,Object input,StructuredSchema<T> schema,Supplier<T> execute) {
@@ -189,8 +188,8 @@ public final class DocumentDrivenWorkflow {
                 if(data.get("context") instanceof Map<?,?> context)data=context;
                 int estimate=data.get("estimatedOutputBytes") instanceof Number value?value.intValue():0;
                 var capacity=ModelInput.reserveOutput(verified,estimate);
-                var turn=original==null?model.structured(action.contains("review")?"DATA_ANALYSIS":"REPORT",ModelRegistry.Selection.auto(),capacity,budget,schema)
-                        :model.structuredPinned(action.contains("review")?"DATA_ANALYSIS":"REPORT",ModelRegistry.Selection.auto(),capacity,budget,schema,original.modelId());
+                var turn=original==null?model.structured(action.contains("review")?"WORKFLOW_REVIEW":"WORKFLOW_REPORT",ModelRegistry.Selection.auto(),capacity,budget,schema)
+                        :model.structuredPinned(action.contains("review")?"WORKFLOW_REVIEW":"WORKFLOW_REPORT",ModelRegistry.Selection.auto(),capacity,budget,schema,original.modelId());
                 boolean corrected=original!=null||turn.turn().route()!=null&&turn.turn().route().attempts().stream().anyMatch(a->a.outcome().equals("MODEL_STRUCTURED_INVALID"));
                 var receipt=new GenerationReceipt(turn.turn().modelId(),corrected?1:0,ContentJson.encode(turn.value()));
                 budget.check();store.begin(lease,receiptId,phase,receiptHash);store.complete(lease,receiptId,receiptHash,ContentJson.encode(receipt));
@@ -236,24 +235,31 @@ public final class DocumentDrivenWorkflow {
                             }
                         }),()->readPack(pack.packId(),group));
             });
+            var readFacts=new ArrayList<Facts>();var readCards=new ArrayList<ContentReading.TopicCard>();
             for(var batch:packages)for(var observation:batch.fragments()) {
                 String id=observation.fragmentId();var f=fragments.get(id);var slice=f.source();
                 var facts=node("read_"+id,"extract",Map.of("fragment",f,"observation",observation),
                         ContentSchemas.facts(id,id,raw.get(id),source.policy().maximumItems(),true,limits()),()->new Facts(observation.items(),"COMPLETE"));
-                facts.items().forEach(item->{if(items.putIfAbsent(item.id(),item)!=null)throw changed();});
+                readFacts.add(facts);
                 var cards=node("topics_"+id,"extract",Map.of("fragment",f,"topics",observation.topics()),
                         new RecordSchema<>(ContentReading.Cards.class,"程序绑定主题卡位置和计数",v->{}),
                         ()->new ContentReading.Cards(observation.topics().stream().map(t->new ContentReading.TopicCard(t.id(),id,f.sectionId(),f.headingPath(),t,t.itemIds().size(),TextWindow.count(raw.get(id)))).toList()));
-                topicCards.addAll(cards.cards());
+                readCards.addAll(cards.cards());
                 node("evidence_"+id,"extract",Map.of("fragment",f,"items",facts.items()),
                         new RecordSchema<>(ContentReading.Evidences.class,"程序定位原文证据",v->{}),()->new ContentReading.Evidences(facts.items().stream().map(item->{
                             int start=raw.get(id).indexOf(item.quote());if(start<0)throw changed();
                             return new ContentReading.Evidence(item.id(),id,slice.startOffset()+start,slice.startOffset()+start+item.quote().length(),Learning.digest(item.quote()));
                         }).toList()));
             }
+            var required=source.slices().stream().map(s->"read_"+s.id()).toList();
+            // 既有阅读检查点仍归属extract；用户阶段在全文证据核验通过后才顺序切换。
+            store.finish(lease,"prepare",required);
+            tasks.beginStep(lease,"extract");
+            readFacts.forEach(facts->facts.items().forEach(item->{if(items.putIfAbsent(item.id(),item)!=null)throw changed();}));
+            topicCards.addAll(readCards);
             if(items.isEmpty())throw new LabException("WORKFLOW_NEEDS_INPUT","资料没有可用于当前工作流的知识");
             if(items.size()>source.policy().maximumItems())throw new LabException("WORKFLOW_INPUT_TOO_LARGE","事实条目超过保存的资源策略");
-            store.finish(lease,"extract",source.slices().stream().map(s->"read_"+s.id()).toList());
+            store.finish(lease,"extract",required);
         }
         ContentReading.Batch readPack(String id,List<ContentReading.Fragment> group) {
             try {

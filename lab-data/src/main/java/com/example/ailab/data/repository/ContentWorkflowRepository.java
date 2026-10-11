@@ -100,7 +100,9 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         if(source(lease.task().taskId()).isEmpty() || !TaskProgress.stepIds(lease.request().taskType()).contains(stage))throw conflict();
         var rows=mapper.node(new Object[]{lease.task().taskId(),id});
         if(!rows.isEmpty()){if(!rows.get(0).string("input_hash").equals(inputHash)||!rows.get(0).string("stage").equals(stage))throw conflict();return;}
-        mapper.begin(new Object[]{lease.task().taskId(),id,stage,inputHash});tasks.beginStep(lease,stage);
+        mapper.begin(new Object[]{lease.task().taskId(),id,stage,inputHash});
+        // extract保留既有阅读节点身份，用户可见阶段由执行器在全文核验后显式启动。
+        if(!stage.equals("extract"))tasks.beginStep(lease,stage);
     }
     public void complete(TaskLease lease,String id,String inputHash,String text) {
         valid(lease);identity(id,inputHash);
@@ -160,7 +162,7 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         valid(lease);requireNodes(lease.task().taskId(),nodes);
         if(!TaskProgress.stepIds(lease.request().taskType()).contains(stage))throw conflict();
         var source=source(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict);
-        if(stage.equals("extract")) {
+        if(stage.equals("prepare")||stage.equals("extract")) {
             Optional.of(reading(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict)).ifPresent(p->{
                 p.validate(source.policy().readingPackBytes());var required=new ArrayList<String>();
                 p.packs().forEach(pack->required.add("readpack_"+pack.packId()));

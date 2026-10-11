@@ -57,7 +57,7 @@ public class ModelGateway {
     private final ModelRegistry registry;
     private final ModelHealthTracker health;
     private final DeadlineHttpClient transport = new DeadlineHttpClient();
-    private final ConcurrentHashMap<String, OpenAiChatModel> chatClients = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, dev.langchain4j.model.chat.ChatModel> chatClients = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, OpenAiEmbeddingModel> embeddingClients = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Semaphore> targetConcurrency = new ConcurrentHashMap<>();
     private final Semaphore concurrency = new Semaphore(ModelProperties.MAX_CONCURRENCY, true);
@@ -213,7 +213,42 @@ public class ModelGateway {
      * 提供方响应成功与结构验收分别记录，非法结构不会被成功模型节点掩盖。
      */
     private <T> T validateStructured(StructuredSchema<T> schema, Turn turn, ExecutionBudget budget) {
-        return budget.trace().call("VALIDATION", "structured_output", () -> schema.validate(turn.text(), referenceIds(turn.evidence())));
+        try (var span = budget.trace().span("VALIDATION", "structured_output")) {
+            com.example.ailab.ai.runtime.TracePayloadCapture.input(span, turn.text());
+            try {
+                return schema.validate(turn.text(), referenceIds(turn.evidence()));
+            } catch (RuntimeException failure) {
+                span.fail(failure);
+                var diagnostic = new LinkedHashMap<String, Object>();
+                diagnostic.put("kind", "VALIDATION_FAILURE");
+                diagnostic.put("errorCode", com.example.ailab.contract.error.DiagnosticFailure.code(failure));
+                if (failure instanceof LabException lab) {
+                    RecordSchema.reason(lab).ifPresent(reason -> diagnostic.put("reason", reason.name()));
+                    diagnostic.put("issues", lab.validationIssues());
+                }
+                com.example.ailab.ai.runtime.TracePayloadCapture.output(span, diagnostic);
+                throw failure;
+            }
+        }
+    }
+
+    /** 调用失败保存程序诊断而非供应商回答；不复制可能含凭证的异常消息。 */
+    private void captureCallFailure(com.example.ailab.contract.context.TraceContext.Span span, String code, Throwable failure) {
+        var diagnostic = new LinkedHashMap<String, Object>();
+        diagnostic.put("kind", "CALL_FAILURE");
+        diagnostic.put("errorCode", code);
+        var causes = new ArrayList<String>();
+        var seen = Collections.newSetFromMap(new IdentityHashMap<Throwable, Boolean>());
+        for (var cause = failure; cause != null && causes.size() < 8 && seen.add(cause); cause = cause.getCause()) {
+            causes.add(cause.getClass().getSimpleName());
+            if (cause instanceof java.net.ConnectException) diagnostic.put("reason", "CONNECTION_FAILED");
+            if (cause instanceof DeadlineHttpClient.Failure http) {
+                diagnostic.put("httpStatus", http.status);
+                if (http.retryAfter != null) diagnostic.put("retryAfterSeconds", http.retryAfter.toSeconds());
+            }
+        }
+        diagnostic.put("causes", causes);
+        com.example.ailab.ai.runtime.TracePayloadCapture.output(span, diagnostic);
     }
 
     public record StructuredTurn<T>(T value, Turn turn) {
@@ -267,7 +302,7 @@ public class ModelGateway {
                 budget.check();
                 var permit = health.acquire(id, d.quotaGroup());
                 if (permit == null) break;
-                boolean global = false, local = false, sent = false;
+                boolean global = false, local = false, sent = false, responseCaptured = false;
                 var semaphore = targetConcurrency.computeIfAbsent(id, key -> new Semaphore(d.maxConcurrency(), true));
                 Integer inputUsage = null, outputUsage = null;
                 int reserved = 0;
@@ -321,6 +356,7 @@ public class ModelGateway {
                         if (schema instanceof KnowledgeAnswerSchema)
                             text = "{\"status\":\"NEEDS_INPUT\",\"answer\":\"Mock结构验证（非真实模型）\",\"references\":[]}";
                         com.example.ailab.ai.runtime.TracePayloadCapture.output(modelSpan, text);
+                        responseCaptured = text != null;
                         log.add(usage(id, outcome, reserved, null, null, d));
                         budget.observe(log.get(log.size() - 1));
                         return turn(text, id, null, null, true, AiMessage.from(text), decision, log, prepared.evidence());
@@ -337,6 +373,9 @@ public class ModelGateway {
                     String text = response.aiMessage().text();
                     com.example.ailab.ai.runtime.TracePayloadCapture.output(modelSpan, response.aiMessage().hasToolExecutionRequests()
                             ? response.aiMessage().toString() : text);
+                    responseCaptured = response.aiMessage().hasToolExecutionRequests() || text != null;
+                    String protocolFailure = responsesFailure(d, raw.get());
+                    if (protocolFailure != null) throw new LabException(protocolFailure, "模型响应未完成");
                     // SDK可能只返回文字，原始协议refusal必须独立检查，不能修复安全拒绝。
                     if (refused(raw.get()) || response.finishReason() == FinishReason.CONTENT_FILTER)
                         throw new LabException("MODEL_REFUSED", "模型拒绝本次请求");
@@ -364,7 +403,10 @@ public class ModelGateway {
                     budget.observe(log.get(log.size() - 1));
                     return turn(text, id, inputUsage, outputUsage, false, response.aiMessage(), decision, log, prepared.evidence());
                 } catch (RuntimeException error) {
-                    failure = refused(raw.get()) ? "MODEL_REFUSED" : classify(error);
+                    String protocolFailure = responsesFailure(d, raw.get());
+                    failure = refused(raw.get()) ? "MODEL_REFUSED" : protocolFailure != null ? protocolFailure : classify(error);
+                    if (modelSpan != null && !responseCaptured && !failure.equals("MODEL_TIMEOUT"))
+                        captureCallFailure(modelSpan, failure, error);
                     LOG.warn("event=model.attempt_failed modelId={} attempt={} code={}", id, attempts, failure,
                             com.example.ailab.contract.error.DiagnosticFailure.sanitized(error));
                     outcome = failure;
@@ -379,8 +421,8 @@ public class ModelGateway {
                 } finally {
                     // 拒绝／SDK解析失败也可能已有usage；只接受协议中的非负整数，不从估计补成真实值。
                     if (sent && raw.get() != null && (inputUsage == null || outputUsage == null)) {
-                        if (inputUsage == null) inputUsage = rawUsage(raw.get(), "prompt_tokens");
-                        if (outputUsage == null) outputUsage = rawUsage(raw.get(), "completion_tokens");
+                        if (inputUsage == null) inputUsage = rawUsage(raw.get(), responses(d) ? "input_tokens" : "prompt_tokens");
+                        if (outputUsage == null) outputUsage = rawUsage(raw.get(), responses(d) ? "output_tokens" : "completion_tokens");
                     }
                     if (sent && !outcome.equals("SUCCESS")) {
                         log.add(usage(id, outcome, reserved, inputUsage, outputUsage, d));
@@ -406,7 +448,9 @@ public class ModelGateway {
                 }
             }
         }
-        throw new LabException(decision.mode().equals("EXACT") || repair || failure.equals("MODEL_CONTEXT_INSUFFICIENT") ? failure : ids.size() < 2 ? "NO_COMPATIBLE_FALLBACK" : failure,
+        // 配置明确关闭备用时，保留单目标失败原因，不能将主动禁用备用当作失败根因。
+        boolean fallbackDisabled = !registry.configuration().profiles().get(decision.profile()).allowFallback();
+        throw new LabException(decision.mode().equals("EXACT") || repair || fallbackDisabled || failure.equals("MODEL_CONTEXT_INSUFFICIENT") ? failure : ids.size() < 2 ? "NO_COMPATIBLE_FALLBACK" : failure,
                 "模型暂不可用，未获得合法结果");
     }
 
@@ -451,9 +495,13 @@ public class ModelGateway {
     /**
      * 客户端缓存仅注册ID，生命周期随应用；密钥不进入cache key或trace。
      */
-    private OpenAiChatModel chatClient(String id) {
+    private dev.langchain4j.model.chat.ChatModel chatClient(String id) {
         return chatClients.computeIfAbsent(id, key -> {
             var d = registry.definition(key);
+            if (responses(d))
+                return OpenAiResponsesChatModel.builder().baseUrl(d.endpoint()).apiKey(registry.credential(key)).modelName(d.modelName())
+                        .httpClientBuilder(new DeadlineHttpClient.Builder(transport)).maxOutputTokens(d.outputLimit())
+                        .store(false).strictJsonSchema(true).logRequests(false).logResponses(false).build();
             return OpenAiChatModel.builder().baseUrl(d.endpoint()).apiKey(registry.credential(key)).modelName(d.modelName())
                     .httpClientBuilder(new DeadlineHttpClient.Builder(transport)).maxRetries(0).maxCompletionTokens(d.outputLimit())
                     .strictJsonSchema(true).logRequests(false).logResponses(false).build();
@@ -498,10 +546,37 @@ public class ModelGateway {
      */
     private boolean refused(String body) {
         try {
-            var refusal = JSON.readTree(body).path("choices").path(0).path("message").path("refusal");
-            return !refusal.isMissingNode() && !refusal.isNull() && !refusal.asText().isBlank();
+            var root = JSON.readTree(body);
+            var refusal = root.path("choices").path(0).path("message").path("refusal");
+            if (!refusal.isMissingNode() && !refusal.isNull() && !refusal.asText().isBlank()) return true;
+            for (var item : root.path("output"))
+                for (var content : item.path("content"))
+                    if (content.path("type").asText().equals("refusal")) return true;
+            return false;
         } catch (Exception invalid) {
             return false;
+        }
+    }
+
+    private boolean responses(ModelProperties.Definition definition) {
+        return definition.providerId().equals("deepseek-responses");
+    }
+
+    /** Responses状态与正文分别验收；SDK解析失败也可从原始协议保留拒绝、截断及真实用量。 */
+    private String responsesFailure(ModelProperties.Definition definition, String body) {
+        if (!responses(definition) || body == null) return null;
+        try {
+            var root = JSON.readTree(body);
+            if (refused(body)) return "MODEL_REFUSED";
+            if (root.path("status").asText().equals("completed")) return null;
+            if (root.path("status").asText().equals("incomplete")) {
+                String reason = root.path("incomplete_details").path("reason").asText();
+                if (reason.equals("content_filter")) return "MODEL_REFUSED";
+                if (reason.equals("max_output_tokens")) return "MODEL_TRUNCATED";
+            }
+            return "MODEL_INVALID_OUTPUT";
+        } catch (Exception invalid) {
+            return "MODEL_INVALID_OUTPUT";
         }
     }
 

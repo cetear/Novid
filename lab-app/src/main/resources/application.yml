@@ -111,14 +111,18 @@ lab:
   content-workflow:
     # 所选资料原文总量上限，单位 UTF-8 字节；范围 3000～10000000。
     source-bytes: 1000000
-    # 原文分片大小上限，单位 UTF-8 字节；范围 500～6000，必要时可继续拆分。
-    page-bytes: 3000
+    # 自然原文片段容量，单位 UTF-8 字节；范围 500～12000，含定位与必要背景。
+    page-bytes: 6000
+    # 最多32个相邻自然片段组合的阅读包容量；不小于 page-bytes，最大 96000 字节。
+    reading-pack-bytes: 24000
     # 整个资料任务可保存的事实条目数上限；范围 8～20000。
     maximum-items: 4096
-    # 知识索引工作包的容量上限，单位 UTF-8 字节；范围 6000～24000。
-    index-bytes: 8000
-    # 单个内容目标的事实输入包上限，单位 UTF-8 字节；须不小于 index-bytes，最大 32000。
-    unit-input-bytes: 8000
+    # 知识索引工作包的容量上限，单位 UTF-8 字节；范围 6000～64000。
+    index-bytes: 32000
+    # 完整生成输入包容量，含职责、证据与依赖结果；不小于索引／阅读包，最大 128000 字节。
+    unit-input-bytes: 64000
+    # 合包的预计输出容量，单位 UTF-8 字节；范围 6000～30000，仍核验实际模型输出窗口。
+    package-output-bytes: 24000
     # 内容目标数量上限，如题目、整编小节或内容页；范围 1～512。
     maximum-units: 256
     # 资料子工作包线程池并发数；范围 1～16，实际还受模型网关和目标模型许可限制。
@@ -310,7 +314,7 @@ lab:
         # 声明模型上下文窗口容量（词元）；网关对输入使用 UTF-8 字节保守估算，并预留输出与结构指令。
         context-window: 200000
         # 聊天请求的最大输出词元数，同时参与窗口和费用预留；不等于整个任务的词元预算。
-        output-limit: 131072
+        output-limit: 32768
         # 模型配置范围1～1800秒；资料任务可等待30分钟，在线仍受30秒单次上限限制。
         # 模型单次等待上限，单位秒；范围 1～1800，在线调用仍最多 30 秒，资料任务还受剩余总期限限制。
         timeout-seconds: ${MODEL_PRIMARY_TIMEOUT_SECONDS:90}
@@ -335,9 +339,35 @@ lab:
         # 声明模型上下文窗口容量（词元）；网关对输入使用 UTF-8 字节保守估算，并预留输出与结构指令。
         context-window: 200000
         # 聊天请求的最大输出词元数，同时参与窗口和费用预留；不等于整个任务的词元预算。
-        output-limit: 131072
+        output-limit: 32768
         # 模型单次等待上限，单位秒；范围 1～1800，在线调用仍最多 30 秒，资料任务还受剩余总期限限制。
         timeout-seconds: ${MODEL_BACKUP_TIMEOUT_SECONDS:90}
+      # 工作流专用模型；检索问答仍使用上面的 primary／backup。
+      workflow-primary:
+        # 使用 SDK Responses 协议，向基础地址追加 /responses。
+        provider-id: deepseek-responses
+        # 独立工作流基础地址，不随检索模型地址变化；不要填写完整 /responses 路径。
+        endpoint: ${WORKFLOW_MODEL_BASE_URL:https://api.deepseek.com}
+        # 独立工作流模型名，默认使用当前已配置且官方 Responses 文档支持的 DeepSeek 模型。
+        model-name: ${WORKFLOW_MODEL_NAME:deepseek-flash}
+        # 凭证变量名；默认复用已有 MODEL_API_KEY，独立密钥可引用 WORKFLOW_MODEL_API_KEY。
+        credential-ref: ${WORKFLOW_MODEL_CREDENTIAL_REF:MODEL_API_KEY}
+        # 启用唯一工作流模型；工作流不自动切换到检索问答模型。
+        enabled: true
+        # JSON_SCHEMA 表示向 Responses 发送原生 Schema；WORKFLOW 用于隔离路由。
+        capabilities: [CHAT, STRUCTURED_OUTPUT, JSON_SCHEMA, WORKFLOW]
+        # 保留配置基线标签，不代表真实模型质量已验收。
+        quality-tags: [configured-baseline]
+        # 私有资料仍须通过既有来源授权及外发检查。
+        data-classifications: [PRIVATE]
+        # 工作流模型上下文窗口，单位词元；独立于检索模型配置。
+        context-window: ${WORKFLOW_MODEL_CONTEXT_WINDOW:200000}
+        # 工作流单次最大输出词元数；Schema 和输入仍计入窗口预检。
+        output-limit: ${WORKFLOW_MODEL_OUTPUT_LIMIT:32768}
+        # 单次等待秒数，默认 30 分钟，范围 1～1800，并受调用入口上限及任务剩余期限限制。
+        timeout-seconds: ${WORKFLOW_MODEL_TIMEOUT_SECONDS:1800}
+        # 默认复用同一凭证账户的配额组；独立账户可覆盖，模型分离不增加账户余额。
+        quota-group: ${WORKFLOW_MODEL_QUOTA_GROUP:openai-compatible}
       # 嵌入模型定义，用于生成知识检索向量。
       embedding:
         # 协议适配器标识，用于选择聊天或嵌入请求的适配方式。
@@ -396,7 +426,7 @@ lab:
         quality-tags: [configured-baseline]
         # 是否允许在可切换故障时使用兼容备用目标；结构校验错误的纠正仍固定原模型。
         allow-fallback: true
-      # 报告与资料生成档位。
+      # 在线报告档位，供检索回答的公开逻辑选项使用。
       report:
         # 按优先顺序排列的候选模型 ID，引用 models 中的定义。
         candidate-model-ids: [primary, backup]
@@ -416,6 +446,16 @@ lab:
         quality-tags: [configured-baseline]
         # 是否允许在可切换故障时使用兼容备用目标；结构校验错误的纠正仍固定原模型。
         allow-fallback: true
+      # 工作流专用档位；当前仅 DeepSeek 原生 Schema，按用户选择关闭备用。
+      workflow:
+        # 唯一候选；不引用检索回答的 primary／backup。
+        candidate-model-ids: [workflow-primary]
+        # 工作流必须支持原生 Schema，不能通过公开档位降级为 JSON 提示模式。
+        required-capabilities: [CHAT, STRUCTURED_OUTPUT, JSON_SCHEMA, WORKFLOW]
+        # 配置基线标签，真实模型仍需上线验收。
+        quality-tags: [configured-baseline]
+        # 智普现有官方文档未声明原生 json_schema，当前关闭工作流备用。
+        allow-fallback: false
       # 向量生成档位。
       embedding:
         # 按优先顺序排列的候选模型 ID，引用 models 中的定义。
@@ -429,7 +469,7 @@ lab:
     # 逻辑任务到模型档位的路由与选择白名单。
     routing:
       # 路由策略版本标识，写入路由记录用于追溯配置。
-      policy-version: routing-s05-v1
+      policy-version: routing-s06-workflow-responses-v1
       # 质量标签策略版本；当前 configured-baseline-unverified 表示配置基线未冒称外部评测通过。
       quality-version: configured-baseline-unverified-v1
       # 允许普通调用方选择的逻辑档位白名单。
@@ -447,10 +487,18 @@ lab:
         SIMPLE_SUMMARY: economy
         # 数据分析使用的模型档位。
         DATA_ANALYSIS: analysis
-        # 报告及资料工作流生成使用的模型档位。
+        # 在线报告路由；后台资料工作流使用独立 WORKFLOW_REPORT。
         REPORT: report
         # 规划任务使用的模型档位。
         PLANNING: planning
+        # 资料阅读、整编、题目与媒体内容生成走工作流专用模型。
+        WORKFLOW_REPORT: workflow
+        # 工作流审查使用相同独立模型及既有本地业务校验。
+        WORKFLOW_REVIEW: workflow
+        # 媒体与视频规划使用独立工作流模型。
+        WORKFLOW_PLANNING: workflow
+        # 工作流内部资料摘要也使用独立模型，普通在线摘要路由保持原配置。
+        WORKFLOW_SUMMARY: workflow
     # 模型故障重试、备用切换和熔断冷却的有限策略。
     failover:
       # 单次逻辑模型调用最多允许的实际尝试数，包含重试和备用；范围 1～3。
