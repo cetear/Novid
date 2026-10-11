@@ -31,11 +31,11 @@ public class IngestionRepository implements DocumentIngestionStorePort {
     }
 
     /**
-     * 使用 SKIP LOCKED 领取；过期租约只能在三次以内恢复。
+     * 全局锁及队列行均使用 SKIP LOCKED 领取；过期租约只能在三次以内恢复。
      */
     @Transactional
     public Optional<IngestionLease> claim(String worker) {
-        sql.scalar(mapper.claimSystemControlSelect(new Object[]{}), Integer.class);
+        if (mapper.claimSystemControlSelect(new Object[]{}).isEmpty()) return Optional.empty();
         // 发送窗口崩溃且无提供方查询能力时明确未知，不能靠重领重购。
         mapper.claimDocumentIngestionsWrite(new Object[]{});
         mapper.claimIngestionBatchesWrite(new Object[]{});

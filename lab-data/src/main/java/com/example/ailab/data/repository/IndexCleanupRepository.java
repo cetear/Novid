@@ -25,11 +25,11 @@ public class IndexCleanupRepository implements IndexCleanupStorePort {
     }
 
     /**
-     * 执行权带 fencing，过期后可恢复；成功分批不消耗异常尝试预算。
+     * 全局锁繁忙时留待下次轮询；执行权带 fencing，成功分批不消耗异常尝试预算。
      */
     @Transactional
     public Optional<IndexCleanupLease> claim(String worker) {
-        sql.scalar(mapper.claimSystemControlSelect(new Object[]{}), Integer.class);
+        if (mapper.claimSystemControlSelect(new Object[]{}).isEmpty()) return Optional.empty();
         mapper.claimOutboxEventsWrite(new Object[]{});
         var events = sql.project(mapper.claimOutboxEventsSelect(new Object[]{}), (r, n) -> new IndexCleanupLease(r.longValue("id"), r.string("event_type"), r.longValue("resource_id"), r.longValue("resource_version"), 0, 0, worker, r.longValue("fencing_token") + 1));
         if (events.isEmpty()) return Optional.empty();

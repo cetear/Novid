@@ -165,9 +165,9 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     @Transactional
     public Optional<TaskLease> claimMedia(String worker) { return claimInternal(worker,true); }
 
-    /** 同一锁顺序串行状态转换；等待时只挑到期原ID查询，绝不重新生成。 */
+    /** 全局锁繁忙时延后轮询；同一锁顺序串行转换，媒体等待只挑到期原ID查询。 */
     private Optional<TaskLease> claimInternal(String worker,boolean mediaQueue) {
-        sql.scalar(mapper.claimInternalSystemControlSelect(new Object[]{}), Integer.class);
+        if (mapper.claimInternalSystemControlSelect(new Object[]{}).isEmpty()) return Optional.empty();
         mapper.claimInternalAiTasksWrite(new Object[]{});
         // 自动撤销与显式取消采用相同步骤状态，不留下误导性的“执行中”标记。
         mapper.claimInternalTaskStepProgressWrite(new Object[]{});
