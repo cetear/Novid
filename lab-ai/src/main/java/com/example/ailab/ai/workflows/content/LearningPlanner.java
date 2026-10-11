@@ -19,12 +19,21 @@ final class LearningPlanner {
         if(r.lease().request().taskType().equals("KNOWLEDGE_COMPILATION"))compilation=compilation();else quiz=quiz();
         var execution=LearningPackages.build(r,compilation,quiz);
         var logical=compilation!=null?compilation.sections().stream().map(SectionDuty::id).toList():quiz.slots().stream().map(Slot::id).toList();
-        int turns=execution.packages().size()*2+execution.parts().size()*4+logical.size()*2+(quiz==null?compilation.directory().chapters().size():quiz.chapters().size())*4+(compilation==null?0:compilation.knowledge().size()*2)+32;
+        int turns=estimatedTurns(compilation,quiz,execution);
+        if(turns>r.policy().turns()||turns*2>r.policy().attempts())throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","生成、复核及一次修复超过固定父任务预算");
         var counts=new ContentWorkflow.Counts(quiz==null?0:quiz.slots().size(),quiz==null?compilation.directory().chapters().size():quiz.chapters().size(),compilation==null?0:compilation.sections().size(),0,0,0);
         int output=execution.parts().stream().mapToInt(Part::outputBytes).sum()+r.facts().size()*3500;
         var result=new Plan(LearningContent.VERSION,r.lease().request().taskType(),ContentJson.hash(r.source()),compilation,quiz,execution,counts,logical.stream().map(id->"accepted_"+id).toList(),turns,turns*2,output);
         LearningPlanRules.validate(result,r.lease().request(),r.facts().keySet(),r.policy());r.store().accept(r.lease(),result);
         r.store().finish(r.lease(),"organize",List.of(compilation==null?"quiz_intent":"directory"));return result;
+    }
+    static int estimatedTurns(CompilationPlan compilation,Blueprint quiz,ExecutionPlan execution) {
+        int logical=compilation!=null?compilation.sections().size():quiz.slots().size();
+        // 两轮题对复核分别对应初次检查和局部修复后的检查，候选来自不可变蓝图。
+        int pairs=quiz==null?0:LearningPlanRules.reviewPairs(quiz).size();
+        return execution.packages().size()*2+execution.parts().size()*4+logical*2
+                +(quiz==null?compilation.directory().chapters().size():quiz.chapters().size())*4
+                +(compilation==null?0:compilation.knowledge().size()*2)+pairs*2+32;
     }
     private CompilationPlan compilation() {
         int maximum=r.lease().request().compilationOptions().maximumChapters();if(maximum==0)maximum=LearningPlanRules.MAX_CHAPTERS;else maximum=Math.min(maximum,LearningPlanRules.MAX_CHAPTERS);
@@ -76,11 +85,11 @@ final class LearningPlanner {
         var chapters=chapters();var chapterIds=chapters.stream().map(Chapter::id).collect(Collectors.toSet());
         var intent=r.call("quiz_intent","organize","quiz-intent",Map.of("remarks",r.lease().request().instructions(),"options",r.lease().request().quizOptions(),"chapters",index(chapters.stream().map(c->Map.of("id",c.id(),"title",c.title(),"facts",c.itemIds().size())).toList())),LearningBusinessSchemas.quizIntent(chapterIds));
         if(!intent.coveragePolicy().equals("EVERY_CHAPTER")&&r.lease().request().instructions().isBlank())throw new LabException("WORKFLOW_REQUIREMENTS_UNSATISFIED","默认自测须覆盖每个有效章节，抽样需要明确备注");
-        var objectives=new ArrayList<Objective>();var uncovered=new ArrayList<Uncovered>();
+        var objectives=new ArrayList<Objective>();var uncovered=new ArrayList<Uncovered>();int nextObjectiveId=1;
         for(var chapter:chapters) {int group=0;
             for(var facts:partition(r.evidence(chapter.itemIds()),r.policy().unitInputBytes()-1000,ContentJson::encode)) {
                 var candidates=r.call("objectives_"+chapter.id()+"_"+group++,"organize","objectives",Map.of("chapter",Map.of("id",chapter.id(),"title",chapter.title()),"facts",facts,"difficulty",r.lease().request().quizOptions().difficulty(),"allowedTypes",r.lease().request().quizOptions().questionTypes()),LearningBusinessSchemas.objectives(facts,new HashSet<>(r.lease().request().quizOptions().questionTypes()),chapterIds));
-                for(var o:candidates.objectives())objectives.add(new Objective(String.format(Locale.ROOT,"o%05d",objectives.size()+1),chapter.id(),o.title(),o.cognition(),o.questionTypes(),o.itemIds(),o.priority(),o.reason(),o.relatedChapterIds()));
+                for(var o:candidates.objectives())objectives.add(new Objective(String.format(Locale.ROOT,"o%05d",nextObjectiveId++),chapter.id(),o.title(),o.cognition(),o.questionTypes(),o.itemIds(),o.priority(),o.reason(),o.relatedChapterIds()));
                 for(String id:candidates.unexaminedItemIds())uncovered.add(new Uncovered("FACT",id,candidates.reason()));
             }
         }
@@ -99,7 +108,7 @@ final class LearningPlanner {
                 for(var facts:partition(r.evidence(chapter.itemIds()),room,ContentJson::encode)) {
                     var input=Map.of("chapter",Map.of("id",chapter.id(),"title",chapter.title()),"facts",facts,"existingObjectives",existingIndex,"requestedQuestions",target,"difficulty",r.lease().request().quizOptions().difficulty(),"allowedTypes",r.lease().request().quizOptions().questionTypes(),"correction","补充确有依据的不同认知目的；无法增加时明确保留原目标，禁止名称改写或虚构知识");r.bounded(input);
                     var extra=r.call("objective_expand_"+chapter.id()+"_"+group++,"organize","objectives",input,LearningBusinessSchemas.objectives(facts,new HashSet<>(r.lease().request().quizOptions().questionTypes()),chapterIds));
-                    for(var o:extra.objectives())objectives.add(new Objective(String.format(Locale.ROOT,"o%05d",objectives.size()+1),chapter.id(),o.title(),o.cognition(),o.questionTypes(),o.itemIds(),o.priority(),o.reason(),o.relatedChapterIds()));
+                    for(var o:extra.objectives())objectives.add(new Objective(String.format(Locale.ROOT,"o%05d",nextObjectiveId++),chapter.id(),o.title(),o.cognition(),o.questionTypes(),o.itemIds(),o.priority(),o.reason(),o.relatedChapterIds()));
                 }
             }
             var corrected=distinctObjectives(objectives);objectives.clear();objectives.addAll(corrected);

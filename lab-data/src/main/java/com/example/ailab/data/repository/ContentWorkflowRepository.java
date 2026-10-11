@@ -261,40 +261,56 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
     public List<LearningContent.PackageStatus> packages(UserContext actor,long id,int offset,int limit) {
         tasks.read(actor,id);if(offset<0||limit<1||limit>100)throw LabException.invalid("工作包分页范围无效");
         var source=source(id);if(source.isEmpty())return List.of();verify(documents,actor,null,source.get());
-        return packageRows(id).stream().skip(offset).limit(limit).toList();
+        return packageRows(id,mapper.packagePage(new Object[]{id,offset,limit}),false);
     }
     private List<LearningContent.PackageStatus> packageRows(long id) {
-        var rows=mapper.packages(new Object[]{id});var accepted=mapper.nodes(new Object[]{id}).stream().filter(n->n.string("node_id").startsWith("partaccepted_")&&"COMPLETED".equals(n.string("status"))).peek(ContentWorkflowRepository::output).map(n->n.string("node_id").substring(13)).collect(Collectors.toSet());
-        return rows.stream().map(r->{try {
+        return packageRows(id,mapper.packages(new Object[]{id}),true);
+    }
+    private record PackageRow(SqlRow row,LearningContent.WorkPackage pack,List<LearningContent.Part> parts) { }
+    private List<LearningContent.PackageStatus> packageRows(long id,List<SqlRow> rows,boolean all) {
+        if(rows.isEmpty())return List.of();
+        var decoded=rows.stream().map(r->{try {
             var pack=JSON.readValue(r.string("package_json"),LearningContent.WorkPackage.class);
             List<LearningContent.Part> parts=JSON.readValue(r.string("parts_json"),JSON.getTypeFactory().constructCollectionType(List.class,LearningContent.Part.class));
             if(!hash(Map.of("package",pack,"parts",parts)).equals(r.string("input_hash")))throw conflict();
-            return new LearningContent.PackageStatus(pack,parts,r.string("status"),r.intValue("attempts"),r.string("result_hash"),r.string("error_code"),
-                    rows.stream().filter(child->pack.id().equals(child.string("parent_id"))).map(child->child.string("package_id")).toList(),(int)pack.partIds().stream().filter(accepted::contains).count());
+            return new PackageRow(r,pack,parts);
         }catch(Exception invalid){throw conflict();}}).toList();
+        var nodeIds=decoded.stream().flatMap(p->p.pack().partIds().stream()).distinct().map(part->"partaccepted_"+part).toList();
+        var accepted=nodeIds.isEmpty()?Set.<String>of():mapper.completedNodeIds(id,nodeIds).stream().map(n->n.string("node_id")).collect(Collectors.toSet());
+        var links=all?rows:mapper.packageChildren(id,decoded.stream().map(p->p.pack().id()).toList());
+        var children=links.stream().collect(Collectors.groupingBy(r->r.string("parent_id"),Collectors.mapping(r->r.string("package_id"),Collectors.toList())));
+        return decoded.stream().map(p->{var r=p.row();var pack=p.pack();return new LearningContent.PackageStatus(pack,p.parts(),r.string("status"),r.intValue("attempts"),r.string("result_hash"),r.string("error_code"),
+                children.getOrDefault(pack.id(),List.of()),(int)pack.partIds().stream().filter(part->accepted.contains("partaccepted_"+part)).count());}).toList();
     }
-    private LearningContent.PackageStatus packageById(TaskLease lease,String id) {return packages(lease).stream().filter(p->p.workPackage().id().equals(id)).findFirst().orElseThrow(ContentWorkflowRepository::conflict);}
+    private LearningContent.PackageStatus packageById(TaskLease lease,String id) {
+        return packageRows(lease.task().taskId(),mapper.packageRow(new Object[]{lease.task().taskId(),id}),false).stream().findFirst().orElseThrow(ContentWorkflowRepository::conflict);
+    }
     private boolean resolved(String id,Map<String,LearningContent.PackageStatus> rows,Set<String> visiting) {
         if(!visiting.add(id))throw conflict();var p=rows.get(id);if(p==null)throw conflict();
         boolean ready=p.status().equals("ACCEPTED")||p.status().equals("REPLACED")&&!p.children().isEmpty()&&p.children().stream().allMatch(child->resolved(child,rows,new HashSet<>(visiting)));return ready;
     }
     public void beginPackage(TaskLease lease,String id) {
-        valid(lease);var p=packageById(lease,id);var rows=packages(lease).stream().collect(Collectors.toMap(v->v.workPackage().id(),v->v));
-        if(p.status().equals("ACCEPTED"))return;if(p.status().equals("REPLACED")||!p.workPackage().dependencies().stream().allMatch(dep->resolved(dep,rows,new HashSet<>())))throw conflict();
+        valid(lease);var p=packageById(lease,id);
+        if(p.status().equals("ACCEPTED"))return;if(p.status().equals("REPLACED"))throw conflict();
+        if(!p.workPackage().dependencies().isEmpty()) {
+            var rows=packageRows(lease.task().taskId()).stream().collect(Collectors.toMap(v->v.workPackage().id(),v->v));
+            if(!p.workPackage().dependencies().stream().allMatch(dep->resolved(dep,rows,new HashSet<>())))throw conflict();
+        }
         if(mapper.beginPackage(new Object[]{lease.task().taskId(),id})!=1)throw conflict();
     }
     public void completePackage(TaskLease lease,String id,String resultHash) {
         valid(lease);identity(id,resultHash);var p=packageById(lease,id);
         if(p.status().equals("ACCEPTED")){if(!resultHash.equals(p.resultHash()))throw conflict();return;}
-        requireNodes(lease.task().taskId(),p.workPackage().partIds().stream().map(part->"partaccepted_"+part).toList());
-        var rows=mapper.nodes(new Object[]{lease.task().taskId()}).stream().collect(Collectors.toMap(n->n.string("node_id"),n->n));
+        var nodeIds=p.workPackage().partIds().stream().map(part->"partaccepted_"+part).toList();
+        var rows=mapper.nodesByIds(lease.task().taskId(),nodeIds).stream().collect(Collectors.toMap(n->n.string("node_id"),n->n));
+        var results=new HashMap<String,String>();
         for(var part:p.parts())try{
-            var receipt=JSON.readTree(output(rows.get("partaccepted_"+part.id())));
+            String result=output(rows.get("partaccepted_"+part.id()));results.put(part.id(),result);var receipt=JSON.readTree(result);
             if(!part.id().equals(receipt.path("partId").asText())||receipt.path("producerId").asText().isBlank())throw conflict();
             var value=JSON.readTree(receipt.path("json").asText());var items=JSON.convertValue(value.path("itemIds"),JSON.getTypeFactory().constructCollectionType(List.class,String.class));
             if(!part.itemIds().equals(items)||!(part.kind().equals("QUESTION")?part.logicalId().equals(value.path("id").asText()):part.id().equals(value.path("partId").asText())))throw conflict();
         }catch(Exception invalid){throw conflict();}
-        var expected=hash(p.workPackage().partIds().stream().map(part->output(rows.get("partaccepted_"+part))).toList());if(!expected.equals(resultHash))throw conflict();
+        var expected=hash(p.workPackage().partIds().stream().map(results::get).toList());if(!expected.equals(resultHash))throw conflict();
         if(mapper.completePackage(new Object[]{lease.task().taskId(),id,resultHash})!=1)throw conflict();mapper.progress(new Object[]{lease.task().taskId()});
     }
     public void failPackage(TaskLease lease,String id,String code){
@@ -310,16 +326,16 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         var policy=source(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict).policy();
         if(children.stream().anyMatch(child->child.inputBytes()>policy.unitInputBytes()||child.outputBytes()>policy.packageOutputBytes()))throw conflict();
         if(parent.status().equals("REPLACED")){
-            var saved=packages(lease).stream().collect(Collectors.toMap(p->p.workPackage().id(),p->p));
             if(!new HashSet<>(parent.children()).equals(children.stream().map(LearningContent.WorkPackage::id).collect(Collectors.toSet())))throw conflict();
-            for(var child:children){var found=saved.get(child.id());if(found==null||!found.workPackage().equals(child)||!found.parts().equals(parts.stream().filter(p->child.partIds().contains(p.id())).toList()))throw conflict();}return;
+            for(var child:children){var found=packageById(lease,child.id());if(!found.workPackage().equals(child)||!found.parts().equals(parts.stream().filter(p->child.partIds().contains(p.id())).toList()))throw conflict();}return;
         }
-        if(packages(lease).size()+children.size()>plan.execution().maximumPackages())throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","追加执行包超过父任务限制");
+        if(mapper.packageCount(new Object[]{lease.task().taskId()}).get(0).intValue("package_count")+children.size()>plan.execution().maximumPackages())throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","追加执行包超过父任务限制");
         for(var child:children)savePackage(lease,child,parts.stream().filter(p->child.partIds().contains(p.id())).toList());
         if(mapper.replacePackage(new Object[]{lease.task().taskId(),id})!=1)throw conflict();mapper.progress(new Object[]{lease.task().taskId()});
     }
     private void requireNodes(long taskId,List<String> ids) {
-        var rows=mapper.nodes(new Object[]{taskId});var nodes=new HashMap<String,SqlRow>();rows.forEach(n->nodes.put(n.string("node_id"),n));
+        if(ids.isEmpty())return;
+        var rows=mapper.nodesByIds(taskId,ids);var nodes=new HashMap<String,SqlRow>();rows.forEach(n->nodes.put(n.string("node_id"),n));
         for(String id:ids){var row=nodes.get(id);if(row==null)throw conflict();output(row);}
     }
     private void valid(TaskLease lease) {tasks.valid(lease);if(!lease.request().documentDriven())throw conflict();}

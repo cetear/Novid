@@ -10,6 +10,14 @@
  <insert id="bind">INSERT INTO task_content_runs(task_id,source_hash,source_json) VALUES(#{args[0]},#{args[1]},#{args[2]})</insert>
  <select id="node" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_nodes WHERE task_id=#{args[0]} AND node_id=#{args[1]}</select>
  <select id="nodes" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_nodes WHERE task_id=#{args[0]} ORDER BY node_id</select>
+ <select id="nodesByIds" resultType="com.example.ailab.data.persistence.po.SqlRow">
+  SELECT * FROM task_content_nodes WHERE task_id=#{taskId} AND node_id IN
+  <foreach collection="nodeIds" item="nodeId" open="(" separator="," close=")">#{nodeId}</foreach>
+ </select>
+ <select id="completedNodeIds" resultType="com.example.ailab.data.persistence.po.SqlRow">
+  SELECT node_id FROM task_content_nodes WHERE task_id=#{taskId} AND status='COMPLETED' AND node_id IN
+  <foreach collection="nodeIds" item="nodeId" open="(" separator="," close=")">#{nodeId}</foreach>
+ </select>
  <insert id="begin">INSERT INTO task_content_nodes(task_id,node_id,stage,input_hash) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]})</insert>
  <update id="complete">UPDATE task_content_nodes SET output_hash=#{args[0]},output_json=#{args[1]},status='COMPLETED',completed_at=CURRENT_TIMESTAMP(6) WHERE task_id=#{args[2]} AND node_id=#{args[3]} AND input_hash=#{args[4]} AND status='PENDING'</update>
  <update id="accept">UPDATE task_content_runs SET plan_hash=#{args[0]},plan_json=#{args[1]} WHERE task_id=#{args[2]} AND plan_hash IS NULL</update>
@@ -17,6 +25,14 @@
  <update id="stage">UPDATE task_step_progress SET status='SUCCEEDED',completed_at=CURRENT_TIMESTAMP(6),error_code=NULL WHERE task_id=#{args[0]} AND step_id=#{args[1]} AND status IN ('PENDING','RUNNING')</update>
  <insert id="coverage">INSERT INTO task_document_coverage(task_id,document_id,document_version,processing_revision,section_id,completed_pages,read_start,read_end,remaining_start,remaining_end,complete,count_source) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},'1',#{args[4]},0,#{args[5]},#{args[5]},#{args[5]},TRUE,'ESTIMATED_UTF8_BYTES') ON DUPLICATE KEY UPDATE completed_pages=VALUES(completed_pages),read_end=VALUES(read_end),remaining_start=VALUES(remaining_start),remaining_end=VALUES(remaining_end),complete=TRUE</insert>
  <select id="packages" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_packages WHERE task_id=#{args[0]} ORDER BY package_id</select>
+ <select id="packageRow" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_packages WHERE task_id=#{args[0]} AND package_id=#{args[1]}</select>
+ <select id="packagePage" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_packages WHERE task_id=#{args[0]} ORDER BY package_id LIMIT #{args[2]} OFFSET #{args[1]}</select>
+ <select id="packageChildren" resultType="com.example.ailab.data.persistence.po.SqlRow">
+  SELECT package_id,parent_id FROM task_content_packages WHERE task_id=#{taskId} AND parent_id IN
+  <foreach collection="parentIds" item="parentId" open="(" separator="," close=")">#{parentId}</foreach>
+  ORDER BY package_id
+ </select>
+ <select id="packageCount" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT COUNT(*) AS package_count FROM task_content_packages WHERE task_id=#{args[0]}</select>
  <insert id="savePackage">INSERT INTO task_content_packages(task_id,package_id,parent_id,input_hash,package_json,parts_json) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]})</insert>
  <update id="beginPackage">UPDATE task_content_packages SET status='RUNNING',attempts=attempts+1,error_code=NULL WHERE task_id=#{args[0]} AND package_id=#{args[1]} AND status IN ('PENDING','FAILED','RUNNING')</update>
  <update id="completePackage">UPDATE task_content_packages SET status='ACCEPTED',result_hash=#{args[2]},completed_at=CURRENT_TIMESTAMP(6) WHERE task_id=#{args[0]} AND package_id=#{args[1]} AND status='RUNNING'</update>

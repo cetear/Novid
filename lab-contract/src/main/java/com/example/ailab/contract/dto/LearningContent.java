@@ -58,6 +58,9 @@ public final class LearningContent {
     public record Slot(String id,String primaryChapterId,String objectiveId,String cognition,String type,List<String> itemIds,List<String> relatedChapterIds) {
         public Slot {itemIds=List.copyOf(itemIds);relatedChapterIds=List.copyOf(relatedChapterIds);}
     }
+    public record ReviewPair(String leftId,String rightId) {
+        public String key(){return leftId+"_"+rightId;}
+    }
     public record Uncovered(String kind,String id,String reason) { }
     public record Blueprint(QuizIntent intent,String difficulty,List<Chapter> chapters,List<Objective> objectives,List<Quota> quotas,List<Slot> slots,List<Uncovered> uncovered) {
         public Blueprint {chapters=List.copyOf(chapters);objectives=List.copyOf(objectives);quotas=List.copyOf(quotas);slots=List.copyOf(slots);uncovered=List.copyOf(uncovered);}

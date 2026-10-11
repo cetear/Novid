@@ -12,9 +12,9 @@ import java.util.stream.Collectors;
 /** 父租约下的有界工作包调度、逐项验收、恢复和局部返工。 */
 final class LearningExecutor {
     private final LearningRuntime r;private final Plan plan;private int inspectionRemaining;
-    record AcceptedPart(String partId,String producerId,String json) { }
+    record PartReceipt(String partId,String producerId,String json) { }
     record Completed(Learning.Result result,List<Coverage> coverage) { }
-    private static final RecordSchema<AcceptedPart> ACCEPTED=new RecordSchema<>(AcceptedPart.class,"程序保存已验收单元与生成回执",v->RecordSchema.require(!v.partId().isBlank()&&!v.producerId().isBlank()&&!v.json().isBlank(),RecordSchema.Reason.CONTENT_CONSTRAINT));
+    private static final RecordSchema<PartReceipt> RECEIPT=new RecordSchema<>(PartReceipt.class,"程序保存单元草稿或验收结果与生成回执",v->RecordSchema.require(!v.partId().isBlank()&&!v.producerId().isBlank()&&!v.json().isBlank(),RecordSchema.Reason.CONTENT_CONSTRAINT));
     LearningExecutor(LearningRuntime runtime,Plan value){r=runtime;plan=value;}
     Completed execute(List<Learning.Citation> citations) {
         while(true) {
@@ -58,18 +58,13 @@ final class LearningExecutor {
         try {
             var active=status.parts().stream().filter(p->r.store().completedNode(r.lease(),"partaccepted_"+p.id()).isEmpty()).toList();
             if(!active.isEmpty()) {
-                var input=LearningPackages.input(r,active,plan.compilation(),plan.quiz());
-                var state=r.store().packages(r.lease());var dependencyOutputs=new ArrayList<AcceptedPart>();
-                for(var p:state)if(work.dependencies().stream().anyMatch(id->descendant(p.workPackage().id(),id))&&p.status().equals("ACCEPTED"))for(var part:p.parts())dependencyOutputs.add(accepted(part.id()));
-                if(!dependencyOutputs.isEmpty())input.put("dependencyResults",dependencyOutputs);
-                r.bounded(input);String producer="write_"+work.id()+"_"+ContentJson.hash(active.stream().map(Part::id).toList()).substring(0,8);
-                var drafts=new LinkedHashMap<String,Object>();
-                if(plan.quiz()==null){var batch=r.call(producer,"generate","package-write",input,LearningBusinessSchemas.sectionBatch(active));for(var part:batch.parts())drafts.put(part.partId(),part);}
-                else {var slots=plan.quiz().slots().stream().collect(Collectors.toMap(Slot::id,s->s));var batch=r.call(producer,"generate","package-write",input,LearningBusinessSchemas.questions(active,slots));for(int i=0;i<active.size();i++)drafts.put(active.get(i).id(),batch.questions().get(i));}
+                var drafts=drafts(status,active);
                 LabException first=null;
                 for(var part:active)try {
-                    Object value=acceptUnit(part,drafts.get(part.id()),producer);
-                    var receipt=new AcceptedPart(part.id(),producer,ContentJson.encode(value));r.checkpoint("partaccepted_"+part.id(),"review",Map.of("plan",ContentJson.hash(plan),"part",part),ACCEPTED,()->receipt);
+                    var draft=drafts.get(part.id());
+                    Object value=part.kind().equals("QUESTION")?questionSchema(part.logicalId()).validate(draft.json(),Set.of()):partSchema(part).validate(draft.json(),Set.of());
+                    value=acceptUnit(part,value,draft.producerId());
+                    var receipt=new PartReceipt(part.id(),draft.producerId(),ContentJson.encode(value));r.checkpoint("partaccepted_"+part.id(),"review",Map.of("plan",ContentJson.hash(plan),"part",part),RECEIPT,()->receipt);
                 }catch(LabException failure){if(first==null)first=failure;}
                 if(first!=null)throw first;
             }
@@ -83,6 +78,32 @@ final class LearningExecutor {
             }
             r.store().failPackage(r.lease(),work.id(),failure.code());throw failure;
         }
+    }
+    private Map<String,PartReceipt> drafts(PackageStatus status,List<Part> active) {
+        var drafts=new LinkedHashMap<String,PartReceipt>();
+        for(var part:active)r.store().completedNode(r.lease(),"partdraft_"+part.id()).ifPresent(json->{
+            var receipt=RECEIPT.validate(json,Set.of());
+            if(!receipt.partId().equals(part.id()))throw new LabException("WORKFLOW_STATE_CONFLICT","草稿回执单元身份不一致");
+            drafts.put(part.id(),receipt);
+        });
+        if(drafts.size()==active.size())return drafts;
+        // 包身份和完整输入保持不变；中断时可复用整包生成回执，拆包时可复用单元草稿。
+        var parts=status.parts();var input=LearningPackages.input(r,parts,plan.compilation(),plan.quiz());
+        var dependencies=status.workPackage().dependencies();
+        if(!dependencies.isEmpty()) {
+            var dependencyOutputs=new ArrayList<PartReceipt>();
+            for(var p:r.store().packages(r.lease()))if(dependencies.stream().anyMatch(id->descendant(p.workPackage().id(),id))&&p.status().equals("ACCEPTED"))for(var part:p.parts())dependencyOutputs.add(accepted(part.id()));
+            input.put("dependencyResults",dependencyOutputs);
+        }
+        r.bounded(input);String producer="write_"+status.workPackage().id();var generated=new LinkedHashMap<String,Object>();
+        if(plan.quiz()==null){var batch=r.call(producer,"generate","package-write",input,LearningBusinessSchemas.sectionBatch(parts));for(var part:batch.parts())generated.put(part.partId(),part);}
+        else {var slots=plan.quiz().slots().stream().collect(Collectors.toMap(Slot::id,s->s));var batch=r.call(producer,"generate","package-write",input,LearningBusinessSchemas.questions(parts,slots));for(int i=0;i<parts.size();i++)generated.put(parts.get(i).id(),batch.questions().get(i));}
+        for(var part:parts) {
+            var receipt=new PartReceipt(part.id(),producer,ContentJson.encode(generated.get(part.id())));
+            var saved=r.checkpoint("partdraft_"+part.id(),"generate",Map.of("plan",ContentJson.hash(plan),"part",part),RECEIPT,()->receipt);
+            drafts.put(part.id(),saved);
+        }
+        return drafts;
     }
     private Object acceptUnit(Part part,Object draft,String producer) {
         var context=LearningPackages.input(r,List.of(part),plan.compilation(),plan.quiz());
@@ -187,10 +208,15 @@ final class LearningExecutor {
             if(whole.decision().equals("INSPECT"))throw new LabException("WORKFLOW_REVIEW_REJECTED","全范围复核达到有限定点检查次数");
         }
         issues.addAll(whole.issues());
-        // 跨摘要包的候选按认知目的和主题检索，复核有明确上限。
-        if(plan.quiz()!=null){var checked=new HashSet<String>();for(var x:summaries)for(var y:summaries.stream().filter(s->!s.id().equals(x.id())&&s.cognition().equals(x.cognition())&&candidate(x,s)).sorted(Comparator.comparingInt((UnitSummary s)->similarity(x,s)).reversed().thenComparing(UnitSummary::id)).limit(8).toList()){
-            String key=x.id().compareTo(y.id())<0?x.id()+"_"+y.id():y.id()+"_"+x.id();if(!checked.add(key))continue;
-            var pair=Map.of("candidates",List.of(x,y),"actualQuestions",List.of(outputs.get(x.id()),outputs.get(y.id())),"rule","同知识同认知目的不能仅改写题干；不同认知目的允许再次覆盖");r.bounded(pair);var review=r.call("duplicate_"+round+"_"+key,"review","global-review",pair,LearningBusinessSchemas.global(Set.of(x.id(),y.id())));if(review.decision().equals("INSPECT"))throw new LabException("WORKFLOW_REVIEW_REJECTED","候选题已提供完整正文，无法继续请求正文");issues.addAll(review.issues());}}
+        if(plan.quiz()!=null) {
+            var byId=summaries.stream().collect(Collectors.toMap(UnitSummary::id,s->s));
+            for(var candidate:LearningPlanRules.reviewPairs(plan.quiz())) {
+                var x=byId.get(candidate.leftId());var y=byId.get(candidate.rightId());
+                var pair=Map.of("candidates",List.of(x,y),"actualQuestions",List.of(outputs.get(x.id()),outputs.get(y.id())),"rule","同知识同认知目的不能仅改写题干；不同认知目的允许再次覆盖");r.bounded(pair);
+                var review=r.call("duplicate_"+round+"_"+candidate.key(),"review","global-review",pair,LearningBusinessSchemas.global(Set.of(x.id(),y.id())));
+                if(review.decision().equals("INSPECT"))throw new LabException("WORKFLOW_REVIEW_REJECTED","候选题已提供完整正文，无法继续请求正文");issues.addAll(review.issues());
+            }
+        }
         return issues;
     }
     private Map<String,Object> globalInput(List<UnitSummary> group,List<Coverage> coverage) {
@@ -236,8 +262,6 @@ final class LearningExecutor {
         if(result.decision().equals("INSPECT"))throw new LabException("WORKFLOW_REVIEW_REJECTED","正文检查后不得再次扩大检查范围");issues.addAll(result.issues());return issues;
     }
     private static RecordSchema<ContentWorkflow.Summary> compactSummary(){return new RecordSchema<>(ContentWorkflow.Summary.class,"保留全局职责、重复及冲突的简明索引",List.of(RecordSchema.FieldRule.utf8("title",120),RecordSchema.FieldRule.utf8("summary",600)),v->{});}
-    private boolean candidate(UnitSummary x,UnitSummary y){return similarity(x,y)>0;}
-    private int similarity(UnitSummary x,UnitSummary y){int score=x.chapterId().equals(y.chapterId())?1:0;if(!Collections.disjoint(x.itemIds(),y.itemIds()))score+=100;if(x.title().equals(y.title()))score+=50;var tokens=new HashSet<String>();String a=x.title(),b=y.title();for(int i=0;i+1<a.length();i++)tokens.add(a.substring(i,i+2));for(int i=0;i+1<b.length();i++)if(tokens.contains(b.substring(i,i+2)))score++;return score;}
     private List<Coverage> coverage(List<Part> parts) {
         var out=new ArrayList<Coverage>();out.add(new Coverage("source","READ",r.reading().fragments().size(),r.reading().fragments().size(),r.reading().fragments().stream().map(f->f.source().id()).toList(),"全部自然拥有区间阅读，背景区间不重复计数"));
         if(plan.compilation()!=null){out.add(new Coverage("knowledge","KNOWLEDGE",r.facts().size(),r.facts().size(),plan.compilation().knowledge().stream().map(Knowledge::id).toList(),"每条事实具有唯一规范知识和主要小节"));for(var s:plan.compilation().sections())out.add(new Coverage(s.id(),"ACCEPTANCE",ownedFacts(s).size(),ownedFacts(s).size(),parts.stream().filter(p->p.logicalId().equals(s.id())).map(Part::id).toList(),"小节所有执行片段通过局部验收"));}
@@ -252,7 +276,7 @@ final class LearningExecutor {
     }
     private List<String> ownedFacts(SectionDuty section){var byId=plan.compilation().knowledge().stream().collect(Collectors.toMap(Knowledge::id,k->k));return section.ownedKnowledgeIds().stream().flatMap(id->byId.get(id).sourceItemIds().stream()).toList();}
     private String sectionRelation(SectionDuty section){var kinds=plan.compilation().knowledge().stream().filter(k->section.ownedKnowledgeIds().contains(k.id())).map(Knowledge::relation).collect(Collectors.toSet());return kinds.contains("CONFLICT")?"CONFLICT":kinds.equals(Set.of("SAME"))?"MERGE":"COMPLEMENT";}
-    private AcceptedPart accepted(String id){return ACCEPTED.validate(r.store().completedNode(r.lease(),"partaccepted_"+id).orElseThrow(()->new LabException("WORKFLOW_STATE_CONFLICT","已验收执行包缺少单元结果")),Set.of());}
+    private PartReceipt accepted(String id){return RECEIPT.validate(r.store().completedNode(r.lease(),"partaccepted_"+id).orElseThrow(()->new LabException("WORKFLOW_STATE_CONFLICT","已验收执行包缺少单元结果")),Set.of());}
     private RecordSchema<SectionPart> partSchema(Part part){return new RecordSchema<>(SectionPart.class,"修复partId="+part.id()+"的单个小节片段，保持itemIds",List.of(RecordSchema.FieldRule.utf8("body",ContentLimits.current().section())),v->RecordSchema.require(v.partId().equals(part.id())&&v.itemIds().equals(part.itemIds())&&!v.body().isBlank(),RecordSchema.Reason.CONTENT_CONSTRAINT));}
     private RecordSchema<Learning.Section> sectionSchema(String id){var duty=plan.compilation().sections().stream().filter(s->s.id().equals(id)).findFirst().orElseThrow();return new RecordSchema<>(Learning.Section.class,"输出groupId="+id+"的完整小节，保持itemIds",List.of(RecordSchema.FieldRule.utf8("body",ContentLimits.current().section())),v->RecordSchema.require(v.groupId().equals(id)&&v.itemIds().equals(ownedFacts(duty))&&!v.body().isBlank(),RecordSchema.Reason.CONTENT_CONSTRAINT));}
     private RecordSchema<Learning.Question> questionSchema(String id){var slot=plan.quiz().slots().stream().filter(s->s.id().equals(id)).findFirst().orElseThrow();return LearningSchemas.question(new Learning.Target(id,slot.type(),slot.itemIds()));}

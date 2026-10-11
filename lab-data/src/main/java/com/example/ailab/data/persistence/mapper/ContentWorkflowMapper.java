@@ -12,6 +12,8 @@ public interface ContentWorkflowMapper {
     int bind(@Param("args") Object[] args);
     List<SqlRow> node(@Param("args") Object[] args);
     List<SqlRow> nodes(@Param("args") Object[] args);
+    List<SqlRow> nodesByIds(@Param("taskId") long taskId,@Param("nodeIds") List<String> nodeIds);
+    List<SqlRow> completedNodeIds(@Param("taskId") long taskId,@Param("nodeIds") List<String> nodeIds);
     int begin(@Param("args") Object[] args);
     int complete(@Param("args") Object[] args);
     int accept(@Param("args") Object[] args);
@@ -19,6 +21,10 @@ public interface ContentWorkflowMapper {
     int stage(@Param("args") Object[] args);
     int coverage(@Param("args") Object[] args);
     List<SqlRow> packages(@Param("args") Object[] args);
+    List<SqlRow> packageRow(@Param("args") Object[] args);
+    List<SqlRow> packagePage(@Param("args") Object[] args);
+    List<SqlRow> packageChildren(@Param("taskId") long taskId,@Param("parentIds") List<String> parentIds);
+    List<SqlRow> packageCount(@Param("args") Object[] args);
     int savePackage(@Param("args") Object[] args);
     int beginPackage(@Param("args") Object[] args);
     int completePackage(@Param("args") Object[] args);

@@ -9,6 +9,30 @@ import static com.example.ailab.contract.dto.LearningContent.*;
 public final class LearningPlanRules {
     private LearningPlanRules() { }
     public static final int MAX_CHAPTERS=128,MAX_QUESTIONS=512,MAX_PACKAGES=1024,MAX_SPLIT_DEPTH=8;
+    /** 题对身份和排序只依赖冻结蓝图，预算和两轮执行使用完全相同的候选。 */
+    public static List<ReviewPair> reviewPairs(Blueprint quiz) {
+        var objectives=quiz.objectives().stream().collect(Collectors.toMap(Objective::id,o->o));
+        var pairs=new LinkedHashMap<String,ReviewPair>();
+        for(var x:quiz.slots()) {
+            var candidates=quiz.slots().stream().filter(y->!y.id().equals(x.id())&&y.cognition().equals(x.cognition()))
+                    .map(y->Map.entry(y,reviewSimilarity(x,y,objectives))).filter(e->e.getValue()>0)
+                    .sorted(Map.Entry.<Slot,Integer>comparingByValue().reversed().thenComparing(e->e.getKey().id())).limit(8).toList();
+            for(var candidate:candidates) {
+                var y=candidate.getKey();var pair=x.id().compareTo(y.id())<0?new ReviewPair(x.id(),y.id()):new ReviewPair(y.id(),x.id());
+                pairs.putIfAbsent(pair.key(),pair);
+            }
+        }
+        return List.copyOf(pairs.values());
+    }
+    private static int reviewSimilarity(Slot x,Slot y,Map<String,Objective> objectives) {
+        int score=x.primaryChapterId().equals(y.primaryChapterId())?1:0;
+        if(!Collections.disjoint(x.itemIds(),y.itemIds()))score+=100;
+        String a=objectives.get(x.objectiveId()).title(),b=objectives.get(y.objectiveId()).title();
+        if(a.equals(b))score+=50;
+        var tokens=new HashSet<String>();for(int i=0;i+1<a.length();i++)tokens.add(a.substring(i,i+2));
+        for(int i=0;i+1<b.length();i++)if(tokens.contains(b.substring(i,i+2)))score++;
+        return score;
+    }
     public static Map<String,Integer> allocate(List<Quota> quotas,int requested) {
         int minimum=quotas.stream().mapToInt(Quota::minimum).sum(),maximum=quotas.stream().mapToInt(Quota::maximum).sum();
         if(requested<minimum||requested>maximum)throw new LabException("WORKFLOW_REQUIREMENTS_UNSATISFIED","题数须介于章节最低配额与不同有效题位容量之间");
