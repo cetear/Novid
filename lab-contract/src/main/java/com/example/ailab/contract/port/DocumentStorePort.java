@@ -44,5 +44,7 @@ public interface DocumentStorePort {
      * 复核所有历史来源版本仍保留且当前可读。
      */
     void verifySources(AuthorizedKnowledgeScope scope, List<SourceDependency> sources);
+
+    void verifyReadingDocuments(AuthorizedKnowledgeScope scope, List<ContentReading.Document> documents);
 }
 

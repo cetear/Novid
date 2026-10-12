@@ -9,6 +9,7 @@ import java.util.stream.Collectors;
 
 /** 先形成全局业务承诺，再按必要输入和输出容量生成执行包。 */
 final class LearningPlanner {
+    private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(LearningPlanner.class);
     private final LearningRuntime r;
     private List<ContentReading.TopicCard> cards;private boolean inferDirectory;
     LearningPlanner(LearningRuntime runtime){r=runtime;cards=r.cards();}
@@ -22,7 +23,7 @@ final class LearningPlanner {
         int turns=estimatedTurns(compilation,quiz,execution);
         if(turns>r.policy().turns()||turns*2>r.policy().attempts())throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","生成、复核及一次修复超过固定父任务预算");
         var counts=new ContentWorkflow.Counts(quiz==null?0:quiz.slots().size(),quiz==null?compilation.directory().chapters().size():quiz.chapters().size(),compilation==null?0:compilation.sections().size(),0,0,0);
-        int output=execution.parts().stream().mapToInt(Part::outputBytes).sum()+r.facts().size()*3500;
+        int output=estimatedOutputBytes(compilation,quiz,execution);
         var result=new Plan(LearningContent.VERSION,r.lease().request().taskType(),ContentJson.hash(r.source()),compilation,quiz,execution,counts,logical.stream().map(id->"accepted_"+id).toList(),turns,turns*2,output);
         LearningPlanRules.validate(result,r.lease().request(),r.facts().keySet(),r.policy());r.store().accept(r.lease(),result);
         r.store().finish(r.lease(),"organize",List.of(compilation==null?"quiz_intent":"directory"));return result;
@@ -33,36 +34,29 @@ final class LearningPlanner {
         int pairs=quiz==null?0:LearningPlanRules.reviewPairs(quiz).size();
         return execution.packages().size()*2+execution.parts().size()*4+logical*2
                 +(quiz==null?compilation.directory().chapters().size():quiz.chapters().size())*4
-                +(compilation==null?0:compilation.knowledge().size()*2)+pairs*2+32;
+                +(compilation==null?0:(int)compilation.knowledge().stream().filter(k->k.relation().equals("CONFLICT")).count()*2)+pairs*2+32;
+    }
+    private int estimatedOutputBytes(CompilationPlan compilation,Blueprint quiz,ExecutionPlan execution) {
+        if(compilation==null)return execution.parts().stream().mapToInt(Part::outputBytes).sum()+r.facts().size()*3500;
+        var slices=r.source().slices().stream().collect(Collectors.toMap(Learning.SourceSlice::id,Function.identity()));
+        var citations=r.facts().values().stream().map(item->{int start=r.quoteOffset(item);return new Learning.Citation(item.id(),slices.get(item.sourceId()),start,start+item.quote().length(),item.quote());}).toList();
+        int metadata=TextWindow.count(ContentJson.encode(Map.of("compilation",compilation,"execution",execution,"citations",citations)));
+        // 基于真实元数据和计划正文留出重复职责、覆盖报告及JSON转义余量；实际产物仍受持久容量限制。
+        long estimate=metadata*2L+execution.parts().stream().mapToLong(Part::outputBytes).sum()*2L+4096;
+        return (int)Math.min(Integer.MAX_VALUE,estimate);
     }
     private CompilationPlan compilation() {
         int maximum=r.lease().request().compilationOptions().maximumChapters();if(maximum==0)maximum=LearningPlanRules.MAX_CHAPTERS;else maximum=Math.min(maximum,LearningPlanRules.MAX_CHAPTERS);
         var directory=r.call("directory","organize","directory",Map.of("remarks",r.lease().request().instructions(),"options",r.lease().request().compilationOptions(),"allThemes",index(cards)),LearningBusinessSchemas.directory(maximum));
-        var assignments=new LinkedHashMap<String,String>();int n=0;
-        for(var group:partition(cards,r.policy().unitInputBytes()-TextWindow.count(ContentJson.encode(directory))-800,ContentJson::encode)) {
-            var batch=r.call("assign_"+n++,"organize","assign",Map.of("directory",directory,"topicCards",group),LearningBusinessSchemas.assignments(group,directory));
-            batch.assignments().forEach(a->assignments.put(a.cardId(),a.chapterId()));
-        }
+        var assignments=new LinkedHashMap<String,String>();var fixedDirectory=directory;
+        var cardGroups=partition(cards,r.policy().unitInputBytes()-TextWindow.count(ContentJson.encode(directory))-800,ContentJson::encode);
+        var routedCards=r.parallel(java.util.stream.IntStream.range(0,cardGroups.size()).boxed().toList(),i->r.call("assign_"+i,"organize","assign",Map.of("directory",fixedDirectory,"topicCards",cardGroups.get(i)),LearningBusinessSchemas.assignments(cardGroups.get(i),fixedDirectory)));
+        routedCards.forEach(batch->batch.assignments().forEach(a->assignments.put(a.cardId(),a.chapterId())));
         var factChapter=new LinkedHashMap<String,String>();var factCard=new HashMap<String,ContentReading.TopicCard>();
         for(var card:cards)for(String id:card.topic().itemIds()){factChapter.put(id,assignments.get(card.id()));factCard.put(id,card);}
         var canonical=new ArrayList<Knowledge>();var owner=new HashMap<String,String>();
-        for(var fact:r.facts().values()) {
-            var card=factCard.get(fact.id());var candidates=canonical.stream().filter(k->related(card,factCard.get(k.sourceItemIds().get(0)),fact,r.facts().get(k.sourceItemIds().get(0))))
-                    .sorted(Comparator.comparingInt((Knowledge k)->similarity(card,factCard.get(k.sourceItemIds().get(0)))).reversed().thenComparing(Knowledge::id)).limit(8).toList();
-            Knowledge merge=null;Relation relation=null;
-            for(var k:candidates) {
-                var input=Map.of("existing",k,"existingEvidence",r.evidence(List.of(k.sourceItemIds().get(0))),"candidate",fact,"candidateConditions",card.topic().conditions());r.bounded(input);
-                var check=r.call("relation_"+k.id()+"_"+fact.id(),"organize","normalize",input,LearningBusinessSchemas.relation());
-                // 互补事实保留独立主要职责；冲突项保留各版本证据与条件。
-                if(check.decision().equals("SAME")||check.decision().equals("CONFLICT")){merge=k;relation=check;break;}
-            }
-            if(merge==null){String id=String.format(Locale.ROOT,"k%05d",canonical.size()+1);canonical.add(new Knowledge(id,"SINGLE",fact.content(),List.of(fact.id()),card.topic().conditions()));owner.put(id,factChapter.get(fact.id()));}
-            else {
-                var ids=new ArrayList<>(merge.sourceItemIds());ids.add(fact.id());var conditions=new LinkedHashSet<>(merge.conditions());conditions.addAll(card.topic().conditions());conditions.addAll(relation.conditions());
-                String kind=merge.relation().equals("CONFLICT")?"CONFLICT":relation.decision();
-                canonical.set(canonical.indexOf(merge),new Knowledge(merge.id(),kind,relation.summary(),ids,List.copyOf(conditions)));
-            }
-        }
+        if(r.facts().size()>64)normalizeBatches(factCard,factChapter,canonical,owner);
+        else for(var fact:r.facts().values())normalizeOne(fact,factCard,factChapter,canonical,owner);
         var parents=directory.chapters().stream().collect(Collectors.toMap(DirectoryChapter::id,DirectoryChapter::parentId));
         var used=LearningHierarchy.ancestors(new LinkedHashSet<>(owner.values()),parents);var chapters=directory.chapters().stream().filter(c->used.contains(c.id())).map(c->new DirectoryChapter(c.id(),c.parentId(),c.title(),c.purpose(),c.exclusions(),
                 c.resultDependencies().stream().flatMap(id->used.contains(id)?java.util.stream.Stream.of(id):canonical.stream().filter(k->k.sourceItemIds().stream().anyMatch(f->id.equals(factChapter.get(f)))).map(k->owner.get(k.id()))).filter(id->!id.equals(c.id())).distinct().toList(),c.relatedChapterIds().stream().filter(used::contains).toList(),c.terms())).toList();
@@ -80,6 +74,92 @@ final class LearningPlanner {
             for(var s:outline.sections())if(!sectionAssignments.get(s.id()).isEmpty())sections.add(new SectionDuty(String.format(Locale.ROOT,"s%05d",sections.size()+1),chapter.id(),s.title(),s.purpose(),sectionAssignments.get(s.id()),contexts.get(s.id()).stream().distinct().filter(id->!sectionAssignments.get(s.id()).contains(id)).toList(),s.outputBytes()));
         }
         return new CompilationPlan(directory,canonical,sections);
+    }
+    private void normalizeOne(Learning.Item fact,Map<String,ContentReading.TopicCard> factCard,Map<String,String> factChapter,List<Knowledge> canonical,Map<String,String> owner) {
+        var card=factCard.get(fact.id());var candidates=candidates(fact,factCard,canonical);
+        Knowledge merge=null;Relation relation=null;
+        var judgments=relations(fact,card,candidates);
+        for(var k:candidates) {
+            var check=judgments.get(k.id());
+            // 互补事实保留独立主要职责；冲突项保留各版本证据与条件。
+            if(check.decision().equals("SAME")||check.decision().equals("CONFLICT")){merge=k;relation=check;break;}
+        }
+        if(merge==null){String id=String.format(Locale.ROOT,"k%05d",canonical.size()+1);canonical.add(new Knowledge(id,"SINGLE",fact.content(),List.of(fact.id()),card.topic().conditions()));owner.put(id,factChapter.get(fact.id()));}
+        else {
+            var ids=new ArrayList<>(merge.sourceItemIds());ids.add(fact.id());var conditions=new LinkedHashSet<>(merge.conditions());conditions.addAll(card.topic().conditions());conditions.addAll(relation.conditions());
+            String kind=merge.relation().equals("CONFLICT")?"CONFLICT":relation.decision();
+            canonical.set(canonical.indexOf(merge),new Knowledge(merge.id(),kind,relation.summary(),ids,List.copyOf(conditions)));
+        }
+    }
+    private void normalizeBatches(Map<String,ContentReading.TopicCard> factCard,Map<String,String> chapters,List<Knowledge> canonical,Map<String,String> owner) {
+        var facts=List.copyOf(r.facts().values());int from=0,window=32,batches=0;boolean singleMode=false;long started=System.nanoTime();
+        while(from<facts.size()) {
+            if(singleMode){normalizeOne(facts.get(from++),factCard,chapters,canonical,owner);continue;}
+            int end=Math.min(from+window,facts.size());Map<String,Object> input;boolean fallback=false;
+            while(true) {
+                input=normalizationInput(facts.subList(from,end),factCard,canonical);
+                if(TextWindow.count(ContentJson.encode(input))<=r.policy().unitInputBytes())break;
+                if(end-from==1){normalizeOne(facts.get(from),factCard,chapters,canonical,owner);from++;window=32;fallback=true;break;}
+                end=from+Math.max(1,(end-from)/2);
+            }
+            if(fallback)continue;
+            var groupFacts=facts.subList(from,end);var ids=groupFacts.stream().map(Learning.Item::id).toList();
+            var candidates=new LinkedHashMap<String,List<String>>();
+            for(var fact:groupFacts)candidates.put(fact.id(),candidates(fact,factCard,canonical).stream().map(Knowledge::id).toList());
+            LearningBusinessSchemas.NormalizationBatch result;
+            try {
+                result=r.call("normalize_batch_"+ids.get(0)+"_"+ids.get(ids.size()-1),"organize","normalize",input,LearningBusinessSchemas.normalizationBatch(ids,candidates,(a,b)->
+                        r.facts().containsKey(a)&&r.facts().containsKey(b)&&related(factCard.get(a),factCard.get(b),r.facts().get(a),r.facts().get(b))));
+            }catch(LabException failure) {
+                if(end-from>1&&Set.of("MODEL_TRUNCATED","MODEL_CONTEXT_INSUFFICIENT").contains(failure.code())){window=Math.max(1,(end-from)/2);continue;}
+                if(end-from==1&&Set.of("MODEL_TRUNCATED","MODEL_CONTEXT_INSUFFICIENT").contains(failure.code())) {
+                    normalizeOne(facts.get(from),factCard,chapters,canonical,owner);from++;singleMode=true;
+                    LOG.info("event=content.normalize_fallback completedFacts={} facts={} reason={}",from,facts.size(),failure.code());continue;
+                }
+                throw failure;
+            }
+            for(var group:result.groups()) {
+                Knowledge old=group.existingId().isEmpty()?null:canonical.stream().filter(k->k.id().equals(group.existingId())).findFirst().orElseThrow();
+                var refs=new ArrayList<String>();var conditions=new LinkedHashSet<String>();
+                if(old!=null){refs.addAll(old.sourceItemIds());conditions.addAll(old.conditions());}
+                refs.addAll(group.itemIds());for(String id:group.itemIds())conditions.addAll(factCard.get(id).topic().conditions());conditions.addAll(group.conditions());
+                String id=old==null?String.format(Locale.ROOT,"k%05d",canonical.size()+1):old.id();
+                String relation=old!=null&&old.relation().equals("CONFLICT")?"CONFLICT":group.relation();
+                String summary=relation.equals("SINGLE")?r.facts().get(group.itemIds().get(0)).content():group.summary();
+                var value=new Knowledge(id,relation,summary,refs,List.copyOf(conditions));
+                if(old==null){canonical.add(value);owner.put(id,chapters.get(group.itemIds().get(0)));}else canonical.set(canonical.indexOf(old),value);
+            }
+            from=end;window=32;
+            LOG.info("event=content.normalize_batch completedFacts={} facts={} batches={} inputBytes={} durationMs={}",from,facts.size(),++batches,TextWindow.count(ContentJson.encode(input)),java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started));
+        }
+    }
+    private List<Knowledge> candidates(Learning.Item fact,Map<String,ContentReading.TopicCard> cards,List<Knowledge> canonical) {
+        var card=cards.get(fact.id());return canonical.stream().filter(k->related(card,cards.get(k.sourceItemIds().get(0)),fact,r.facts().get(k.sourceItemIds().get(0))))
+                .sorted(Comparator.comparingInt((Knowledge k)->similarity(card,cards.get(k.sourceItemIds().get(0)))).reversed().thenComparing(Knowledge::id)).limit(8).toList();
+    }
+    private Map<String,Object> normalizationInput(List<Learning.Item> facts,Map<String,ContentReading.TopicCard> cards,List<Knowledge> canonical) {
+        var existing=new LinkedHashMap<String,Object>();var rows=new ArrayList<Object>();
+        for(var fact:facts) {
+            var card=cards.get(fact.id());var allowed=candidates(fact,cards,canonical);
+            allowed.forEach(k->existing.putIfAbsent(k.id(),Map.of("knowledge",k,"evidence",r.evidence(List.of(k.sourceItemIds().get(0))))));
+            rows.add(Map.of("item",fact,"conditions",card.topic().conditions(),"keywords",card.topic().keywords(),"entities",card.topic().entities(),"candidateIds",allowed.stream().map(Knowledge::id).toList()));
+        }
+        return Map.of("facts",rows,"existing",List.copyOf(existing.values()));
+    }
+    private Map<String,Relation> relations(Learning.Item fact,ContentReading.TopicCard card,List<Knowledge> candidates) {
+        if(candidates.isEmpty())return Map.of();
+        var entries=candidates.stream().map(k->Map.<String,Object>of("candidateId",k.id(),"existing",k,"existingEvidence",r.evidence(List.of(k.sourceItemIds().get(0))))).toList();
+        var base=Map.of("candidate",fact,"candidateConditions",card.topic().conditions());
+        var result=new LinkedHashMap<String,Relation>();int group=0;
+        for(var batch:partition(entries,r.policy().unitInputBytes()-TextWindow.count(ContentJson.encode(base))-100,ContentJson::encode)) {
+            var input=new LinkedHashMap<String,Object>(base);input.put("candidates",batch);r.bounded(input);
+            var ids=batch.stream().map(v->(String)v.get("candidateId")).toList();
+            var checked=r.call("relation_batch_"+fact.id()+"_"+group++,"organize","normalize",input,LearningBusinessSchemas.candidateRelations(ids));
+            checked.relations().forEach(v->result.put(v.candidateId(),v.relation()));
+            // 与原候选顺序一致；一个批次已经找到归并目标时不请求后续批次。
+            if(checked.relations().stream().anyMatch(v->Set.of("SAME","CONFLICT").contains(v.relation().decision())))break;
+        }
+        return result;
     }
     private Blueprint quiz() {
         var chapters=chapters();var chapterIds=chapters.stream().map(Chapter::id).collect(Collectors.toSet());
@@ -235,8 +315,8 @@ final class LearningPlanner {
     private List<?> index(List<?> input,String prefix,int maximum) {
         List<?> level=input;int depth=0;
         while(TextWindow.count(ContentJson.encode(level))>maximum) {
-            var groups=partition(level,r.policy().indexBytes()-300,ContentJson::encode);var next=new ArrayList<ContentWorkflow.Summary>();int i=0;
-            for(var group:groups)next.add(r.call(prefix+"_"+depth+"_"+i++,"organize","index",Map.of("children",group),ContentSchemas.summary(ContentLimits.current())));
+            var groups=partition(level,r.policy().indexBytes()-300,ContentJson::encode);int current=depth;
+            var next=r.parallel(java.util.stream.IntStream.range(0,groups.size()).boxed().toList(),i->r.call(prefix+"_"+current+"_"+i,"organize","index",Map.of("children",groups.get(i)),ContentSchemas.summary(ContentLimits.current())));
             if(next.size()>=level.size()||++depth>16)throw new LabException("WORKFLOW_INDEX_CAPACITY_EXCEEDED","全范围轻量索引无法收敛");level=next;
         }return level;
     }

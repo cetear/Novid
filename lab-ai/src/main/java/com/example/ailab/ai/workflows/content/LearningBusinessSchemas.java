@@ -37,6 +37,46 @@ final class LearningBusinessSchemas {
         return new RecordSchema<>(Relation.class,"读取两组原始证据核验关系。SAME仅适用于知识相同且条件一致；CONFLICT保留不同说法及版本条件；COMPLEMENT仅表示同主题互补；SEPARATE表示职责不同。summary精确概括共同职责，conditions保留全部不同条件，reason给出证据判断依据。",
                 List.of(choices("decision",Set.of("SAME","CONFLICT","COMPLEMENT","SEPARATE")),utf8("summary",500),utf8("reason",500),items("conditions",12)),v->require(!v.decision().equals("CONFLICT")||!v.conditions().isEmpty(),CONTENT_CONSTRAINT));
     }
+    public record CandidateRelation(String candidateId,Relation relation) { }
+    public record CandidateRelations(List<CandidateRelation> relations) {
+        public CandidateRelations { relations=List.copyOf(relations); }
+    }
+    public record NormalizationGroup(String existingId,String relation,String summary,List<String> itemIds,List<String> conditions) {
+        public NormalizationGroup { itemIds=List.copyOf(itemIds);conditions=List.copyOf(conditions); }
+    }
+    public record NormalizationBatch(List<NormalizationGroup> groups) {
+        public NormalizationBatch { groups=List.copyOf(groups); }
+    }
+    static RecordSchema<NormalizationBatch> normalizationBatch(List<String> ids,Map<String,List<String>> candidates,java.util.function.BiPredicate<String,String> related) {
+        return new RecordSchema<>(NormalizationBatch.class,"将本批facts按知识关系归并，每条事实恰好属于一个group，禁止遗漏。"
+                +"existingId为空表示新知识，否则必须取该组所有事实candidateIds共同允许的既有知识ID，同一existingId只能出现一次。"
+                +"优先归入相同或冲突的既有知识；多个既有候选均匹配时选candidateIds顺序中的第一个，再归并本批新事实。"
+                +"每组itemIds按facts顺序排列，各组按首条事实顺序排列。SAME仅表示知识相同且条件一致；CONFLICT保留不同说法和全部版本条件；互补或职责不同必须分别保留。"
+                +"新建单事实为SINGLE，多事实或归入既有知识只能SAME/CONFLICT。summary精确概括该组及既有知识的共同职责，conditions保留全部不同条件。",
+                List.of(items("groups",ids.size()),choices("groups[].relation",Set.of("SINGLE","SAME","CONFLICT")),utf8("groups[].summary",500),items("groups[].conditions",64)),v->{
+            var seen=new HashSet<String>();var existing=new HashSet<String>();int previous=-1;
+            for(var group:v.groups()) {
+                require(!group.itemIds().isEmpty(),CONTENT_CONSTRAINT);int last=-1;
+                for(String id:group.itemIds()) {
+                    int index=ids.indexOf(id);require(index>=0&&index>last&&seen.add(id),CONTENT_CONSTRAINT);last=index;
+                    if(!group.existingId().isEmpty())require(candidates.getOrDefault(id,List.of()).contains(group.existingId()),CONTENT_CONSTRAINT);
+                    else if(!group.itemIds().isEmpty())require(related.test(group.itemIds().get(0),id),CONTENT_CONSTRAINT);
+                }
+                int first=group.itemIds().isEmpty()?-1:ids.indexOf(group.itemIds().get(0));require(first>previous,CONTENT_CONSTRAINT);previous=first;
+                if(!group.existingId().isEmpty())require(existing.add(group.existingId())&&!group.relation().equals("SINGLE"),CONTENT_CONSTRAINT);
+                else require(group.itemIds().size()==1?group.relation().equals("SINGLE"):!group.relation().equals("SINGLE"),CONTENT_CONSTRAINT);
+                require(!group.relation().equals("CONFLICT")||!group.conditions().isEmpty(),CONTENT_CONSTRAINT);
+            }
+            require(seen.equals(new HashSet<>(ids)),CONTENT_CONSTRAINT);
+        });
+    }
+    static RecordSchema<CandidateRelations> candidateRelations(List<String> ids) {
+        return new RecordSchema<>(CandidateRelations.class,"对candidate与每个candidates中的existing分别核验原始证据，按输入candidateId顺序返回relations，每项包含candidateId和relation。"
+                +relation().instruction(Set.of()),List.of(items("relations",ids.size()),utf8("relations[].relation.summary",500),utf8("relations[].relation.reason",500)),v->{
+            require(v.relations().stream().map(CandidateRelation::candidateId).toList().equals(ids),CONTENT_CONSTRAINT);
+            for(var value:v.relations())relation().validate(ContentJson.encode(value.relation()),Set.of());
+        });
+    }
     static RecordSchema<SectionOutline> sectionOutline() {
         return new RecordSchema<>(SectionOutline.class,"根据本章全部知识索引先确定业务小节职责。id=s1起连续；技术输入批次不是小节边界。给出标题、purpose和500至12000的保守outputBytes。后续逐批知识只分配至这些固定职责。",
                 List.of(items("sections",128),utf8("sections[].title",200),utf8("sections[].purpose",600)),v->{require(!v.sections().isEmpty(),CONTENT_CONSTRAINT);for(int i=0;i<v.sections().size();i++){var s=v.sections().get(i);require(s.id().equals("s"+(i+1))&&s.outputBytes()>=500&&s.outputBytes()<=ContentLimits.current().section(),CONTENT_CONSTRAINT);}});

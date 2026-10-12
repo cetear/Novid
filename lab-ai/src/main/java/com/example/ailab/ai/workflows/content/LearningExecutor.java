@@ -12,6 +12,8 @@ import java.util.stream.Collectors;
 /** 父租约下的有界工作包调度、逐项验收、恢复和局部返工。 */
 final class LearningExecutor {
     private final LearningRuntime r;private final Plan plan;private int inspectionRemaining;
+    private record CachedSummary(String outputHash,UnitSummary summary) { }
+    private final Map<String,CachedSummary> summaryCache=new java.util.concurrent.ConcurrentHashMap<>();
     record PartReceipt(String partId,String producerId,String json) { }
     record Completed(Learning.Result result,List<Coverage> coverage) { }
     private static final RecordSchema<PartReceipt> RECEIPT=new RecordSchema<>(PartReceipt.class,"程序保存单元草稿或验收结果与生成回执",v->RecordSchema.require(!v.partId().isBlank()&&!v.producerId().isBlank()&&!v.json().isBlank(),RecordSchema.Reason.CONTENT_CONSTRAINT));
@@ -154,14 +156,17 @@ final class LearningExecutor {
     }
     record UnitSummary(String id,String chapterId,String cognition,String title,String summary,List<String> itemIds) { }
     private List<UnitSummary> summaries(Map<String,Object> outputs,String round) {
-        var summaries=new ArrayList<UnitSummary>();
-        for(var entry:outputs.entrySet()) {
+        return r.parallel(List.copyOf(outputs.entrySet()),entry->{
+            String outputHash=ContentJson.hash(entry.getValue());var cached=summaryCache.get(entry.getKey());
+            if(cached!=null&&cached.outputHash().equals(outputHash))return cached.summary();
             var encoded=ContentJson.encode(entry.getValue());var chunks=new ArrayList<ContentWorkflow.Summary>();int from=0,index=0;
             while(from<encoded.length()){int end=TextWindow.end(encoded,from,encoded.length(),r.policy().unitInputBytes()-1500);String text=encoded.substring(from,end);chunks.add(r.call("summary_"+round+"_"+entry.getKey()+"_"+index++,"review","index",Map.of("unitId",entry.getKey(),"actualOutput",text),ContentSchemas.summary(ContentLimits.current())));from=end;}
             ContentWorkflow.Summary summary=chunks.get(0);if(chunks.size()>1)summary=r.call("summary_"+round+"_"+entry.getKey()+"_merged","review","index",Map.of("unitId",entry.getKey(),"parts",chunks),ContentSchemas.summary(ContentLimits.current()));
-            if(plan.quiz()!=null){var slot=plan.quiz().slots().stream().filter(s->s.id().equals(entry.getKey())).findFirst().orElseThrow();summaries.add(new UnitSummary(slot.id(),slot.primaryChapterId(),slot.cognition(),summary.title(),summary.summary(),slot.itemIds()));}
-            else {var section=plan.compilation().sections().stream().filter(s->s.id().equals(entry.getKey())).findFirst().orElseThrow();summaries.add(new UnitSummary(section.id(),section.chapterId(),"",section.title(),summary.summary(),ownedFacts(section)));}
-        }return summaries;
+            UnitSummary result;
+            if(plan.quiz()!=null){var slot=plan.quiz().slots().stream().filter(s->s.id().equals(entry.getKey())).findFirst().orElseThrow();result=new UnitSummary(slot.id(),slot.primaryChapterId(),slot.cognition(),summary.title(),summary.summary(),slot.itemIds());}
+            else {var section=plan.compilation().sections().stream().filter(s->s.id().equals(entry.getKey())).findFirst().orElseThrow();result=new UnitSummary(section.id(),section.chapterId(),"",section.title(),summary.summary(),ownedFacts(section));}
+            summaryCache.put(entry.getKey(),new CachedSummary(outputHash,result));return result;
+        });
     }
     private ArrayList<Learning.Issue> globalPass(Map<String,Object> outputs,List<UnitSummary> summaries,List<Coverage> coverage,String round) {
         var issues=new ArrayList<Learning.Issue>();int i=0;

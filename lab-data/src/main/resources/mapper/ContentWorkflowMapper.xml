@@ -7,6 +7,12 @@
  <select id="policy" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT policy_hash,policy_json FROM task_content_policies WHERE task_id=#{args[0]}</select>
  <insert id="savePolicy">INSERT INTO task_content_policies(task_id,policy_hash,policy_json) VALUES(#{args[0]},#{args[1]},#{args[2]})</insert>
  <select id="run" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_runs WHERE task_id=#{args[0]}</select>
+ <select id="boundResultBytes" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(source_json,'$.policy.resultBytes')) AS UNSIGNED) AS result_bytes FROM task_content_runs WHERE task_id=#{args[0]} AND source_hash IS NOT NULL</select>
+ <insert id="completeReadingNodes">
+  INSERT INTO task_content_nodes(task_id,node_id,stage,input_hash,output_hash,output_json,status,completed_at) VALUES
+  <foreach collection="rows" item="row" separator=",">(#{row[0]},#{row[1]},'extract',#{row[2]},#{row[3]},#{row[4]},'COMPLETED',CURRENT_TIMESTAMP(6))</foreach>
+  ON DUPLICATE KEY UPDATE output_hash=VALUES(output_hash),output_json=VALUES(output_json),status='COMPLETED',completed_at=COALESCE(completed_at,VALUES(completed_at))
+ </insert>
  <insert id="bind">INSERT INTO task_content_runs(task_id,source_hash,source_json) VALUES(#{args[0]},#{args[1]},#{args[2]})</insert>
  <select id="node" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_nodes WHERE task_id=#{args[0]} AND node_id=#{args[1]}</select>
  <select id="nodes" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_nodes WHERE task_id=#{args[0]} ORDER BY node_id</select>

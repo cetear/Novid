@@ -41,6 +41,15 @@
         SELECT raw_text FROM document_versions WHERE document_id=#{args[0]} AND document_version=#{args[1]}
     </select>
 
+    <select id="readingDocumentsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT d.id,d.knowledge_base_id,d.current_version,v.active_processing_revision,v.checksum
+        FROM documents d JOIN knowledge_bases k ON k.id=d.knowledge_base_id
+        JOIN document_versions v ON v.document_id=d.id AND v.document_version=d.current_version
+        WHERE d.deleted=FALSE AND d.id IN
+        <foreach collection="params.documentIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+        AND <include refid="com.example.ailab.data.persistence.mapper.SqlSupportMapper.knowledgeScope"/>
+    </select>
+
     <update id="reviseDocumentsWrite">
         UPDATE documents SET title=#{args[0]},current_version=current_version+1 WHERE id=#{args[1]} AND current_version=#{args[2]} AND deleted=FALSE
     </update>

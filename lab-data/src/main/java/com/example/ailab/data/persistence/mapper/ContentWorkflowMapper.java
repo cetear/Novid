@@ -9,6 +9,8 @@ public interface ContentWorkflowMapper {
     List<SqlRow> policy(@Param("args") Object[] args);
     int savePolicy(@Param("args") Object[] args);
     List<SqlRow> run(@Param("args") Object[] args);
+    List<SqlRow> boundResultBytes(@Param("args") Object[] args);
+    int completeReadingNodes(@Param("rows") List<Object[]> rows);
     int bind(@Param("args") Object[] args);
     List<SqlRow> node(@Param("args") Object[] args);
     List<SqlRow> nodes(@Param("args") Object[] args);

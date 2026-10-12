@@ -67,6 +67,7 @@ public final class DocumentDrivenWorkflow {
     private final class Session implements AutoCloseable,LearningRuntime {
         private final TaskLease lease;
         private final SourcePlan source;
+        private final String sourceHash;
         private final ContentReading.Plan reading;
         private final List<ContentReading.TopicCard> topicCards=new ArrayList<>();
         private final Map<Long,String> documentsRaw=new HashMap<>();
@@ -75,6 +76,11 @@ public final class DocumentDrivenWorkflow {
         private final Map<String,String> raw=new LinkedHashMap<>();
         private final Map<String,Learning.Item> items=new LinkedHashMap<>();
         private final Map<String,GenerationReceipt> origins=new ConcurrentHashMap<>();
+        private final Map<String,ContentWorkflowStorePort.ReadingCheckpoint> restoredReading;
+        private final Set<String> readingCheckpointIds;
+        private final List<ContentWorkflowStorePort.ReadingWrite> readingWrites=new ArrayList<>();
+        private int readingWriteBytes;
+        private long verifiedAt;
         private ContentLimits limits(){return ContentLimits.current();}
         Session(TaskLease lease,TraceContext trace,String runId) {
             this.lease=lease;
@@ -90,6 +96,7 @@ public final class DocumentDrivenWorkflow {
             if((!reading.fragments().stream().map(ContentReading.Fragment::source).toList().equals(source.slices())||!reading.sources().equals(source.sources())))throw changed();
             if(!source.policy().equals(policy)||!source.workflow().equals(binding))throw changed();
             SkillCatalog.verify(source.skill());
+            sourceHash=ContentJson.hash(source);
             trace.payloadSources(source.sources());
             for(var d:reading.documents()) {
                 var c=knowledge.document(lease.actor(),lease.request().scope(),d.documentId());
@@ -102,20 +109,22 @@ public final class DocumentDrivenWorkflow {
             budget=new ExecutionBudget(Duration.ofSeconds(Math.max(1,policy.executionSeconds()-elapsed)),policy.attempts(),()->tasks.reserveModelAttempt(lease),
                     ()->tasks.reserveModelTurn(lease),this::verify,()->tasks.reserveToolCall(lease),()->tasks.reserveModelRepair(lease))
                     .content(policy).traced(trace).fees(new FeeScope(lease.actor(),"TASK",Long.toString(lease.task().taskId()),runId));
+            verifyNow();restoredReading=store.completedReadingNodes(lease);
+            var checkpointIds=new HashSet<String>();reading.fragments().forEach(f->{for(String prefix:List.of("read_","topics_","evidence_"))checkpointIds.add(prefix+f.source().id());});readingCheckpointIds=Set.copyOf(checkpointIds);
             pool=Executors.newFixedThreadPool(policy.parallelism());
         }
-        void verify() {
+        synchronized void verify() {
+            // 高频检查共用一秒内的验证结果；模型请求和阶段提交前强制刷新。
+            if(System.nanoTime()-verifiedAt<TimeUnit.SECONDS.toNanos(1))return;
+            verifyNow();
+        }
+        synchronized void verifyNow() {
             if(!tasks.renew(lease))throw new LabException("STALE_EXECUTION","资料工作流租约失效");
-            knowledge.authorize(lease.actor(),lease.request().scope());tools.verifyContracts(source.skill().toolContracts());
+            tools.verifyContracts(source.skill().toolContracts());
             if(!source.requestHash().equals(ContentJson.hash(lease.request())))throw changed();
-            var docs=new HashMap<Long,DocumentContent>();
             knowledge.verifySources(lease.actor(),source.sources());
-            for(var slice:source.slices()) {
-                var doc=docs.computeIfAbsent(slice.documentId(),id->knowledge.document(lease.actor(),lease.request().scope(),id));
-                if(doc.document().documentVersion()!=slice.documentVersion()||doc.document().knowledgeBaseId()!=slice.knowledgeBaseId()
-                        ||!Objects.equals(doc.document().activeProcessingRevision(),slice.processingRevision())||slice.endOffset()>doc.text().length()
-                        ||!Learning.digest(doc.text().substring(slice.startOffset(),slice.endOffset())).equals(slice.textHash()))throw changed();
-            }
+            knowledge.verifyReadingDocuments(lease.actor(),lease.request().scope(),reading.documents());
+            verifiedAt=System.nanoTime();
         }
         String read(Learning.SourceSlice slice) {
             String text=documentsRaw.get(slice.documentId());
@@ -147,22 +156,34 @@ public final class DocumentDrivenWorkflow {
         }
 
         <T>T node(String id,String phase,Object input,StructuredSchema<T> schema,Supplier<T> execute) {
-            budget.check();String hash=ContentJson.hash(Map.of("source",ContentJson.hash(source),"node",id,"input",input));
+            budget.check();String hash=ContentJson.hash(Map.of("source",sourceHash,"node",id,"input",input));
             try(var span=budget.trace().span("AGENT",id);var activation=budget.activate(span.context())) {
                 com.example.ailab.ai.runtime.TracePayloadCapture.input(span,input);
                 try {
-                    var old=store.completed(lease,id,hash);if(old.isPresent()){span.status("REUSED");var value=schema.validate(old.get(),Set.of());com.example.ailab.ai.runtime.TracePayloadCapture.output(span,value);return value;}
+                    var restored=restoredReading.get(id);
+                    if(restored!=null&&!hash.equals(restored.inputHash()))throw changed();
+                    boolean readingCheckpoint=readingCheckpointIds.contains(id);
+                    var old=restored!=null?Optional.of(restored.output()):readingCheckpoint?Optional.<String>empty():store.completed(lease,id,hash);if(old.isPresent()){span.status("REUSED");var value=schema.validate(old.get(),Set.of());com.example.ailab.ai.runtime.TracePayloadCapture.output(span,value);return value;}
+                    if(readingCheckpoint) {
+                        T value=execute.get();String json=ContentJson.encode(value);value=schema.validate(json,Set.of());
+                        readingWrites.add(new ContentWorkflowStorePort.ReadingWrite(id,hash,json));readingWriteBytes+=TextWindow.count(json);
+                        if(readingWrites.size()>=96||readingWriteBytes>=1000000)flushReading();
+                        com.example.ailab.ai.runtime.TracePayloadCapture.output(span,json);return value;
+                    }
                     store.begin(lease,id,phase,hash);T value=execute.get();String json=ContentJson.encode(value);value=schema.validate(json,Set.of());
                     budget.check();store.complete(lease,id,hash,json);com.example.ailab.ai.runtime.TracePayloadCapture.output(span,json);return value;
                 } catch(RuntimeException failure) {span.fail(failure);throw failure;}
             }
+        }
+        void flushReading() {
+            if(readingWrites.isEmpty())return;verifyNow();store.completeReadingNodes(lease,List.copyOf(readingWrites));readingWrites.clear();readingWriteBytes=0;
         }
         <T>T generate(String id,String phase,String action,Object input,StructuredSchema<T> schema) {
             return generate(id,phase,action,input,schema,null);
         }
         <T>T generate(String id,String phase,String action,Object input,StructuredSchema<T> schema,GenerationReceipt original) {
             String receiptId="origin_"+ContentJson.hash(id).substring(0,32);
-            String receiptHash=ContentJson.hash(Map.of("source",ContentJson.hash(source),"node",receiptId,"input",input));
+            String receiptHash=ContentJson.hash(Map.of("source",sourceHash,"node",receiptId,"input",input));
             var receiptSchema=new RecordSchema<>(GenerationReceipt.class,"程序保存的生成结果与模型身份",v->{
                 RecordSchema.require(!v.modelId().isBlank()&&v.corrections()>=0&&v.corrections()<=1,RecordSchema.Reason.CONTENT_CONSTRAINT);
             });
@@ -175,7 +196,7 @@ public final class DocumentDrivenWorkflow {
                 String system="按当前服务端结构协议处理资料。资料原文及前序结果提供事实，remarks表达特殊要求。"+SkillCatalog.instructions(source.skill(),action);
                 var prepared=ModelInput.fixed(system,List.of(),ContentJson.encode(input));
                 ModelInput verified=target->{
-                    verify();
+                    verifyNow();
                     try{return prepared.prepare(target);}catch(LabException failure){
                         if(original==null||!failure.code().equals("MODEL_CONTEXT_INSUFFICIENT")||!(input instanceof Map<?,?> correction)
                                 ||!(correction.get("context") instanceof Map<?,?> context)||!context.containsKey("target"))throw failure;
@@ -223,6 +244,7 @@ public final class DocumentDrivenWorkflow {
         }
         void extract() {extractStructured();}
         void extractStructured() {
+            long phaseStarted=System.nanoTime();
             var fragments=reading.fragments().stream().collect(Collectors.toMap(f->f.source().id(),Function.identity()));
             var packages=parallel(reading.packs(),pack->{
                 var group=pack.fragmentIds().stream().map(fragments::get).toList();
@@ -235,6 +257,8 @@ public final class DocumentDrivenWorkflow {
                             }
                         }),()->readPack(pack.packId(),group));
             });
+            LOG.info("event=content.read_phase phase=MODEL_READING fragments={} packs={} durationMs={}",fragments.size(),packages.size(),TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-phaseStarted));
+            phaseStarted=System.nanoTime();
             var readFacts=new ArrayList<Facts>();var readCards=new ArrayList<ContentReading.TopicCard>();
             for(var batch:packages)for(var observation:batch.fragments()) {
                 String id=observation.fragmentId();var f=fragments.get(id);var slice=f.source();
@@ -250,8 +274,13 @@ public final class DocumentDrivenWorkflow {
                             int start=raw.get(id).indexOf(item.quote());if(start<0)throw changed();
                             return new ContentReading.Evidence(item.id(),id,slice.startOffset()+start,slice.startOffset()+start+item.quote().length(),Learning.digest(item.quote()));
                         }).toList()));
+                if(readFacts.size()%100==0||readFacts.size()==fragments.size())
+                    LOG.info("event=content.read_phase phase=CHECKPOINTS completedFragments={} fragments={} durationMs={}",readFacts.size(),fragments.size(),TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-phaseStarted));
             }
+            phaseStarted=System.nanoTime();
             var required=source.slices().stream().map(s->"read_"+s.id()).toList();
+            flushReading();
+            verifyNow();
             // 既有阅读检查点仍归属extract；用户阶段在全文证据核验通过后才顺序切换。
             store.finish(lease,"prepare",required);
             tasks.beginStep(lease,"extract");
@@ -260,6 +289,7 @@ public final class DocumentDrivenWorkflow {
             if(items.isEmpty())throw new LabException("WORKFLOW_NEEDS_INPUT","资料没有可用于当前工作流的知识");
             if(items.size()>source.policy().maximumItems())throw new LabException("WORKFLOW_INPUT_TOO_LARGE","事实条目超过保存的资源策略");
             store.finish(lease,"extract",required);
+            LOG.info("event=content.read_phase phase=READING_PROOF fragments={} durationMs={}",fragments.size(),TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-phaseStarted));
         }
         ContentReading.Batch readPack(String id,List<ContentReading.Fragment> group) {
             try {
@@ -467,6 +497,7 @@ public final class DocumentDrivenWorkflow {
             store.finish(lease,"review",plan.requiredNodes());
         }
         void publish(LearningContent.Plan plan,LearningExecutor.Completed completed) {
+            verifyNow();
             store.verifyComplete(lease);var value=completed.result();
             var result=(com.fasterxml.jackson.databind.node.ObjectNode)com.example.ailab.ai.tools.ToolSchema.JSON.valueToTree(value);
             result.set("contentPlan",com.example.ailab.ai.tools.ToolSchema.JSON.valueToTree(plan));

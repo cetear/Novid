@@ -15,6 +15,7 @@ public interface DocumentSqlMapper {
     List<SqlRow> metadataRowsSelect(@Param("args") Object[] args);
     List<SqlRow> listRowsSelect(@Param("params") SqlParameters params);
     List<SqlRow> readRowsSelect(@Param("params") SqlParameters params);
+    List<SqlRow> readingDocumentsSelect(@Param("params") SqlParameters params);
     List<SqlRow> readDocumentVersionsSelect(@Param("args") Object[] args);
     int reviseDocumentsWrite(@Param("args") Object[] args);
     int reviseDocumentVersionsWrite(@Param("args") Object[] args);

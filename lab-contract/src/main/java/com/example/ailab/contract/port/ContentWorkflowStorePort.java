@@ -12,6 +12,12 @@ public interface ContentWorkflowStorePort {
     void bind(TaskLease lease, ContentWorkflow.SourcePlan plan);
     Optional<String> completed(TaskLease lease, String nodeId, String inputHash);
     Optional<String> completedNode(TaskLease lease,String nodeId);
+    record ReadingCheckpoint(String inputHash,String output) { }
+    /** 会话级恢复快照；完成节点不可覆盖，输入哈希仍由执行器逐项核对。 */
+    Map<String,ReadingCheckpoint> completedReadingNodes(TaskLease lease);
+    record ReadingWrite(String nodeId,String inputHash,String output) { }
+    /** 仅保存冻结阅读片段的确定性派生节点，同一短事务内验证并提交。 */
+    void completeReadingNodes(TaskLease lease,List<ReadingWrite> nodes);
     void begin(TaskLease lease, String nodeId, String stage, String inputHash);
     void complete(TaskLease lease, String nodeId, String inputHash, String output);
     void accept(TaskLease lease, ContentWorkflow.OutputPlan plan);

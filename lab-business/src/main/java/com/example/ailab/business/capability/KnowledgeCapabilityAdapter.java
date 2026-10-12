@@ -42,6 +42,10 @@ public class KnowledgeCapabilityAdapter implements KnowledgeCapabilityPort {
         documents.verifySources(authorize(actor, scope), sources);
     }
 
+    public void verifyReadingDocuments(UserContext actor, ScopeRequest scope, java.util.List<ContentReading.Document> frozen) {
+        documents.verifyReadingDocuments(authorize(actor, scope), frozen);
+    }
+
     /**
      * 数值来自 SQL，模型只解释。
      */

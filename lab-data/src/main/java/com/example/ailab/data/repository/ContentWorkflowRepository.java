@@ -18,6 +18,7 @@ import java.util.stream.Collectors;
 @Repository
 @Transactional
 public class ContentWorkflowRepository implements ContentWorkflowStorePort {
+    private static final int READING_NODE_QUERY_SIZE=1024;
     private static final ObjectMapper JSON = new ObjectMapper().enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     private final TaskRepository tasks;
@@ -58,7 +59,7 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         // 即使尚未运行也复核全部来源权限，避免泄露章节标题及主题卡。
         var scope=new AuthorizedKnowledgeScope(actor,actor.role()==UserContext.Role.ADMIN?ScopeRequest.Mode.ALL:ScopeRequest.Mode.SELF,List.of(),null,Instant.now());
         documents.verifySources(scope,p.sources());
-        var nodes=mapper.nodes(new Object[]{id}).stream().filter(n->"COMPLETED".equals(n.string("status"))).collect(Collectors.toMap(n->n.string("node_id"),n->n));
+        var nodes=readingNodes(id,p).values().stream().filter(n->"COMPLETED".equals(n.string("status"))).collect(Collectors.toMap(n->n.string("node_id"),n->n));
         var completed=new HashSet<String>();var cards=new ArrayList<ContentReading.TopicCard>();
         for(var f:p.fragments()) {
             String fragment=f.source().id();var n=nodes.get("read_"+fragment);var t=nodes.get("topics_"+fragment);var e=nodes.get("evidence_"+fragment);
@@ -70,7 +71,7 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
             }
         }
         int packs=(int)p.packs().stream().filter(pack->completed.containsAll(pack.fragmentIds())&&nodes.containsKey("readpack_"+pack.packId())).count();
-        if(completed.size()==p.fragments().size()&&packs==p.packs().size())verifyReadingProof(id,actor,null,p);
+        if(completed.size()==p.fragments().size()&&packs==p.packs().size())verifyReadingProof(actor,null,p,nodes);
         return Optional.of(new ContentReading.Snapshot(p,hash(p),completed.size(),packs,completed.size()==p.fragments().size()&&packs==p.packs().size(),cards));
     }
     private Optional<SourcePlan> source(long id) {
@@ -95,9 +96,39 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         var row=rows.get(0); if(!inputHash.equals(row.string("input_hash")))throw conflict();
         return row.string("status").equals("COMPLETED") ? Optional.of(output(row)) : Optional.empty();
     }
+    public Map<String,ReadingCheckpoint> completedReadingNodes(TaskLease lease) {
+        valid(lease);var p=reading(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict);
+        var result=new HashMap<String,ReadingCheckpoint>();
+        for(var row:readingNodes(lease.task().taskId(),p).values())if("COMPLETED".equals(row.string("status")))
+            result.put(row.string("node_id"),new ReadingCheckpoint(row.string("input_hash"),output(row)));
+        return Map.copyOf(result);
+    }
+    public void completeReadingNodes(TaskLease lease,List<ReadingWrite> nodes) {
+        valid(lease);if(nodes.isEmpty()||nodes.size()>96)throw conflict();
+        var plan=reading(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict);var allowed=new HashSet<String>();
+        plan.fragments().forEach(f->{for(String prefix:List.of("read_","topics_","evidence_"))allowed.add(prefix+f.source().id());});
+        int maximum=resultBytes(lease.task().taskId());var ids=new HashSet<String>();var pending=new ArrayList<Object[]>();
+        for(var node:nodes) {
+            identity(node.nodeId(),node.inputHash());if(!allowed.contains(node.nodeId())||!ids.add(node.nodeId()))throw conflict();
+            String output=canonical(node.output());if(TextWindow.count(output)>maximum)throw conflict();
+            pending.add(new Object[]{lease.task().taskId(),node.nodeId(),node.inputHash(),SqlSupport.hash(output),output});
+        }
+        var existing=mapper.nodesByIds(lease.task().taskId(),List.copyOf(ids)).stream().collect(Collectors.toMap(r->r.string("node_id"),r->r));
+        var writes=new ArrayList<Object[]>();
+        for(var row:pending) {
+            var old=existing.get((String)row[1]);if(old==null)continue;
+            if(!row[2].equals(old.string("input_hash"))||!"extract".equals(old.string("stage")))throw conflict();
+            if("COMPLETED".equals(old.string("status"))&&!row[4].equals(output(old)))throw conflict();
+            if(!Set.of("PENDING","COMPLETED").contains(old.string("status")))throw conflict();
+        }
+        for(var row:pending){var old=existing.get((String)row[1]);if(old==null||!"COMPLETED".equals(old.string("status")))writes.add(row);}
+        if(writes.isEmpty())return;
+        if(mapper.completeReadingNodes(writes)<writes.size())throw conflict();mapper.progress(new Object[]{lease.task().taskId()});
+    }
     public void begin(TaskLease lease,String id,String stage,String inputHash) {
         valid(lease);identity(id,inputHash);
-        if(source(lease.task().taskId()).isEmpty() || !TaskProgress.stepIds(lease.request().taskType()).contains(stage))throw conflict();
+        resultBytes(lease.task().taskId());
+        if(!TaskProgress.stepIds(lease.request().taskType()).contains(stage))throw conflict();
         var rows=mapper.node(new Object[]{lease.task().taskId(),id});
         if(!rows.isEmpty()){if(!rows.get(0).string("input_hash").equals(inputHash)||!rows.get(0).string("stage").equals(stage))throw conflict();return;}
         mapper.begin(new Object[]{lease.task().taskId(),id,stage,inputHash});
@@ -107,12 +138,18 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
     public void complete(TaskLease lease,String id,String inputHash,String text) {
         valid(lease);identity(id,inputHash);
         String value=canonical(text);
-        if(TextWindow.count(value)>source(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict).policy().resultBytes())throw conflict();
+        if(TextWindow.count(value)>resultBytes(lease.task().taskId()))throw conflict();
         var rows=mapper.node(new Object[]{lease.task().taskId(),id});
         if(rows.isEmpty()||!rows.get(0).string("input_hash").equals(inputHash))throw conflict();
         if(rows.get(0).string("status").equals("COMPLETED")){if(!output(rows.get(0)).equals(value))throw conflict();return;}
         if(mapper.complete(new Object[]{SqlSupport.hash(value),value,lease.task().taskId(),id,inputHash})!=1)throw conflict();
         mapper.progress(new Object[]{lease.task().taskId()});
+    }
+    private int resultBytes(long taskId) {
+        // 冻结来源在绑定和会话初始化时完整验证；逐节点只投影需要的固定容量。
+        var rows=mapper.boundResultBytes(new Object[]{taskId});
+        if(rows.size()!=1||rows.get(0).intValue("result_bytes")<=0)throw conflict();
+        return rows.get(0).intValue("result_bytes");
     }
     public Optional<String> completedNode(TaskLease lease,String id) {
         valid(lease);var rows=mapper.node(new Object[]{lease.task().taskId(),id});
@@ -339,10 +376,23 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         for(String id:ids){var row=nodes.get(id);if(row==null)throw conflict();output(row);}
     }
     private void valid(TaskLease lease) {tasks.valid(lease);if(!lease.request().documentDriven())throw conflict();}
+    private Map<String,SqlRow> readingNodes(long taskId,ContentReading.Plan p) {
+        var ids=new ArrayList<String>();
+        p.fragments().forEach(f->{String id=f.source().id();ids.add("read_"+id);ids.add("topics_"+id);ids.add("evidence_"+id);});
+        p.packs().forEach(pack->ids.add("readpack_"+pack.packId()));
+        var nodes=new HashMap<String,SqlRow>();
+        // 大资料可能有数千个片段；复用已有定向查询，并限制每条SQL的参数数量。
+        for(int start=0;start<ids.size();start+=READING_NODE_QUERY_SIZE) {
+            mapper.nodesByIds(taskId,ids.subList(start,Math.min(ids.size(),start+READING_NODE_QUERY_SIZE))).forEach(n->nodes.put(n.string("node_id"),n));
+        }
+        return nodes;
+    }
     private void verifyReadingProof(long taskId,UserContext actor,ScopeRequest request,ContentReading.Plan p) {
+        verifyReadingProof(actor,request,p,readingNodes(taskId,p));
+    }
+    private void verifyReadingProof(UserContext actor,ScopeRequest request,ContentReading.Plan p,Map<String,SqlRow> nodes) {
         var scope=request==null?new AuthorizedKnowledgeScope(actor,actor.role()==UserContext.Role.ADMIN?ScopeRequest.Mode.ALL:ScopeRequest.Mode.SELF,List.of(),null,Instant.now())
                 :new AuthorizedKnowledgeScope(actor,request.mode(),request.knowledgeBaseIds(),request.ownerUserId(),Instant.now());
-        var rows=mapper.nodes(new Object[]{taskId});var nodes=rows.stream().collect(Collectors.toMap(n->n.string("node_id"),n->n));
         var texts=new HashMap<Long,String>();var facts=new HashMap<String,Facts>();var allFacts=new HashSet<String>();
         for(var d:p.documents()) {
             var c=documents.read(scope,d.documentId());

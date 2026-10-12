@@ -156,6 +156,20 @@ public class DocumentSqlRepository implements DocumentStorePort {
         walk(scope.actor(), sources, new HashSet<>(), new HashSet<>(), 0);
     }
 
+    @Transactional(readOnly = true)
+    public void verifyReadingDocuments(AuthorizedKnowledgeScope scope, List<ContentReading.Document> frozen) {
+        if(frozen.isEmpty()||frozen.size()>32)throw LabException.invalid("阅读来源数量超限");
+        var params=new SqlParameters().addValue("documentIds",frozen.stream().map(ContentReading.Document::documentId).toList());
+        sql.scope(scope,params);
+        var rows=mapper.readingDocumentsSelect(params).stream().collect(java.util.stream.Collectors.toMap(r->r.longValue("id"),r->r));
+        for(var d:frozen) {
+            var row=rows.get(d.documentId());if(row==null)throw LabException.denied();
+            if(row.longValue("knowledge_base_id")!=d.knowledgeBaseId()||row.intValue("current_version")!=d.documentVersion()
+                    ||row.get("active_processing_revision")==null||row.longValue("active_processing_revision")!=d.processingRevision()||!d.textHash().equals(row.string("checksum")))
+                throw new LabException("CONTEXT_VERSION_CONFLICT","创建时固定的正文版本或解析代次已变化");
+        }
+    }
+
     /**
      * 有限递归拒绝环、缺失历史版本与无权来源。
      */
