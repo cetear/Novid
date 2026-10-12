@@ -109,11 +109,29 @@ public class PrivateResourceRepository implements MemoryStorePort, TraceRecordPo
 
     /** 先核验运行所有者再取节点；管理员私人资源没有旁路。 */
     public TraceGraph graph(UserContext actor,String id) {
+        return graph(actor,id,false);
+    }
+    public TraceGraph graphSummary(UserContext actor,String id) { return graph(actor,id,true); }
+    public TraceNode node(UserContext actor,String id,String nodeId) {
+        read(actor,id);
+        var nodes=sql.project(mapper.node(new Object[]{id,actor.userId(),nodeId}), (r,n)->{
+            try {return traceJson.readValue(r.string(1),TraceNode.class);}
+            catch(com.fasterxml.jackson.core.JsonProcessingException invalid) {throw new IllegalStateException("节点读取失败");}
+        });
+        return authorizedNodes(actor,nodes).stream().findFirst().orElseThrow(LabException::denied);
+    }
+    private TraceGraph graph(UserContext actor,String id,boolean summary) {
         var run=read(actor,id);
-        var nodes=sql.project(mapper.graphAiSpansSelect(new Object[]{id, actor.userId()}), (r,n)->{
+        var nodes=sql.project(summary?mapper.graphSummary(new Object[]{id,actor.userId()}):mapper.graphAiSpansSelect(new Object[]{id, actor.userId()}), (r,n)->{
             try { return traceJson.readValue(r.string(1),TraceNode.class); }
             catch(com.fasterxml.jackson.core.JsonProcessingException invalid) { throw new IllegalStateException("观测读取失败"); }
         });
+        nodes=authorizedNodes(actor,nodes);
+        if(summary)nodes=nodes.stream().map(TraceNode::summary).toList();
+        var graph=TraceGraph.from(run,nodes);
+        return nodes.size()==run.nodeCount()?graph:new TraceGraph(run,graph.nodes(),graph.edges(),graph.missingNodeIds(),true,"UNKNOWN");
+    }
+    private List<TraceNode> authorizedNodes(UserContext actor,List<TraceNode> nodes) {
         // 内容与元数据分别交付：来源撤销或缺少权限装配时仍可查看状态和耗时。
         var sources=nodes.stream().flatMap(n->n.payloadSources().stream()).distinct().toList();
         boolean readable=documents!=null;
@@ -128,9 +146,8 @@ public class PrivateResourceRepository implements MemoryStorePort, TraceRecordPo
             }
         }
         if(!readable)nodes=nodes.stream().map(n->n.payloads(null,null,n.payloadSources())).toList();
-        var graph=TraceGraph.from(run,nodes);
-        // 终态声明的数量与实际存储也核对，不用父子树猜测执行完整性。
-        return nodes.size()==run.nodeCount()?graph:new TraceGraph(run,graph.nodes(),graph.edges(),graph.missingNodeIds(),true,"UNKNOWN");
+        var now=java.time.Instant.now();
+        return nodes.stream().map(n->n.readableAt(now)).toList();
     }
 
     /** 服务端恢复按同一逻辑任务查前驱；不查询其他用户内容或可靠状态。 */

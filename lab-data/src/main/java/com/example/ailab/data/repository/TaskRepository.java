@@ -328,7 +328,8 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
         return Optional.of(policy);
     }
 
-    @Override @Transactional(readOnly=true)
+    /** 执行权核验包含授权行锁，必须使用允许锁查询的事务。 */
+    @Override @Transactional
     public ContentExecutionLimits executionLimits(TaskLease lease) {
         valid(lease);
         var row=mapper.retryTask(new Object[]{lease.task().taskId(),lease.actor().userId()},false).get(0);

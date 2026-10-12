@@ -28,7 +28,7 @@ public final class ReadingSchemas {
                 String id=fragments.get(i).source().id();var observation=v.fragments().get(i);
                 String path="fragments["+i+"]";
                 require(id.equals(observation.fragmentId()),FACT_SOURCE,path+".fragmentId",id);
-                ContentSchemas.facts(id,id,raw.get(id),32,false,limits).validate(ContentJson.encode(new ContentWorkflow.Facts(observation.items(),v.status())),Set.of());
+                nested(path,()->ContentSchemas.facts(id,id,raw.get(id),32,false,limits).validate(ContentJson.encode(new ContentWorkflow.Facts(observation.items(),v.status())),Set.of()));
                 topics(id,observation.items(),observation.topics(),path+".topics");
             }
         });
@@ -51,12 +51,13 @@ public final class ReadingSchemas {
         for(var t:topics) {
             String card=path+"["+(index++)+"]";
             require(t.id().equals(prefix+"_t"+index),CONTENT_CONSTRAINT,card+".id",prefix+"_t"+index);
-            require(!t.itemIds().isEmpty()&&new HashSet<>(t.itemIds()).size()==t.itemIds().size()&&allowed.containsAll(t.itemIds())
-                    &&Collections.disjoint(covered,t.itemIds()),CONTENT_CONSTRAINT,card+".itemIds","非空、不重复的本片事实编号，且不与其他卡片重复分配");
-            require(allowed.containsAll(t.dependencyItemIds())&&new HashSet<>(t.dependencyItemIds()).size()==t.dependencyItemIds().size(),
-                    CONTENT_CONSTRAINT,card+".dependencyItemIds","仅引用本片事实编号且不重复");
+            require(!t.itemIds().isEmpty(),NON_EMPTY,card+".itemIds","至少一个本片事实编号");
+            require(new HashSet<>(t.itemIds()).size()==t.itemIds().size()&&Collections.disjoint(covered,t.itemIds()),DUPLICATE_ID,card+".itemIds","事实编号在卡片内和卡片间均不得重复");
+            require(allowed.containsAll(t.itemIds()),UNKNOWN_REFERENCE,card+".itemIds","仅引用本片事实编号");
+            require(allowed.containsAll(t.dependencyItemIds()),UNKNOWN_REFERENCE,card+".dependencyItemIds","仅引用本片事实编号");
+            require(new HashSet<>(t.dependencyItemIds()).size()==t.dependencyItemIds().size(),DUPLICATE_ID,card+".dependencyItemIds","编号不得重复");
             covered.addAll(t.itemIds());
         }
-        require(covered.equals(allowed),CONTENT_CONSTRAINT,path,"每条本片事实恰好归属一张卡，不得遗漏或引用未知事实");
+        require(covered.containsAll(allowed),MISSING_COVERAGE,path,"每条本片事实恰好归属一张卡，不得遗漏");
     }
 }

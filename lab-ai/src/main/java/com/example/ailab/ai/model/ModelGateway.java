@@ -159,6 +159,77 @@ public class ModelGateway {
         return structured(task,selection,input,budget,schema,null,true);
     }
 
+    private com.example.ailab.contract.port.ModelCallArchivePort callArchive;
+    @org.springframework.beans.factory.annotation.Value("${lab.model-call-archive.retention-days:7}")
+    private int archiveRetention=7;
+    private final ThreadLocal<CallExecution> callExecution=new ThreadLocal<>();
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void callArchive(com.example.ailab.contract.port.ModelCallArchivePort archive) { callArchive=archive; }
+    private static final class CallExecution {
+        final com.example.ailab.contract.dto.ModelCalls.Context context;
+        PendingCall pending;
+        CallExecution(com.example.ailab.contract.dto.ModelCalls.Context context) { this.context=context; }
+    }
+    private static final class PendingCall {
+        final String id=java.util.UUID.randomUUID().toString();
+        final java.time.Instant started=java.time.Instant.now();
+        final DeadlineHttpClient.Capture capture=new DeadlineHttpClient.Capture();
+        final com.example.ailab.contract.context.TraceContext.Span span;
+        final String parent,model;final int attempt;
+        String outcome="RUNNING",validation="SKIPPED",error;
+        long validationMillis;
+        com.example.ailab.contract.dto.ValidationDiagnostic diagnostic;
+        PendingCall(com.example.ailab.contract.context.TraceContext.Span span,String parent,String model,int attempt) {
+            this.span=span;this.parent=parent;this.model=model;this.attempt=attempt;
+        }
+    }
+    /** 不可变阶段契约显式绑定；内部仍沿用原路由、预算与一次纠正规则。 */
+    public <T> StructuredTurn<T> structuredObserved(String task,ModelRegistry.Selection selection,ModelInput input,
+            ExecutionBudget budget,StructuredSchema<T> schema,com.example.ailab.contract.dto.ModelCalls.Context context,String pinned) {
+        var previous=callExecution.get();var execution=new CallExecution(context);callExecution.set(execution);
+        try {
+            if(pinned!=null) {
+                if(pinned.isBlank())throw new LabException("WORKFLOW_MODEL_ORIGIN_MISSING","缺少原结果的模型身份");
+                budget.repair();
+            }
+            return structured(task,selection,input,budget,schema,pinned,pinned==null);
+        } catch(RuntimeException failure) {
+            if(execution.pending!=null) {execution.pending.error=failure instanceof LabException l?l.code():"INTERNAL_ERROR";execution.pending.span.fail(failure);}
+            throw failure;
+        } finally {
+            completeCall(execution);
+            if(previous==null)callExecution.remove();else callExecution.set(previous);
+        }
+    }
+    private com.example.ailab.contract.dto.ModelCalls.CallRecord callRecord(CallExecution execution,PendingCall p,boolean ended) {
+        return new com.example.ailab.contract.dto.ModelCalls.CallRecord(p.id,execution.context,
+                p.span.id().equals("missing-node")?null:p.span.id(),p.parent,p.model,p.attempt,
+                registry.mock()?"SIMULATED":p.capture.sent?"SENT":"NOT_SENT",p.outcome,p.validation,p.error,
+                p.capture.millis,p.validationMillis,p.diagnostic,p.started,ended?java.time.Instant.now():null);
+    }
+    private void completeCall(CallExecution execution) {
+        if(execution==null||execution.pending==null)return;
+        var p=execution.pending;execution.pending=null;
+        long started=System.nanoTime();
+        // 归档不可用时仍给图中的私人诊断一个保留期限，避免失败副本永久可读。
+        var expires=p.started.plus(Duration.ofDays(Math.max(1,archiveRetention)));
+        var input=com.example.ailab.contract.dto.ModelCalls.PayloadRef.unavailable("SAVE_FAILED",expires);
+        var output=input;
+        try {
+            if(callArchive==null||!callArchive.enabled()) {input=com.example.ailab.contract.dto.ModelCalls.PayloadRef.unavailable("DISABLED",expires);output=input;}
+            else {
+                var detail=callArchive.finish(callRecord(execution,p,true),com.example.ailab.ai.runtime.TracePayloadCapture.redact(p.capture.input),
+                        com.example.ailab.ai.runtime.TracePayloadCapture.redact(p.capture.output),registry.mock()?"SIMULATED":p.capture.sent?"INCOMPLETE":"NOT_CAPTURED");
+                input=detail.input();output=detail.output();
+            }
+        } catch(RuntimeException unavailable) { LOG.warn("event=model.call_archive_failed callId={} code=SAVE_FAILED",p.id); }
+        p.span.observation(new com.example.ailab.contract.dto.ModelCalls.Observation(p.id,p.outcome,p.validation,execution.context.schemaId(),
+                p.capture.millis,p.validationMillis,java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started),input,output));
+        p.span.diagnostic(p.diagnostic);
+        if(p.error!=null)p.span.fail(new LabException(p.error,"模型调用或校验失败"));
+        p.span.close();
+    }
+
     /** 工作流纠正固定原产出目标；这是该节点的唯一纠正，不再嵌套结构修复。 */
     public <T> StructuredTurn<T> structuredPinned(String task,ModelRegistry.Selection selection,ModelInput input,
                                                  ExecutionBudget budget,StructuredSchema<T> schema,String modelId) {
@@ -213,6 +284,20 @@ public class ModelGateway {
      * 提供方响应成功与结构验收分别记录，非法结构不会被成功模型节点掩盖。
      */
     private <T> T validateStructured(StructuredSchema<T> schema, Turn turn, ExecutionBudget budget) {
+        var execution=callExecution.get();
+        if(execution!=null&&execution.pending!=null) {
+            var p=execution.pending;long started=System.nanoTime();
+            try {
+                T value;
+                if(schema instanceof RecordSchema<T> record) {
+                    var checked=record.validateObserved(turn.text(),referenceIds(turn.evidence()),"MODEL_RESPONSE");
+                    p.diagnostic=checked.diagnostic();if(checked.failure()!=null)throw checked.failure();value=checked.value();
+                } else value=schema.validate(turn.text(),referenceIds(turn.evidence()));
+                p.validation="PASSED";return value;
+            } catch(RuntimeException failure) {
+                p.validation="FAILED";p.error=failure instanceof LabException l?l.code():"INTERNAL_ERROR";p.span.fail(failure);throw failure;
+            } finally {p.validationMillis=java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started);completeCall(execution);}
+        }
         try (var span = budget.trace().span("VALIDATION", "structured_output")) {
             com.example.ailab.ai.runtime.TracePayloadCapture.input(span, turn.text());
             try {
@@ -315,9 +400,16 @@ public class ModelGateway {
                     sent = true;
                     // 额度可靠消费成功之后才登记实际尝试，每次失败、修复和备用各一叶节点。
                     modelSpan = budget.trace().span("MODEL", "chat");
+                    var execution=callExecution.get();
+                    if(execution!=null) {
+                        execution.pending=new PendingCall(modelSpan,budget.trace().currentSpanId(),id,attempts);
+                        try {if(callArchive!=null&&callArchive.enabled())callArchive.begin(callRecord(execution,execution.pending,false));}
+                        catch(RuntimeException unavailable) {LOG.warn("event=model.call_archive_begin_failed code=SAVE_FAILED");}
+                    }
                     if (budget.trace().capturesPayloads()) budget.trace().payloadSources(prepared.evidence().stream()
                             .map(e -> new SourceDependency(e.document().knowledgeBaseId(), e.document().id(), e.document().documentVersion())).toList());
-                    com.example.ailab.ai.runtime.TracePayloadCapture.messages(modelSpan, messages);
+                    if(execution==null)com.example.ailab.ai.runtime.TracePayloadCapture.messages(modelSpan, messages);
+                    else modelSpan.input("调用输入已独立登记；按需查看全文");
                     budget.lastModelNode(modelSpan.id());
                     if (registry.mock()) {
                         if (d.modelName().contains("timeout"))
@@ -332,7 +424,8 @@ public class ModelGateway {
                         budget.observe(log.get(log.size() - 1));
                         return turn(text, id, null, null, true, AiMessage.from(text), decision, log, prepared.evidence());
                     }
-                    DeadlineHttpClient.CURRENT.set(new DeadlineHttpClient.Scope(budget, d.timeoutSeconds(), raw));
+                    DeadlineHttpClient.CURRENT.set(new DeadlineHttpClient.Scope(budget, d.timeoutSeconds(), raw,
+                            execution==null?null:execution.pending.capture));
                     var request = ChatRequest.builder().messages(messages);
                     if (!tools.isEmpty()) request.toolSpecifications(tools);
                     if (schema != null) request.responseFormat(ResponseFormat.builder().type(ResponseFormatType.JSON)
@@ -342,7 +435,8 @@ public class ModelGateway {
                     inputUsage = usage == null ? null : usage.inputTokenCount();
                     outputUsage = usage == null ? null : usage.outputTokenCount();
                     String text = response.aiMessage().text();
-                    com.example.ailab.ai.runtime.TracePayloadCapture.output(modelSpan, response.aiMessage().hasToolExecutionRequests()
+                    if(execution!=null)modelSpan.output("提供方响应已接收；校验结果在同一节点登记");
+                    else com.example.ailab.ai.runtime.TracePayloadCapture.output(modelSpan, response.aiMessage().hasToolExecutionRequests()
                             ? java.util.stream.Stream.concat(text == null ? java.util.stream.Stream.empty() : java.util.stream.Stream.of(text),
                                     response.aiMessage().toolExecutionRequests().stream().map(tool -> tool.arguments())).toList() : text);
                     String protocolFailure = responsesFailure(d, raw.get());
@@ -402,7 +496,7 @@ public class ModelGateway {
                                 repair ? "PINNED_CONTINUATION_OR_REPAIR" : !id.equals(ids.get(0)) ? "COMPATIBLE_FALLBACK" : "ORDERED_COMPATIBLE_HEALTHY",
                                 attempts, inputUsage, outputUsage, registry.mock() ? "SIMULATED" : inputUsage == null || outputUsage == null ? "UNKNOWN" : "PROVIDER");
                         if (!outcome.equals("SUCCESS")) modelSpan.fail(new LabException(outcome, "模型失败"));
-                        modelSpan.close();
+                        if(callExecution.get()==null)modelSpan.close();
                     }
                     LOG.info("event=model.attempt_complete modelId={} attempt={} outcome={} inputTokens={} outputTokens={} mock={}", id, attempts, outcome, inputUsage, outputUsage, registry.mock());
                     DeadlineHttpClient.CURRENT.remove();
@@ -410,9 +504,17 @@ public class ModelGateway {
                     if (local) semaphore.release();
                     if (global) concurrency.release();
                     // 先释放运行资源再可靠结算；结算故障不引发第二次远程请求。
-                    if (fee != null) {
-                        if (feeSending) fees.complete(fee, inputUsage, outputUsage, outcome);
-                        else fees.release(fee);
+                    try {
+                        if (fee != null) {
+                            if (feeSending) fees.complete(fee, inputUsage, outputUsage, outcome);
+                            else fees.release(fee);
+                        }
+                    } finally {
+                        var execution=callExecution.get();
+                        if(execution!=null&&execution.pending!=null) {
+                            execution.pending.outcome=outcome;
+                            if(!outcome.equals("SUCCESS")) {execution.pending.error=outcome;completeCall(execution);}
+                        }
                     }
                 }
             }

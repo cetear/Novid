@@ -29,6 +29,12 @@ public interface TraceRecordPort {
     default void recordGraph(TraceSnapshot run, List<TraceNode> nodes) { record(run); }
     /** 私人图在端口再次校验所有者，缺节点时明确不完整。 */
     default TraceGraph graph(UserContext actor, String traceId) { return TraceGraph.from(read(actor,traceId), List.of()); }
+    default TraceGraph graphSummary(UserContext actor,String traceId) {
+        var graph=graph(actor,traceId);return new TraceGraph(graph.run(),graph.nodes().stream().map(TraceNode::summary).toList(),graph.edges(),graph.missingNodeIds(),graph.incomplete(),graph.costStatus());
+    }
+    default TraceNode node(UserContext actor,String traceId,String nodeId) {
+        return graph(actor,traceId).nodes().stream().filter(n->n.spanId().equals(nodeId)).findFirst().orElseThrow(com.example.ailab.contract.error.LabException::denied);
+    }
     /** 恢复只查询同一所有者与逻辑任务，返回上一实际执行。 */
     default String previous(long actorUserId, Long taskId, Long ingestionId) { return null; }
     /** 清理超过保留期的观测，包括崩溃遗留运行；不触碰业务账本。 */

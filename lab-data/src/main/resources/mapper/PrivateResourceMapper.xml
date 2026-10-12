@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.example.ailab.data.persistence.mapper.PrivateResourceMapper">
+    <select id="graphSummary" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT JSON_REMOVE(s.node_json,'$.input','$.output','$.diagnostic','$.observation.input.preview','$.observation.output.preview') FROM ai_spans s JOIN ai_runs r ON r.trace_id=s.trace_id WHERE s.trace_id=#{args[0]} AND r.actor_user_id=#{args[1]} ORDER BY s.sequence_no
+    </select>
+    <select id="node" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT s.node_json FROM ai_spans s JOIN ai_runs r ON r.trace_id=s.trace_id WHERE s.trace_id=#{args[0]} AND r.actor_user_id=#{args[1]} AND s.span_id=#{args[2]}
+    </select>
     <select id="listProfileMemoriesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
         SELECT * FROM profile_memories WHERE user_id=#{args[0]} AND deleted=FALSE ORDER BY id
     </select>

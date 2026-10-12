@@ -18,7 +18,8 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
 
     public enum Reason {
         JSON_SIZE, JSON_SYNTAX, JSON_FIELDS, JSON_TYPE, CONTENT_CONSTRAINT,
-        FACT_STATUS, FACT_COUNT, FACT_ID, FACT_SOURCE, FACT_QUOTE, FACT_TEXT_SIZE
+        FACT_STATUS, FACT_COUNT, FACT_ID, FACT_SOURCE, FACT_QUOTE, FACT_TEXT_SIZE,
+        UNKNOWN_REFERENCE, DUPLICATE_ID, MISSING_COVERAGE, ID_ORDER_MISMATCH, NON_EMPTY, RELATION_CONSTRAINT
     }
 
     private static final ObjectMapper JSON = new ObjectMapper()
@@ -115,6 +116,27 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
 
     public List<FieldRule> fieldRules() {
         return rules;
+    }
+
+    public String schemaId() { return type.getName(); }
+    public record Checked<T>(T value, LabException failure, com.example.ailab.contract.dto.ValidationDiagnostic diagnostic) { }
+    public Checked<T> validateObserved(String text, Set<String> references, String origin) {
+        try { return new Checked<>(validate(text,references),null,null); }
+        catch(LabException failure) {
+            if(!failure.code().equals("MODEL_STRUCTURED_INVALID"))throw failure;
+            return new Checked<>(null,failure,ValidationDiagnostics.build(schemaId(),origin,text,failure.validationIssues()));
+        }
+    }
+    /** 内层工厂仍选择原规则，只把私有诊断路径补成外层完整路径。 */
+    public static void nested(String prefix, Runnable check) {
+        try { check.run(); }
+        catch(LabException failure) {
+            if(!failure.code().equals("MODEL_STRUCTURED_INVALID"))throw failure;
+            var issues=failure.validationIssues().stream().map(i->new ValidationIssue(
+                    i.path().equals("$")?prefix:prefix+"."+i.path(),i.rule(),i.actual(),i.maximum(),i.unit(),i.expected())).toList();
+            var active=ACTIVE.get();if(active==null)throw failure;
+            issues.forEach(RecordSchema::add);
+        }
     }
 
     private JsonNode contract(Type type) {
@@ -299,7 +321,8 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
     }
 
     private LabException invalid(Reason reason, List<ValidationIssue> issues) {
-        LOG.warn("event=model.structured_invalid schema={} reason={} fields={}", type.getSimpleName(), reason, issues.stream().map(ValidationIssue::path).toList());
+        LOG.warn("event=model.structured_invalid schema={} reason={} fields={} violations={}", type.getSimpleName(), reason, issues.stream().map(ValidationIssue::path).toList(),
+                issues.stream().map(v -> v.path()+":"+v.rule()+"[actual="+v.actual()+",maximum="+v.maximum()+",unit="+v.unit()+"]").toList());
         try {
             return new LabException("MODEL_STRUCTURED_INVALID", "固定工作流输出结构、范围或来源不合法 reason=" + reason + " details=" + JSON.writeValueAsString(issues), issues);
         } catch (Exception failure) {

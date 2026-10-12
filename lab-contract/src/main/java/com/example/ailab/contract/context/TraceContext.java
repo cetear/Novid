@@ -93,6 +93,7 @@ public final class TraceContext {
     public boolean capturesPayloads() {
         synchronized (state) { return state.maximum > 0 && state.payloadsEnabled && !state.closed && state.payloadChars < 524288; }
     }
+    public String currentSpanId() { return parent; }
 
     /**
      * 登记真实开始事实，长度和字符白名单拒绝正文或凭证误传。
@@ -141,8 +142,8 @@ public final class TraceContext {
             if (state.nodes.stream().anyMatch(n -> n.endedAt() == null)) state.incomplete = true;
             try {
                 var sources = List.copyOf(state.sources);
-                state.finish.accept(state.nodes.stream().map(n -> n.payloads(n.input(), n.output(),
-                        n.input() == null && n.output() == null ? List.of() : sources)).toList(), state.incomplete);
+                state.finish.accept(state.nodes.stream().map(n -> n.withSources(
+                        n.input() == null && n.output() == null && n.observation()==null && n.diagnostic()==null ? List.of() : sources)).toList(), state.incomplete);
             } catch (RuntimeException ignored) {
                 state.incomplete = true;
             }
@@ -165,6 +166,10 @@ public final class TraceContext {
         private Integer in, out;
         private boolean ended;
         private TracePayload input, output;
+        private com.example.ailab.contract.dto.ModelCalls.Observation observation;
+        private com.example.ailab.contract.dto.ValidationDiagnostic diagnostic;
+        public void observation(com.example.ailab.contract.dto.ModelCalls.Observation value) { observation=value; }
+        public void diagnostic(com.example.ailab.contract.dto.ValidationDiagnostic value) { diagnostic=value; }
 
         /** 只接受已过滤的文本；每侧16K字符、每运行512K字符，观测不改变业务结果。 */
         public void input(String content) { input = payload(content); }
@@ -255,7 +260,7 @@ public final class TraceContext {
                     return;
                 }
                 var n = state.nodes.get(index);
-                state.nodes.set(index, new TraceNode(n.spanId(), n.parentSpanId(), n.type(), n.name(), n.stepId(), n.agentId(), n.dependsOn(), n.sequence(), status, n.startedAt(), Instant.now(), error, model, task, profile, policy, reason, attempt, in, out, usage, toolHash, input, output, List.of()));
+                state.nodes.set(index, new TraceNode(n.spanId(), n.parentSpanId(), n.type(), n.name(), n.stepId(), n.agentId(), n.dependsOn(), n.sequence(), status, n.startedAt(), Instant.now(), error, model, task, profile, policy, reason, attempt, in, out, usage, toolHash, input, output, List.of(),observation,diagnostic));
             }
         }
     }

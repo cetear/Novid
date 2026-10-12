@@ -15,6 +15,8 @@ public interface PrivateResourceMapper {
     int recordAiRunsWrite(@Param("args") Object[] args);
     int recordGraphAiSpansWrite(@Param("rows") List<TraceSpanRow> rows);
     List<SqlRow> graphAiSpansSelect(@Param("args") Object[] args);
+    List<SqlRow> graphSummary(@Param("args") Object[] args);
+    List<SqlRow> node(@Param("args") Object[] args);
     List<SqlRow> previousAiRunsSelect(@Param("args") Object[] args, @Param("task") boolean task);
     int purgeAiRunsWrite(@Param("args") Object[] args);
     int deliveredAiRunsWrite(@Param("args") Object[] args);

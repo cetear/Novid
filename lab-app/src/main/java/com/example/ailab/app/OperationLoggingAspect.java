@@ -26,6 +26,7 @@ public class OperationLoggingAspect {
     @Around("execution(public * com.example.ailab.business.application.*ApplicationService.*(..))"
             + " || execution(public * com.example.ailab.ai.model.ModelGateway.chat*(..))"
             + " || execution(public * com.example.ailab.ai.model.ModelGateway.structured(..))"
+            + " || execution(public * com.example.ailab.ai.model.ModelGateway.structuredObserved(..))"
             + " || execution(public * com.example.ailab.ai.model.ModelGateway.toolTurn(..))"
             + " || execution(public * com.example.ailab.ai.model.ModelGateway.finishToolTurn(..))"
             + " || execution(public * com.example.ailab.ai.model.ModelGateway.embed(..))"

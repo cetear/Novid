@@ -109,6 +109,12 @@ management:
       show-details: never
 # 本项目业务配置。
 lab:
+  # 两类资料工作流的实际调用正文独立归档；每块至多1MiB原文。
+  model-call-archive:
+    enabled: ${MODEL_CALL_ARCHIVE_ENABLED:true}
+    maximum-bytes: ${MODEL_CALL_ARCHIVE_MAXIMUM_BYTES:134217728}
+    retention-days: ${MODEL_CALL_ARCHIVE_RETENTION_DAYS:7}
+    cleanup-ms: ${MODEL_CALL_ARCHIVE_CLEANUP_MS:60000}
   # 资料驱动工作流策略；创建任务时保存快照，后续调整只影响新任务。
   content-workflow:
     # 所选资料原文总量上限，单位 UTF-8 字节；范围 3000～10000000。

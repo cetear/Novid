@@ -88,6 +88,7 @@ public final class TracePayloadCapture {
                 || Set.of("apikey","token","accesstoken","refreshtoken","cookie","setcookie").contains(key)
                 || key.equals("plan") && value.isValueNode();
     }
+    public static String redact(String value) { return value == null ? null : clean(value); }
     private static String clean(String value) {
         return SECRET.matcher(BEARER.matcher(value).replaceAll("Bearer [REDACTED]")).replaceAll(match ->
                 java.util.regex.Matcher.quoteReplacement((match.group(1) != null ? match.group(1)

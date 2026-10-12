@@ -17,7 +17,13 @@ final class DeadlineHttpClient implements dev.langchain4j.http.client.HttpClient
     /** 聊天及批量向量共用16 MiB传输上限；错误响应也在收取阶段受限。 */
     private static final int MAXIMUM_RESPONSE_BYTES = 16 * 1024 * 1024;
     record Scope(ExecutionBudget budget, int timeoutSeconds,
-                 java.util.concurrent.atomic.AtomicReference<String> responseBody) {
+                 java.util.concurrent.atomic.AtomicReference<String> responseBody, Capture capture) {
+        Scope(ExecutionBudget budget,int timeoutSeconds,java.util.concurrent.atomic.AtomicReference<String> responseBody) {
+            this(budget,timeoutSeconds,responseBody,null);
+        }
+    }
+    static final class Capture {
+        String input,output;boolean sent,complete;long millis;
     }
 
     static final ThreadLocal<Scope> CURRENT = new ThreadLocal<>();
@@ -65,13 +71,16 @@ final class DeadlineHttpClient implements dev.langchain4j.http.client.HttpClient
         var builder = java.net.http.HttpRequest.newBuilder(URI.create(request.url())).timeout(timeout);
         request.headers().forEach((name, values) -> values.forEach(value -> builder.header(name, value)));
         builder.method(request.method().name(), java.net.http.HttpRequest.BodyPublishers.ofString(request.body()));
+        long started=System.nanoTime();
+        if(scope.capture()!=null) {scope.capture().input=request.body();scope.capture().sent=true;}
         try {
             var response = com.example.ailab.contract.http.HttpRequests.send(client, builder.build(),
                     com.example.ailab.contract.http.HttpRequests.boundedBytes(MAXIMUM_RESPONSE_BYTES));
+            String body = new String(response.body(), java.nio.charset.StandardCharsets.UTF_8);
+            if(scope.capture()!=null) {scope.capture().output=body;scope.capture().complete=true;}
             if (response.statusCode() < 200 || response.statusCode() >= 300)
                 throw new Failure(response.statusCode(), retryAfter(response.headers().firstValue("Retry-After").orElse(null)));
             scope.budget().check();
-            String body = new String(response.body(), java.nio.charset.StandardCharsets.UTF_8);
             scope.responseBody().set(body);
             return SuccessfulHttpResponse.builder().statusCode(response.statusCode()).headers(response.headers().map()).body(body).build();
         } catch (InterruptedException error) {
@@ -79,6 +88,8 @@ final class DeadlineHttpClient implements dev.langchain4j.http.client.HttpClient
             throw new com.example.ailab.contract.error.LabException("REQUEST_CANCELLED", "模型等待已中断");
         } catch (java.io.IOException error) {
             throw new RuntimeException("受控模型传输失败", error);
+        } finally {
+            if(scope.capture()!=null)scope.capture().millis=java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started);
         }
     }
 

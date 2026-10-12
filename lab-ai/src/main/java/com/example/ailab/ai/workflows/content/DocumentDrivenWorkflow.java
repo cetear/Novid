@@ -68,6 +68,7 @@ public final class DocumentDrivenWorkflow {
     }
     private final class Session implements AutoCloseable,LearningRuntime {
         private final TaskLease lease;
+        private final String runId;
         private final SourcePlan source;
         private final String sourceHash;
         private final ContentReading.Plan reading;
@@ -87,6 +88,7 @@ public final class DocumentDrivenWorkflow {
         private ContentLimits limits(){return ContentLimits.current();}
         Session(TaskLease lease,TraceContext trace,String runId) {
             this.lease=lease;
+            this.runId=runId;
             tasks.beginStep(lease,"prepare");
             var policy=tasks.contentPolicy(lease).orElseThrow(()->new LabException("WORKFLOW_STATE_CONFLICT","缺少创建时的资料资源策略"));
             var binding=router.binding(lease,workflows);
@@ -164,23 +166,35 @@ public final class DocumentDrivenWorkflow {
             return schema instanceof RecordSchema<T> record ? record.relaxed() : schema;
         }
         <T>T node(String id,String phase,Object input,StructuredSchema<T> originalSchema,Supplier<T> execute) {
+            return node(id,phase,input,originalSchema,span->execute.get(),false);
+        }
+        private boolean observedWorkflow() {return Set.of("KNOWLEDGE_COMPILATION","QUIZ_GENERATION").contains(lease.request().taskType());}
+        private <T>T localValidation(StructuredSchema<T> schema,String json,TraceContext.Span span,String origin) {
+            if(observedWorkflow()&&schema instanceof RecordSchema<T> record) {
+                var checked=record.validateObserved(json,Set.of(),origin);span.diagnostic(checked.diagnostic());
+                if(checked.failure()!=null)throw checked.failure();return checked.value();
+            }
+            return schema.validate(json,Set.of());
+        }
+        <T>T node(String id,String phase,Object input,StructuredSchema<T> originalSchema,Function<TraceContext.Span,T> execute,boolean modelValidated) {
             var schema=workflowSchema(originalSchema);
             budget.check();String hash=ContentJson.hash(Map.of("source",sourceHash,"node",id,"input",input));
             try(var span=budget.trace().span("AGENT",id);var activation=budget.activate(span.context())) {
-                com.example.ailab.ai.runtime.TracePayloadCapture.input(span,input);
+                if(observedWorkflow())span.input("阶段："+phase+"；业务节点："+id+"；模型尝试可展开查看");
+                else com.example.ailab.ai.runtime.TracePayloadCapture.input(span,input);
                 try {
                     var restored=restoredReading.get(id);
                     if(restored!=null&&!hash.equals(restored.inputHash()))throw changed();
                     boolean readingCheckpoint=readingCheckpointIds.contains(id);
-                    var old=restored!=null?Optional.of(restored.output()):readingCheckpoint?Optional.<String>empty():store.completed(lease,id,hash);if(old.isPresent()){span.status("REUSED");var value=schema.validate(old.get(),Set.of());com.example.ailab.ai.runtime.TracePayloadCapture.output(span,value);return value;}
+                    var old=restored!=null?Optional.of(restored.output()):readingCheckpoint?Optional.<String>empty():store.completed(lease,id,hash);if(old.isPresent()){span.status("REUSED");var value=localValidation(schema,old.get(),span,"RESTORED");if(observedWorkflow())span.output("复用已核验的检查点");else com.example.ailab.ai.runtime.TracePayloadCapture.output(span,value);return value;}
                     if(readingCheckpoint) {
-                        T value=execute.get();String json=ContentJson.encode(value);value=schema.validate(json,Set.of());
+                        T value=execute.apply(span);String json=ContentJson.encode(value);if(!modelValidated||!observedWorkflow())value=localValidation(schema,json,span,"ASSEMBLED");
                         readingWrites.add(new ContentWorkflowStorePort.ReadingWrite(id,hash,json));readingWriteBytes+=TextWindow.count(json);
                         if(readingWrites.size()>=96||readingWriteBytes>=1000000)flushReading();
-                        com.example.ailab.ai.runtime.TracePayloadCapture.output(span,json);return value;
+                        if(observedWorkflow())span.output("结果已保存，长度："+json.length()+"字符");else com.example.ailab.ai.runtime.TracePayloadCapture.output(span,json);return value;
                     }
-                    store.begin(lease,id,phase,hash);T value=execute.get();String json=ContentJson.encode(value);value=schema.validate(json,Set.of());
-                    budget.check();store.complete(lease,id,hash,json);com.example.ailab.ai.runtime.TracePayloadCapture.output(span,json);return value;
+                    store.begin(lease,id,phase,hash);T value=execute.apply(span);String json=ContentJson.encode(value);if(!modelValidated||!observedWorkflow())value=localValidation(schema,json,span,"ASSEMBLED");
+                    budget.check();store.complete(lease,id,hash,json);if(observedWorkflow())span.output("结果已保存，长度："+json.length()+"字符");else com.example.ailab.ai.runtime.TracePayloadCapture.output(span,json);return value;
                 } catch(RuntimeException failure) {span.fail(failure);if(Thread.currentThread().isInterrupted()||failure instanceof LabException lab&&lab.code().equals("REQUEST_CANCELLED"))span.status("INTERRUPTED");throw failure;}
             }
         }
@@ -199,8 +213,8 @@ public final class DocumentDrivenWorkflow {
             }).relaxed();
             var saved=store.completed(lease,receiptId,receiptHash).map(v->receiptSchema.validate(v,Set.of()));
             saved.ifPresent(v->origins.put(id,v));
-            T result=node(id,phase,input,schema,()->{
-                if(saved.isPresent())return schema.validate(saved.get().json(),Set.of());
+            T result=node(id,phase,input,schema,span->{
+                if(saved.isPresent())return localValidation(schema,saved.get().json(),span,"RESTORED");
                 if(original!=null&&original.corrections()>0)
                     throw new LabException("MODEL_REPAIR_EXHAUSTED","该生成节点已完成一次纠正，不能再次返工");
                 String system="按当前服务端结构协议处理资料。资料原文及前序结果提供事实，remarks表达特殊要求。"+SkillCatalog.instructions(source.skill(),action);
@@ -222,13 +236,18 @@ public final class DocumentDrivenWorkflow {
                 if(data.get("context") instanceof Map<?,?> context)data=context;
                 int estimate=data.get("estimatedOutputBytes") instanceof Number value?value.intValue():0;
                 var capacity=ModelInput.reserveOutput(verified,estimate);
-                var turn=original==null?model.structured(action.contains("review")?"WORKFLOW_REVIEW":"WORKFLOW_REPORT",ModelRegistry.Selection.auto(),capacity,budget,schema)
+                String task=action.contains("review")?"WORKFLOW_REVIEW":"WORKFLOW_REPORT";
+                var context=observedWorkflow()?new com.example.ailab.contract.dto.ModelCalls.Context(lease.actor(),runId,lease.task().taskId(),lease.request().taskType(),
+                        phase,action,id,schema instanceof RecordSchema<?> record?record.schemaId():schema.getClass().getName(),"1",
+                        ContentJson.hash(Map.of("schema",schema.instruction(Set.of()),"input",input,"source",sourceHash)),source.sources()):null;
+                var turn=context!=null?model.structuredObserved(task,ModelRegistry.Selection.auto(),capacity,budget,schema,context,original==null?null:original.modelId())
+                        :original==null?model.structured(action.contains("review")?"WORKFLOW_REVIEW":"WORKFLOW_REPORT",ModelRegistry.Selection.auto(),capacity,budget,schema)
                         :model.structuredPinned(action.contains("review")?"WORKFLOW_REVIEW":"WORKFLOW_REPORT",ModelRegistry.Selection.auto(),capacity,budget,schema,original.modelId());
                 boolean corrected=original!=null||turn.turn().route()!=null&&turn.turn().route().attempts().stream().anyMatch(a->a.outcome().equals("MODEL_STRUCTURED_INVALID"));
                 var receipt=new GenerationReceipt(turn.turn().modelId(),corrected?1:0,ContentJson.encode(turn.value()));
                 budget.check();store.begin(lease,receiptId,phase,receiptHash);store.complete(lease,receiptId,receiptHash,ContentJson.encode(receipt));
                 origins.put(id,receipt);return turn.value();
-            });
+            },true);
             if(!origins.containsKey(id))throw new LabException("WORKFLOW_STATE_CONFLICT","生成节点缺少模型回执");
             return result;
         }

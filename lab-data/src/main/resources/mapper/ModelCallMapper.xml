@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.ailab.data.persistence.mapper.ModelCallMapper">
+ <insert id="begin" timeout="2">INSERT INTO ai_model_calls(call_id,trace_id,span_id,business_node_id,actor_user_id,task_id,source_json,record_json,created_at,expires_at) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]},#{args[8]},#{args[9]}) ON DUPLICATE KEY UPDATE call_id=call_id</insert>
+ <update id="finish" timeout="2">UPDATE ai_model_calls SET record_json=#{args[0]} WHERE call_id=#{args[1]} AND actor_user_id=#{args[2]} AND trace_id=#{args[3]}</update>
+ <select id="calls" timeout="2" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT call_id,source_json,JSON_REMOVE(record_json,'$.diagnostic') AS record_json,expires_at FROM ai_model_calls WHERE trace_id=#{args[0]} AND actor_user_id=#{args[1]} <if test="args[2] != null">AND business_node_id=#{args[2]}</if> ORDER BY created_at,call_id LIMIT #{args[3]} OFFSET #{args[4]}</select>
+ <select id="call" timeout="2" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT call_id,source_json,record_json,expires_at FROM ai_model_calls WHERE trace_id=#{args[0]} AND actor_user_id=#{args[1]} AND call_id=#{args[2]}</select>
+ <select id="payload" timeout="2" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT payload_id,state,ref_json,expires_at FROM ai_model_call_payloads WHERE call_id=#{args[0]} AND direction=#{args[1]}</select>
+ <insert id="startPayload" timeout="2">INSERT INTO ai_model_call_payloads(payload_id,call_id,direction,state,ref_json,expires_at) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]})</insert>
+ <update id="readyPayload" timeout="2">UPDATE ai_model_call_payloads SET state=#{args[0]},ref_json=#{args[1]} WHERE payload_id=#{args[2]} AND state='WRITING'</update>
+ <insert id="chunk" timeout="2">INSERT INTO ai_model_call_payload_chunks(payload_id,chunk_no,char_offset,char_length,raw_length,codec,checksum,content) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7],jdbcType=BLOB})</insert>
+ <select id="chunks" timeout="2" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT chunk_no,char_offset,char_length,raw_length,codec,checksum,content FROM ai_model_call_payload_chunks WHERE payload_id=#{args[0]} AND chunk_no=#{args[1]}</select>
+ <select id="chunkPage" timeout="2" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT chunk_no,char_offset,char_length,raw_length,codec,checksum,content FROM ai_model_call_payload_chunks WHERE payload_id=#{args[0]} AND char_offset+char_length &gt; #{args[1]} ORDER BY chunk_no LIMIT 2</select>
+ <insert id="textSegments" timeout="2">
+  INSERT INTO ai_model_call_text_segments(payload_id,segment_no,char_offset,char_length,raw_start,raw_end,checksum) VALUES
+  <foreach collection="segments" item="s" separator=",">(#{payloadId},#{s.number},#{s.charOffset},#{s.charLength},#{s.rawStart},#{s.rawEnd},#{s.checksum})</foreach>
+ </insert>
+ <update id="readyText" timeout="2">UPDATE ai_model_call_payloads SET model_text_state=#{args[0]},model_text_chars=#{args[1]} WHERE payload_id=#{args[2]}</update>
+ <select id="textView" timeout="2" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT model_text_state,model_text_chars FROM ai_model_call_payloads WHERE payload_id=#{args[0]}</select>
+ <select id="textPage" timeout="2" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT segment_no,char_offset,char_length,raw_start,raw_end,checksum FROM ai_model_call_text_segments WHERE payload_id=#{args[0]} AND char_offset &gt;= GREATEST(0,#{args[1]}-8191) AND char_offset+char_length &gt; #{args[1]} AND char_offset &lt; #{args[2]} ORDER BY char_offset LIMIT #{args[3]}</select>
+ <delete id="deleteTextSegments" timeout="2">DELETE FROM ai_model_call_text_segments WHERE payload_id=#{args[0]} ORDER BY segment_no LIMIT 128</delete>
+ <select id="expired" timeout="2" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT payload_id,call_id FROM ai_model_call_payloads WHERE expires_at&lt;=#{args[0]} ORDER BY expires_at LIMIT 32</select>
+ <update id="expire" timeout="2">UPDATE ai_model_call_payloads SET state='EXPIRED' WHERE payload_id=#{args[0]}</update>
+ <delete id="deleteChunks" timeout="2">DELETE FROM ai_model_call_payload_chunks WHERE payload_id=#{args[0]} ORDER BY chunk_no LIMIT 32</delete>
+ <delete id="deletePayload" timeout="2">DELETE FROM ai_model_call_payloads WHERE payload_id=#{args[0]} AND NOT EXISTS(SELECT 1 FROM ai_model_call_payload_chunks WHERE payload_id=#{args[0]}) AND NOT EXISTS(SELECT 1 FROM ai_model_call_text_segments WHERE payload_id=#{args[0]})</delete>
+ <delete id="deleteCall" timeout="2">DELETE FROM ai_model_calls WHERE call_id=#{args[0]} AND expires_at&lt;=#{args[1]} AND NOT EXISTS(SELECT 1 FROM ai_model_call_payloads WHERE call_id=#{args[0]})</delete>
+ <delete id="deleteExpiredCalls" timeout="2">DELETE FROM ai_model_calls WHERE expires_at&lt;=#{args[0]} AND NOT EXISTS(SELECT 1 FROM ai_model_call_payloads p WHERE p.call_id=ai_model_calls.call_id) ORDER BY expires_at LIMIT 32</delete>
+</mapper>
