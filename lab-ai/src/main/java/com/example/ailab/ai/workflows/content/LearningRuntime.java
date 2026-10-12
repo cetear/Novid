@@ -19,6 +19,7 @@ interface LearningRuntime {
     boolean preflight(Object input,RecordSchema<?> schema);
     <A,B>List<B> parallel(List<A> input,Function<A,B> execute);
     default ContentWorkflow.Policy policy(){return source().policy();}
+    default ContentExecutionLimits executionLimits(){return ContentExecutionLimits.from(policy());}
     default List<Learning.Item> evidence(Collection<String> ids){return ids.stream().map(id->Objects.requireNonNull(facts().get(id))).toList();}
     default void bounded(Object input){if(TextWindow.count(ContentJson.encode(input))>policy().unitInputBytes())throw new com.example.ailab.contract.error.LabException("WORKFLOW_UNIT_TOO_LARGE","必要证据及执行上下文超过创建时局部容量");}
 }

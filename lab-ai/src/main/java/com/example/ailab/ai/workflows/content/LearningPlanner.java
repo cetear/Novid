@@ -21,7 +21,7 @@ final class LearningPlanner {
         var execution=LearningPackages.build(r,compilation,quiz);
         var logical=compilation!=null?compilation.sections().stream().map(SectionDuty::id).toList():quiz.slots().stream().map(Slot::id).toList();
         int turns=estimatedTurns(compilation,quiz,execution);
-        if(turns>r.policy().turns()||turns*2>r.policy().attempts())throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","生成、复核及一次修复超过固定父任务预算");
+        if(turns>r.executionLimits().turns()||turns*2>r.executionLimits().attempts())throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","生成、复核及一次修复超过父任务执行额度");
         var counts=new ContentWorkflow.Counts(quiz==null?0:quiz.slots().size(),quiz==null?compilation.directory().chapters().size():quiz.chapters().size(),compilation==null?0:compilation.sections().size(),0,0,0);
         int output=estimatedOutputBytes(compilation,quiz,execution);
         var result=new Plan(LearningContent.VERSION,r.lease().request().taskType(),ContentJson.hash(r.source()),compilation,quiz,execution,counts,logical.stream().map(id->"accepted_"+id).toList(),turns,turns*2,output);

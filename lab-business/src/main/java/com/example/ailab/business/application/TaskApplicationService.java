@@ -90,6 +90,16 @@ public class TaskApplicationService {
     }
 
     private ContentWorkflowStorePort content;
+    private ContentTaskRetryPort retries;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void retries(ContentTaskRetryPort retries) { this.retries=retries; }
+    public ContentTaskRetry.Plan retryPlan(UserContext actor,long id) {
+        return retries.retryPlan(policy.current(actor),id);
+    }
+    public TaskSnapshot retry(UserContext actor,long id,ContentTaskRetry.Request request,String key) {
+        DocumentApplicationService.validateKey(key);
+        return retries.retry(policy.current(actor),id,request,key);
+    }
     @org.springframework.beans.factory.annotation.Autowired
     public void contentWorkflows(ContentWorkflowStorePort content) { this.content=content; }
     public String result(UserContext actor, long id) {

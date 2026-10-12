@@ -55,6 +55,10 @@ public class FeeRepository implements FeeStorePort {
         String id = SqlSupport.hash(scope.actor().userId() + ":" + scope.kind() + ":" + scope.resourceId());
         var scopes = mapper.reserveFeeScopesSelect(new Object[]{id});
         if (scopes.isEmpty()) {
+            if(task!=null&&!media) {
+                limit=limit.add(task.get("additional_fee_amount") instanceof BigDecimal extra?extra:BigDecimal.ZERO);
+                tokenLimit+=task.get("additional_token_limit") instanceof Number extra?extra.longValue():0;
+            }
             int legacy = legacy(scope.actor(), scope.kind(), scope.resourceId());
             mapper.reserveFeeScopesWrite(new Object[]{id, scope.actor().userId(), scope.kind(), scope.resourceId(), currency, limit, tokenLimit, legacy});
             scopes = mapper.reserveFeeScopesSelect2(new Object[]{id});

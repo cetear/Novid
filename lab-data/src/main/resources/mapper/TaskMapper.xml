@@ -1,6 +1,50 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.example.ailab.data.persistence.mapper.TaskMapper">
+    <select id="retryTask" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT t.*,CURRENT_TIMESTAMP(6) AS server_now FROM ai_tasks t WHERE id=#{args[0]} AND requester_user_id=#{args[1]} <if test="lock">FOR UPDATE</if>
+    </select>
+    <select id="retryEvent" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT request_hash FROM task_retry_events WHERE task_id=#{args[0]} AND request_key=#{args[1]}
+    </select>
+    <select id="retryStats" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT (SELECT COUNT(*) FROM task_content_nodes WHERE task_id=#{args[0]} AND status='COMPLETED' AND node_id='result') AS ready_result_count,
+        (SELECT COUNT(*) FROM task_content_nodes WHERE task_id=#{args[0]} AND status='COMPLETED') AS completed_nodes,
+        (SELECT COUNT(*) FROM task_content_nodes WHERE task_id=#{args[0]} AND status='PENDING') AS pending_nodes,
+        (SELECT COUNT(*) FROM task_content_packages WHERE task_id=#{args[0]} AND status='ACCEPTED') AS accepted_packages,
+        (SELECT COUNT(*) FROM task_content_packages WHERE task_id=#{args[0]} AND status NOT IN ('ACCEPTED','REPLACED')) AS pending_packages
+    </select>
+    <select id="retryFees" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT s.*,COALESCE(SUM(CASE WHEN a.state='SETTLED' THEN COALESCE(a.estimated_amount,0)
+          WHEN a.state IN ('SENDING','UNKNOWN','RESERVED') THEN COALESCE(a.reserved_amount,0) ELSE 0 END),0) AS used_amount,
+          COALESCE(SUM(CASE WHEN a.state='RELEASED' THEN 0 WHEN a.state='SETTLED' THEN COALESCE(a.input_tokens,0)+COALESCE(a.output_tokens,0)
+          ELSE a.reserved_input+a.reserved_output END),0) AS used_tokens
+        FROM fee_scopes s LEFT JOIN fee_attempts a ON a.scope_id=s.scope_id
+        WHERE s.actor_user_id=#{args[1]} AND s.scope_kind='TASK' AND s.resource_id=#{args[0]} GROUP BY s.scope_id
+    </select>
+    <update id="retryAddFees">
+        UPDATE fee_scopes SET limit_amount=limit_amount+#{args[2]},token_limit=token_limit+#{args[3]}
+        WHERE actor_user_id=#{args[1]} AND scope_kind='TASK' AND resource_id=#{args[0]}
+    </update>
+    <update id="retryQueue">
+        UPDATE ai_tasks SET status='QUEUED',error_code=NULL,worker_id=NULL,lease_until=NULL,claimed_at=NULL,
+        total_execution_seconds=#{args[2]},state_version=state_version+1,fencing_token=fencing_token+1,retry_sequence=retry_sequence+1,attempt=0,
+        execution_seconds_limit=execution_seconds_limit+#{args[3]},model_turn_limit=model_turn_limit+#{args[4]},
+        model_attempt_limit=model_attempt_limit+#{args[5]},tool_call_limit=tool_call_limit+#{args[6]},model_repair_limit=model_repair_limit+#{args[7]},
+        additional_token_limit=additional_token_limit+#{args[8]},additional_fee_amount=additional_fee_amount+#{args[9]}
+        WHERE id=#{args[0]} AND state_version=#{args[1]} AND status='FAILED'
+    </update>
+    <update id="retrySteps">
+        UPDATE task_step_progress SET status='PENDING',started_at=NULL,completed_at=NULL,error_code=NULL
+        WHERE task_id=#{args[0]} AND status IN ('FAILED','RUNNING','PAUSED')
+    </update>
+    <update id="retryPackages">
+        UPDATE task_content_packages SET status='PENDING',error_code=NULL WHERE task_id=#{args[0]} AND status IN ('FAILED','RUNNING')
+    </update>
+    <insert id="retrySaveEvent">
+        INSERT INTO task_retry_events(task_id,request_key,request_hash,retry_sequence,prior_error_code,prior_state_version,additions_json,prior_lease_recoveries)
+        VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]})
+    </insert>
     <select id="createRequestDeduplicationsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
         SELECT request_hash,resource_id FROM request_deduplications WHERE actor_user_id=#{args[0]} AND namespace='TASK_CREATE' AND request_key=#{args[1]}
     </select>
@@ -62,7 +106,7 @@
     </update>
 
     <update id="claimInternalAiTasksWrite2">
-        UPDATE ai_tasks SET status='FAILED',error_code='BUDGET_EXCEEDED',fencing_token=fencing_token+1,state_version=state_version+1,worker_id=NULL,lease_until=NULL WHERE status IN ('QUEUED','RUNNING') AND (total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6)))&gt;=execution_seconds_limit OR status='RUNNING' AND attempt&gt;=3 AND lease_until&lt;CURRENT_TIMESTAMP(6) OR task_type NOT IN ('NOTES_PPT','NOTES_VIDEO','QUIZ_GENERATION','KNOWLEDGE_COMPILATION') AND (model_attempts&gt;=model_attempt_limit OR model_turns&gt;=model_turn_limit) AND completed_steps&lt;3 AND (status='QUEUED' OR lease_until&lt;CURRENT_TIMESTAMP(6)))
+        UPDATE ai_tasks SET total_execution_seconds=total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6))),claimed_at=NULL,status='FAILED',error_code='BUDGET_EXCEEDED',fencing_token=fencing_token+1,state_version=state_version+1,worker_id=NULL,lease_until=NULL WHERE status IN ('QUEUED','RUNNING') AND (total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6)))&gt;=execution_seconds_limit OR status='RUNNING' AND attempt&gt;=3 AND lease_until&lt;CURRENT_TIMESTAMP(6) OR task_type NOT IN ('NOTES_PPT','NOTES_VIDEO','QUIZ_GENERATION','KNOWLEDGE_COMPILATION') AND (model_attempts&gt;=model_attempt_limit OR model_turns&gt;=model_turn_limit) AND completed_steps&lt;3 AND (status='QUEUED' OR lease_until&lt;CURRENT_TIMESTAMP(6)))
     </update>
 
     <update id="claimInternalTaskStepProgressWrite2">

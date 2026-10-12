@@ -21,6 +21,8 @@ spring:
       maximum-pool-size: 10
       # 从连接池获取连接的最长等待时间，单位毫秒；不是 SQL 或模型调用超时。
       connection-timeout: 5000
+      # 单条连接的存活校验上限，单位毫秒；小于获取连接期限，为淘汰失效连接后取得其他连接留出时间。
+      validation-timeout: 2000
   # 数据库版本迁移配置。
   flyway:
     # 启动时扫描数据库迁移脚本的位置。
@@ -227,6 +229,8 @@ lab:
     worker-enabled: ${INGESTION_WORKER_ENABLED:true}
   # 持久任务后台执行配置。
   task:
+    # 局部失败后已启动的并发节点最多收尾60秒，仍受原任务剩余期限约束。
+    parallel-drain-seconds: 60
     # 是否启用任务后台消费；关闭时已登记任务等待执行者。
     worker-enabled: ${TASK_WORKER_ENABLED:true}
   # 初始化管理员账号的配置。

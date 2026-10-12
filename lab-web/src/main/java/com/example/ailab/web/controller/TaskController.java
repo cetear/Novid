@@ -92,6 +92,18 @@ public class TaskController {
         return service.action(CurrentUser.from(a), id, r.action());
     }
 
+    @GetMapping("/tasks/{id}/retry-plan")
+    public ResponseEntity<ContentTaskRetry.Plan> retryPlan(Authentication a,@PathVariable long id) {
+        return ResponseEntity.ok().header("Cache-Control","no-store").body(service.retryPlan(CurrentUser.from(a),id));
+    }
+
+    @PostMapping("/tasks/{id}/retry")
+    public ResponseEntity<TaskSnapshot> retry(Authentication a,@PathVariable long id,
+            @RequestBody ContentTaskRetry.Request request,@RequestHeader("Idempotency-Key") String key) {
+        return ResponseEntity.accepted().location(URI.create("/api/v1/tasks/"+id)).header("Cache-Control","no-store")
+                .header("Retry-After","2").body(service.retry(CurrentUser.from(a),id,request,key));
+    }
+
     /**
      * 先复核本人及全部来源，再输出已发布报告，不提供静态路径。
      */

@@ -69,6 +69,9 @@ public interface TaskStorePort {
     default int remainingModelTurns(TaskLease lease) { return 6; }
     /** 新版任务创建时保存的策略，恢复不能采用更新后的配置。 */
     default Optional<ContentWorkflow.Policy> contentPolicy(TaskLease lease) { return Optional.empty(); }
+    default ContentExecutionLimits executionLimits(TaskLease lease) {
+        return contentPolicy(lease).map(ContentExecutionLimits::from).orElse(null);
+    }
     int remainingModelAttempts(TaskLease lease);
 
     /** 工具预算与修复额度独立于可丢追踪，正式存储持久单调消费。 */

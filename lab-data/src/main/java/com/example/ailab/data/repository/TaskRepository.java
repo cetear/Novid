@@ -328,6 +328,14 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
         return Optional.of(policy);
     }
 
+    @Override @Transactional(readOnly=true)
+    public ContentExecutionLimits executionLimits(TaskLease lease) {
+        valid(lease);
+        var row=mapper.retryTask(new Object[]{lease.task().taskId(),lease.actor().userId()},false).get(0);
+        return new ContentExecutionLimits(row.intValue("model_turn_limit"),row.intValue("model_attempt_limit"),
+                row.intValue("tool_call_limit"),row.intValue("model_repair_limit"),row.intValue("execution_seconds_limit"));
+    }
+
     /** 工具调用逐次持久消费，任何角色或恢复都不能重获额度。 */
     @Transactional
     public void reserveToolCall(TaskLease lease) {

@@ -25,8 +25,7 @@ final class LearningExecutor {
             var pending=state.stream().filter(p->!Set.of("ACCEPTED","REPLACED").contains(p.status())).toList();if(pending.isEmpty())break;
             var ready=pending.stream().filter(p->p.workPackage().dependencies().stream().allMatch(id->resolved(id,byId,new HashSet<>()))).limit(r.policy().parallelism()).toList();
             if(ready.isEmpty())throw new LabException("WORKFLOW_STATE_CONFLICT","执行包依赖无法推进");
-            var failures=r.parallel(ready,p->{try{run(p);return Optional.<LabException>empty();}catch(LabException failure){return Optional.of(failure);}});
-            for(var failure:failures)if(failure.isPresent())throw failure.get();
+            r.parallel(ready,p->{run(p);return p.workPackage().id();});
         }
         var leaves=r.store().packages(r.lease()).stream().filter(p->p.status().equals("ACCEPTED")).toList();
         var parts=leaves.stream().flatMap(p->p.parts().stream()).sorted(Comparator.comparing(Part::id)).toList();
@@ -79,7 +78,7 @@ final class LearningExecutor {
                     var split=LearningPackages.split(r,plan,status);r.store().splitPackage(r.lease(),work.id(),split.parts(),split.children());return;
                 }catch(LabException terminal){r.store().failPackage(r.lease(),work.id(),terminal.code());throw terminal;}
             }
-            r.store().failPackage(r.lease(),work.id(),failure.code());throw failure;
+            r.store().failPackage(r.lease(),work.id(),Thread.currentThread().isInterrupted()||failure.code().equals("REQUEST_CANCELLED")?"WORKFLOW_INTERRUPTED":failure.code());throw failure;
         }
     }
     private Map<String,PartReceipt> drafts(PackageStatus status,List<Part> active) {

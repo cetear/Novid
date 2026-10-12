@@ -44,6 +44,12 @@ public final class ExecutionBudget {
         maxRepairs = policy.turns();
         return this;
     }
+    public ExecutionBudget content(com.example.ailab.contract.dto.ContentWorkflow.Policy policy,
+                                   com.example.ailab.contract.dto.ContentExecutionLimits limits) {
+        if(maxAttempts!=limits.attempts())throw new IllegalArgumentException("资料工作流执行额度不匹配");
+        maxTurns=limits.turns();maxTools=limits.tools();maxRepairs=limits.repairs();maximumWaitSeconds=1800;
+        return this;
+    }
     private com.example.ailab.contract.context.TraceContext rootTrace = com.example.ailab.contract.context.TraceContext.disabled("none");
     private final ThreadLocal<com.example.ailab.contract.context.TraceContext> activeTrace = new ThreadLocal<>();
     private final ThreadLocal<String> lastModelNode = new ThreadLocal<>();

@@ -46,6 +46,8 @@ public final class DocumentDrivenWorkflow {
     private record Indexed<T>(int index,T value) { }
     private record LearningExecution(LearningContent.Plan plan, LearningExecutor.Completed completed) { }
     private record GenerationReceipt(String modelId,int corrections,String json) { }
+    @org.springframework.beans.factory.annotation.Value("${lab.task.parallel-drain-seconds:60}")
+    private int parallelDrainSeconds=60;
     public void learning(TaskLease lease,TraceContext trace,String runId) {
         try(var session=new Session(lease,trace,runId)) {
             var completed=router.execute(lease,workflows,session.budget,FixedWorkflowProgram.of(()-> {
@@ -72,6 +74,7 @@ public final class DocumentDrivenWorkflow {
         private final List<ContentReading.TopicCard> topicCards=new ArrayList<>();
         private final Map<Long,String> documentsRaw=new HashMap<>();
         private final ExecutionBudget budget;
+        private final ContentExecutionLimits executionLimits;
         private final ExecutorService pool;
         private final Map<String,String> raw=new LinkedHashMap<>();
         private final Map<String,Learning.Item> items=new LinkedHashMap<>();
@@ -108,9 +111,11 @@ public final class DocumentDrivenWorkflow {
             }
             for(var slice:source.slices())raw.put(slice.id(),read(slice));
             long elapsed=lease.task().progress()==null?0:lease.task().progress().elapsedExecutionSeconds();
-            budget=new ExecutionBudget(Duration.ofSeconds(Math.max(1,policy.executionSeconds()-elapsed)),policy.attempts(),()->tasks.reserveModelAttempt(lease),
+            var approved=tasks.executionLimits(lease);
+            executionLimits=approved==null?ContentExecutionLimits.from(policy):approved;
+            budget=new ExecutionBudget(Duration.ofSeconds(Math.max(1,executionLimits.executionSeconds()-elapsed)),executionLimits.attempts(),()->tasks.reserveModelAttempt(lease),
                     ()->tasks.reserveModelTurn(lease),this::verify,()->tasks.reserveToolCall(lease),()->tasks.reserveModelRepair(lease))
-                    .content(policy).traced(trace).fees(new FeeScope(lease.actor(),"TASK",Long.toString(lease.task().taskId()),runId));
+                    .content(policy,executionLimits).traced(trace).fees(new FeeScope(lease.actor(),"TASK",Long.toString(lease.task().taskId()),runId));
             verifyNow();restoredReading=store.completedReadingNodes(lease);
             var checkpointIds=new HashSet<String>();reading.fragments().forEach(f->{for(String prefix:List.of("read_","topics_","evidence_"))checkpointIds.add(prefix+f.source().id());});readingCheckpointIds=Set.copyOf(checkpointIds);
             pool=Executors.newFixedThreadPool(policy.parallelism());
@@ -176,7 +181,7 @@ public final class DocumentDrivenWorkflow {
                     }
                     store.begin(lease,id,phase,hash);T value=execute.get();String json=ContentJson.encode(value);value=schema.validate(json,Set.of());
                     budget.check();store.complete(lease,id,hash,json);com.example.ailab.ai.runtime.TracePayloadCapture.output(span,json);return value;
-                } catch(RuntimeException failure) {span.fail(failure);throw failure;}
+                } catch(RuntimeException failure) {span.fail(failure);if(Thread.currentThread().isInterrupted()||failure instanceof LabException lab&&lab.code().equals("REQUEST_CANCELLED"))span.status("INTERRUPTED");throw failure;}
             }
         }
         void flushReading() {
@@ -236,20 +241,13 @@ public final class DocumentDrivenWorkflow {
             return value;
         }
         public <A,B>List<B> parallel(List<A> input,Function<A,B> execute) {
-            if(input.isEmpty())return List.of();var context=budget.trace();var futures=new ArrayList<Future<Indexed<B>>>();
-            var completion=new ExecutorCompletionService<Indexed<B>>(pool);
-            try {
-                int next=0;
-                for(;next<Math.min(input.size(),source.policy().parallelism());next++){int index=next;var item=input.get(index);futures.add(completion.submit(()->{try(var ignored=budget.activate(context)){budget.check();return new Indexed<>(index,execute.apply(item));}}));}
-                var output=new ArrayList<B>(Collections.nCopies(input.size(),null));
-                for(int done=0;done<input.size();done++){
-                    var value=completion.take().get();output.set(value.index(),value.value());
-                    if(next<input.size()){int index=next++;var item=input.get(index);futures.add(completion.submit(()->{try(var ignored=budget.activate(context)){budget.check();return new Indexed<>(index,execute.apply(item));}}));}
-                }return List.copyOf(output);
-            } catch(InterruptedException e){Thread.currentThread().interrupt();throw new LabException("REQUEST_CANCELLED","资料工作流已取消");}
-            catch(ExecutionException e){if(e.getCause() instanceof RuntimeException r)throw r;throw new IllegalStateException("资料子任务失败",e.getCause());}
-            finally{futures.forEach(f->{if(!f.isDone())f.cancel(true);});}
+            var context=budget.trace();
+            return ContentParallel.run(pool,input,source.policy().parallelism(),budget.deadline(),
+                    Duration.ofSeconds(Math.max(0,Math.min(300,parallelDrainSeconds))),item->{
+                        try(var ignored=budget.activate(context)){budget.check();return execute.apply(item);}
+                    },budget::check);
         }
+        public ContentExecutionLimits executionLimits(){return executionLimits;}
         void extract() {extractStructured();}
         void extractStructured() {
             long phaseStarted=System.nanoTime();
