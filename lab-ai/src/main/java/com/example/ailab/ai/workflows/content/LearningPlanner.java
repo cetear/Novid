@@ -32,8 +32,8 @@ final class LearningPlanner {
         int logical=compilation!=null?compilation.sections().size():quiz.slots().size();
         // 两轮题对复核分别对应初次检查和局部修复后的检查，候选来自不可变蓝图。
         int pairs=quiz==null?0:LearningPlanRules.reviewPairs(quiz).size();
-        return execution.packages().size()*2+execution.parts().size()*4+logical*2
-                +(quiz==null?compilation.directory().chapters().size():quiz.chapters().size())*4
+        return execution.packages().size()*2+execution.parts().size()*(compilation==null?4:2)+logical*2
+                +(quiz==null?0:quiz.chapters().size()*4)
                 +(compilation==null?0:(int)compilation.knowledge().stream().filter(k->k.relation().equals("CONFLICT")).count()*2)+pairs*2+32;
     }
     private int estimatedOutputBytes(CompilationPlan compilation,Blueprint quiz,ExecutionPlan execution) {
@@ -55,7 +55,7 @@ final class LearningPlanner {
         var factChapter=new LinkedHashMap<String,String>();var factCard=new HashMap<String,ContentReading.TopicCard>();
         for(var card:cards)for(String id:card.topic().itemIds()){factChapter.put(id,assignments.get(card.id()));factCard.put(id,card);}
         var canonical=new ArrayList<Knowledge>();var owner=new HashMap<String,String>();
-        if(r.facts().size()>64)normalizeBatches(factCard,factChapter,canonical,owner);
+        if(r.facts().size()>(r.policy().unitInputBytes()>=128000?32:64))normalizeBatches(factCard,factChapter,canonical,owner);
         else for(var fact:r.facts().values())normalizeOne(fact,factCard,factChapter,canonical,owner);
         var parents=directory.chapters().stream().collect(Collectors.toMap(DirectoryChapter::id,DirectoryChapter::parentId));
         var used=LearningHierarchy.ancestors(new LinkedHashSet<>(owner.values()),parents);var chapters=directory.chapters().stream().filter(c->used.contains(c.id())).map(c->new DirectoryChapter(c.id(),c.parentId(),c.title(),c.purpose(),c.exclusions(),
@@ -92,14 +92,15 @@ final class LearningPlanner {
         }
     }
     private void normalizeBatches(Map<String,ContentReading.TopicCard> factCard,Map<String,String> chapters,List<Knowledge> canonical,Map<String,String> owner) {
-        var facts=List.copyOf(r.facts().values());int from=0,window=32,batches=0;boolean singleMode=false;long started=System.nanoTime();
+        int maximumWindow=r.policy().unitInputBytes()>=128000?64:32;
+        var facts=List.copyOf(r.facts().values());int from=0,window=maximumWindow,batches=0;boolean singleMode=false;long started=System.nanoTime();
         while(from<facts.size()) {
             if(singleMode){normalizeOne(facts.get(from++),factCard,chapters,canonical,owner);continue;}
             int end=Math.min(from+window,facts.size());Map<String,Object> input;boolean fallback=false;
             while(true) {
                 input=normalizationInput(facts.subList(from,end),factCard,canonical);
                 if(TextWindow.count(ContentJson.encode(input))<=r.policy().unitInputBytes())break;
-                if(end-from==1){normalizeOne(facts.get(from),factCard,chapters,canonical,owner);from++;window=32;fallback=true;break;}
+                if(end-from==1){normalizeOne(facts.get(from),factCard,chapters,canonical,owner);from++;window=maximumWindow;fallback=true;break;}
                 end=from+Math.max(1,(end-from)/2);
             }
             if(fallback)continue;
@@ -129,7 +130,7 @@ final class LearningPlanner {
                 var value=new Knowledge(id,relation,summary,refs,List.copyOf(conditions));
                 if(old==null){canonical.add(value);owner.put(id,chapters.get(group.itemIds().get(0)));}else canonical.set(canonical.indexOf(old),value);
             }
-            from=end;window=32;
+            from=end;window=maximumWindow;
             LOG.info("event=content.normalize_batch completedFacts={} facts={} batches={} inputBytes={} durationMs={}",from,facts.size(),++batches,TextWindow.count(ContentJson.encode(input)),java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started));
         }
     }
@@ -316,9 +317,23 @@ final class LearningPlanner {
         List<?> level=input;int depth=0;
         while(TextWindow.count(ContentJson.encode(level))>maximum) {
             var groups=partition(level,r.policy().indexBytes()-300,ContentJson::encode);int current=depth;
-            var next=r.parallel(java.util.stream.IntStream.range(0,groups.size()).boxed().toList(),i->r.call(prefix+"_"+current+"_"+i,"organize","index",Map.of("children",groups.get(i)),ContentSchemas.summary(ContentLimits.current())));
-            if(next.size()>=level.size()||++depth>16)throw new LabException("WORKFLOW_INDEX_CAPACITY_EXCEEDED","全范围轻量索引无法收敛");level=next;
+            var batches=r.parallel(java.util.stream.IntStream.range(0,groups.size()).boxed().toList(),i->indexSummaries(prefix+"_"+current+"_"+i,groups.get(i)));
+            var next=batches.stream().flatMap(List::stream).toList();
+            // 容量拆分可能保留条目数；总字节数缩小仍是有效收敛。
+            if((next.size()>=level.size()&&TextWindow.count(ContentJson.encode(next))>=TextWindow.count(ContentJson.encode(level)))||++depth>16)throw new LabException("WORKFLOW_INDEX_CAPACITY_EXCEEDED","全范围轻量索引无法收敛");level=next;
         }return level;
+    }
+    private List<ContentWorkflow.Summary> indexSummaries(String id,List<?> children) {
+        try {
+            return List.of(r.call(id,"organize","index",Map.of("children",children),ContentSchemas.summary(ContentLimits.current())));
+        } catch(LabException failure) {
+            if(children.size()<2||!Set.of("MODEL_TRUNCATED","MODEL_CONTEXT_INSUFFICIENT").contains(failure.code()))throw failure;
+            LOG.info("event=content.index_split node={} children={} code={}",id,children.size(),failure.code());
+            int mid=children.size()/2;
+            var summaries=new ArrayList<ContentWorkflow.Summary>(indexSummaries(id+"_a",children.subList(0,mid)));
+            summaries.addAll(indexSummaries(id+"_b",children.subList(mid,children.size())));
+            return List.copyOf(summaries);
+        }
     }
     private static boolean related(ContentReading.TopicCard a,ContentReading.TopicCard b,Learning.Item x,Learning.Item y){return x.category().equals(y.category())||similarity(a,b)>0;}
     private static int similarity(ContentReading.TopicCard a,ContentReading.TopicCard b){var keys=new HashSet<>(a.topic().keywords());keys.addAll(a.topic().entities());var other=new HashSet<>(b.topic().keywords());other.addAll(b.topic().entities());keys.retainAll(other);return keys.size();}

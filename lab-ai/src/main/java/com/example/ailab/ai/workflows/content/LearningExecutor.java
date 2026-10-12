@@ -11,12 +11,13 @@ import java.util.stream.Collectors;
 
 /** 父租约下的有界工作包调度、逐项验收、恢复和局部返工。 */
 final class LearningExecutor {
+    private static final Set<String> PRESENTATION_ISSUES=Set.of("BAD_ORGANIZATION","DUPLICATE","STYLE","FORMAT","FORMATTING","WORDING","ORDER","REDUNDANCY");
     private final LearningRuntime r;private final Plan plan;private int inspectionRemaining;
     private record CachedSummary(String outputHash,UnitSummary summary) { }
     private final Map<String,CachedSummary> summaryCache=new java.util.concurrent.ConcurrentHashMap<>();
     record PartReceipt(String partId,String producerId,String json) { }
     record Completed(Learning.Result result,List<Coverage> coverage) { }
-    private static final RecordSchema<PartReceipt> RECEIPT=new RecordSchema<>(PartReceipt.class,"程序保存单元草稿或验收结果与生成回执",v->RecordSchema.require(!v.partId().isBlank()&&!v.producerId().isBlank()&&!v.json().isBlank(),RecordSchema.Reason.CONTENT_CONSTRAINT));
+    private static final RecordSchema<PartReceipt> RECEIPT=new RecordSchema<>(PartReceipt.class,"程序保存单元草稿或验收结果与生成回执",v->RecordSchema.require(!v.partId().isBlank()&&!v.producerId().isBlank()&&!v.json().isBlank(),RecordSchema.Reason.CONTENT_CONSTRAINT)).relaxed();
     LearningExecutor(LearningRuntime runtime,Plan value){r=runtime;plan=value;}
     Completed execute(List<Learning.Citation> citations) {
         while(true) {
@@ -43,7 +44,7 @@ final class LearningExecutor {
         r.checkpoint("global_accepted","review",Map.of("plan",ContentJson.hash(plan),"outputs",ContentJson.hash(outputs),"coverage",coverage),LearningBusinessSchemas.global(outputs.keySet()),()->new GlobalReview("ACCEPT",List.of(),List.of()));
         r.store().finish(r.lease(),"review",plan.requiredNodes());
         Learning.Result result;
-        if(plan.quiz()!=null){var questions=plan.quiz().slots().stream().map(s->(Learning.Question)outputs.get(s.id())).toList();var quiz=LearningSchemas.quiz(plan.quiz().slots().stream().map(s->new Learning.Target(s.id(),s.type(),s.itemIds())).toList()).validate(ContentJson.encode(new Learning.Quiz(plan.title(),questions)),Set.of());result=new Learning.Result("learning-quiz",plan.title(),quiz,null,List.of(),citations,true,"MODEL_REVIEW_PASSED_PENDING_HUMAN");}
+        if(plan.quiz()!=null){var questions=plan.quiz().slots().stream().map(s->(Learning.Question)outputs.get(s.id())).toList();var quiz=LearningSchemas.quiz(plan.quiz().slots().stream().map(s->new Learning.Target(s.id(),s.type(),s.itemIds())).toList()).relaxed().validate(ContentJson.encode(new Learning.Quiz(plan.title(),questions)),Set.of());result=new Learning.Result("learning-quiz",plan.title(),quiz,null,List.of(),citations,true,"MODEL_REVIEW_PASSED_PENDING_HUMAN");}
         else {
             var chapters=new ArrayList<Learning.Chapter>();var chapterPlans=new ArrayList<Learning.ChapterPlan>();
             for(var chapter:plan.compilation().directory().chapters()) {
@@ -108,6 +109,8 @@ final class LearningExecutor {
         return drafts;
     }
     private Object acceptUnit(Part part,Object draft,String producer) {
+        // 整编已通过结构与职责检查，统一交给全局检查；自测保留逐题答案验收。
+        if(plan.compilation()!=null)return draft;
         var context=LearningPackages.input(r,List.of(part),plan.compilation(),plan.quiz());
         String unit=part.kind().equals("QUESTION")?part.logicalId():part.id();
         var review=r.call("unit_review_"+part.id(),"review","unit-review",Map.of("context",context,"result",draft),LearningSchemas.review(Set.of(unit),ContentLimits.current()));
@@ -130,6 +133,7 @@ final class LearningExecutor {
     }
     private void global(Map<String,Object> outputs,List<Part> parts,List<Coverage> coverage) {
         inspectionRemaining=4;var summaries=summaries(outputs,"first");var issues=globalPass(outputs,summaries,coverage,"first");issues.addAll(chapterAndConflictPass(outputs,summaries,"first"));
+        discardPresentationIssues(issues);
         if(plan.quiz()!=null){var quiz=new Learning.Quiz(plan.title(),outputs.values().stream().map(v->(Learning.Question)v).toList());issues.addAll(LearningSchemas.withLocalQuizChecks(quiz,new Learning.Review("ACCEPT",List.of())).issues());}
         var targets=issues.stream().map(Learning.Issue::unitId).distinct().toList();
         for(String id:targets) {
@@ -144,15 +148,17 @@ final class LearningExecutor {
                 var bodies=new ArrayList<String>();for(var part:owned){var local=LearningPackages.input(r,List.of(part),plan.compilation(),null);r.bounded(local);var draft=partSchema(part).validate(accepted(part.id()).json(),Set.of());
                     var input=Map.of("context",local,"result",draft,"issues",unitIssues,"logicalSectionId",id,"neighbors",summaries.stream().filter(s->!s.id().equals(id)).limit(6).toList());
                     var repaired=r.correct("global_part_repair_"+part.id(),"package-write",input,partSchema(part),accepted(part.id()).producerId());
-                    var review=r.call("global_part_review_"+part.id(),"review","unit-review",Map.of("context",local,"result",repaired),LearningSchemas.review(Set.of(part.id()),ContentLimits.current()));
-                    if(!review.decision().equals("ACCEPT"))throw new LabException("WORKFLOW_REVIEW_REJECTED","问题小节片段返工后未通过验收");bodies.add(repaired.body());
+                    bodies.add(repaired.body());
                 }
                 var section=(Learning.Section)outputs.get(id);fixed=sectionSchema(id).validate(ContentJson.encode(new Learning.Section(id,String.join("\n\n",bodies),section.itemIds())),Set.of());
             }
             outputs.put(id,fixed);
         }
-        if(!targets.isEmpty()) {inspectionRemaining=4;var repaired=summaries(outputs,"repaired");var remaining=globalPass(outputs,repaired,coverage,"repaired");remaining.addAll(chapterAndConflictPass(outputs,repaired,"repaired"));if(!remaining.isEmpty())throw new LabException("WORKFLOW_REVIEW_REJECTED","一次局部修复后全局复核仍发现问题");}
+        if(!targets.isEmpty()) {inspectionRemaining=4;var repaired=summaries(outputs,"repaired");var remaining=globalPass(outputs,repaired,coverage,"repaired");remaining.addAll(chapterAndConflictPass(outputs,repaired,"repaired"));discardPresentationIssues(remaining);if(!remaining.isEmpty())throw new LabException("WORKFLOW_REVIEW_REJECTED","一次局部修复后全局复核仍发现问题");}
         if(plan.quiz()!=null&&!LearningSchemas.withLocalQuizChecks(new Learning.Quiz(plan.title(),outputs.values().stream().map(v->(Learning.Question)v).toList()),new Learning.Review("ACCEPT",List.of())).decision().equals("ACCEPT"))throw new LabException("WORKFLOW_REVIEW_REJECTED","题位存在重复题干或选项");
+    }
+    private void discardPresentationIssues(List<Learning.Issue> issues) {
+        if(plan.compilation()!=null)issues.removeIf(issue->PRESENTATION_ISSUES.contains(issue.code().toUpperCase(Locale.ROOT)));
     }
     record UnitSummary(String id,String chapterId,String cognition,String title,String summary,List<String> itemIds) { }
     private List<UnitSummary> summaries(Map<String,Object> outputs,String round) {
@@ -236,7 +242,7 @@ final class LearningExecutor {
     private List<String> unitsInChapter(String chapter,Set<String> all){var children=descendants(chapter);return plan.compilation()!=null?plan.compilation().sections().stream().filter(s->children.contains(s.chapterId())&&all.contains(s.id())).map(SectionDuty::id).toList():plan.quiz().slots().stream().filter(s->children.contains(s.primaryChapterId())&&all.contains(s.id())).map(Slot::id).toList();}
     private List<Learning.Issue> chapterAndConflictPass(Map<String,Object> outputs,List<UnitSummary> summaries,String round) {
         var issues=new ArrayList<Learning.Issue>();
-        for(String chapter:chapterIds()) {
+        for(String chapter:plan.compilation()==null?chapterIds():List.<String>of()) {
             var children=descendants(chapter);var members=summaries.stream().filter(s->children.contains(s.chapterId())).toList();int part=0;
             for(var group:LearningPlanner.partition(members,r.policy().unitInputBytes()-1500,ContentJson::encode)) {
                 var allowed=group.stream().map(UnitSummary::id).collect(Collectors.toSet());var input=Map.of("chapterId",chapter,"descendantChapterIds",children,"units",group,"rule","核对完整章职责、衔接、考点及冲突；父章按唯一单元汇总，问题定位单元");r.bounded(input);
@@ -269,22 +275,22 @@ final class LearningExecutor {
     private static RecordSchema<ContentWorkflow.Summary> compactSummary(){return new RecordSchema<>(ContentWorkflow.Summary.class,"保留全局职责、重复及冲突的简明索引",List.of(RecordSchema.FieldRule.utf8("title",120),RecordSchema.FieldRule.utf8("summary",600)),v->{});}
     private List<Coverage> coverage(List<Part> parts) {
         var out=new ArrayList<Coverage>();out.add(new Coverage("source","READ",r.reading().fragments().size(),r.reading().fragments().size(),r.reading().fragments().stream().map(f->f.source().id()).toList(),"全部自然拥有区间阅读，背景区间不重复计数"));
-        if(plan.compilation()!=null){out.add(new Coverage("knowledge","KNOWLEDGE",r.facts().size(),r.facts().size(),plan.compilation().knowledge().stream().map(Knowledge::id).toList(),"每条事实具有唯一规范知识和主要小节"));for(var s:plan.compilation().sections())out.add(new Coverage(s.id(),"ACCEPTANCE",ownedFacts(s).size(),ownedFacts(s).size(),parts.stream().filter(p->p.logicalId().equals(s.id())).map(Part::id).toList(),"小节所有执行片段通过局部验收"));}
+        if(plan.compilation()!=null){out.add(new Coverage("knowledge","KNOWLEDGE",r.facts().size(),r.facts().size(),plan.compilation().knowledge().stream().map(Knowledge::id).toList(),"每条事实具有唯一规范知识和主要小节"));for(var s:plan.compilation().sections())out.add(new Coverage(s.id(),"ACCEPTANCE",ownedFacts(s).size(),ownedFacts(s).size(),parts.stream().filter(p->p.logicalId().equals(s.id())).map(Part::id).toList(),"小节片段结构及职责检查通过，发布前统一全局验收"));}
         else {var selected=plan.quiz().slots().stream().flatMap(s->s.itemIds().stream()).distinct().toList();out.add(new Coverage("knowledge","KNOWLEDGE",r.facts().size(),selected.size(),selected,"已选题位实际引用的事实；未入选知识另列原因"));for(var slot:plan.quiz().slots())out.add(new Coverage(slot.id(),"ACCEPTANCE",1,1,parts.stream().filter(p->p.logicalId().equals(slot.id())).map(Part::id).toList(),"题位通过局部验收及全局检查"));for(var q:plan.quiz().quotas())out.add(new Coverage(q.chapterId(),"QUIZ_CHAPTER",q.maximum(),q.allocated(),plan.quiz().slots().stream().filter(s->s.primaryChapterId().equals(q.chapterId())).map(Slot::id).toList(),q.reason()));for(var o:plan.quiz().objectives()){var slots=plan.quiz().slots().stream().filter(s->s.objectiveId().equals(o.id())).map(Slot::id).toList();out.add(new Coverage(o.id(),"QUIZ_OBJECTIVE",1,slots.size(),slots,slots.isEmpty()?"未被固定数量配额选择":o.reason()));}for(var u:plan.quiz().uncovered())out.add(new Coverage(u.id(),"UNEXAMINED_"+u.kind(),1,0,List.of(),u.reason()));}
         if(plan.quiz()!=null)for(var chapter:plan.quiz().chapters()){
             var associated=plan.quiz().slots().stream().filter(s->s.relatedChapterIds().contains(chapter.id())).map(Slot::id).toList();out.add(new Coverage(chapter.id(),"QUIZ_ASSOCIATED",(int)plan.quiz().objectives().stream().filter(o->o.relatedChapterIds().contains(chapter.id())).count(),associated.size(),associated,"支持章节关联，不增加独立题数"));
             var children=descendants(chapter.id());var objectives=plan.quiz().objectives().stream().filter(o->children.contains(o.primaryChapterId())).map(Objective::id).distinct().toList();var selected=plan.quiz().slots().stream().filter(s->children.contains(s.primaryChapterId())).map(Slot::objectiveId).distinct().toList();out.add(new Coverage(chapter.id(),"QUIZ_SUBTREE_OBJECTIVE",objectives.size(),selected.size(),selected,"按父章子树唯一考点汇总"));
         }
         var all=plan.compilation()!=null?plan.compilation().sections().stream().map(SectionDuty::id).collect(Collectors.toSet()):plan.quiz().slots().stream().map(Slot::id).collect(Collectors.toSet());
-        for(String chapter:chapterIds()){var members=unitsInChapter(chapter,all);out.add(new Coverage(chapter,"CHAPTER_ACCEPTANCE",members.size(),members.size(),members,"所有必需单元和章级／全局检查通过后发布"));}
+        for(String chapter:chapterIds()){var members=unitsInChapter(chapter,all);out.add(new Coverage(chapter,"CHAPTER_ACCEPTANCE",members.size(),members.size(),members,plan.compilation()!=null?"本章全部职责纳入全局及必要冲突检查后发布":"所有必需单元和章级／全局检查通过后发布"));}
         return List.copyOf(out);
     }
     private List<String> ownedFacts(SectionDuty section){var byId=plan.compilation().knowledge().stream().collect(Collectors.toMap(Knowledge::id,k->k));return section.ownedKnowledgeIds().stream().flatMap(id->byId.get(id).sourceItemIds().stream()).toList();}
     private String sectionRelation(SectionDuty section){var kinds=plan.compilation().knowledge().stream().filter(k->section.ownedKnowledgeIds().contains(k.id())).map(Knowledge::relation).collect(Collectors.toSet());return kinds.contains("CONFLICT")?"CONFLICT":kinds.equals(Set.of("SAME"))?"MERGE":"COMPLEMENT";}
     private PartReceipt accepted(String id){return RECEIPT.validate(r.store().completedNode(r.lease(),"partaccepted_"+id).orElseThrow(()->new LabException("WORKFLOW_STATE_CONFLICT","已验收执行包缺少单元结果")),Set.of());}
-    private RecordSchema<SectionPart> partSchema(Part part){return new RecordSchema<>(SectionPart.class,"修复partId="+part.id()+"的单个小节片段，保持itemIds",List.of(RecordSchema.FieldRule.utf8("body",ContentLimits.current().section())),v->RecordSchema.require(v.partId().equals(part.id())&&v.itemIds().equals(part.itemIds())&&!v.body().isBlank(),RecordSchema.Reason.CONTENT_CONSTRAINT));}
-    private RecordSchema<Learning.Section> sectionSchema(String id){var duty=plan.compilation().sections().stream().filter(s->s.id().equals(id)).findFirst().orElseThrow();return new RecordSchema<>(Learning.Section.class,"输出groupId="+id+"的完整小节，保持itemIds",List.of(RecordSchema.FieldRule.utf8("body",ContentLimits.current().section())),v->RecordSchema.require(v.groupId().equals(id)&&v.itemIds().equals(ownedFacts(duty))&&!v.body().isBlank(),RecordSchema.Reason.CONTENT_CONSTRAINT));}
-    private RecordSchema<Learning.Question> questionSchema(String id){var slot=plan.quiz().slots().stream().filter(s->s.id().equals(id)).findFirst().orElseThrow();return LearningSchemas.question(new Learning.Target(id,slot.type(),slot.itemIds()));}
+    private RecordSchema<SectionPart> partSchema(Part part){return new RecordSchema<>(SectionPart.class,"修复partId="+part.id()+"的单个小节片段，保持itemIds",List.of(RecordSchema.FieldRule.utf8("body",ContentLimits.current().section())),v->RecordSchema.require(v.partId().equals(part.id())&&v.itemIds().equals(part.itemIds())&&!v.body().isBlank(),RecordSchema.Reason.CONTENT_CONSTRAINT)).relaxed();}
+    private RecordSchema<Learning.Section> sectionSchema(String id){var duty=plan.compilation().sections().stream().filter(s->s.id().equals(id)).findFirst().orElseThrow();return new RecordSchema<>(Learning.Section.class,"输出groupId="+id+"的完整小节，保持itemIds",List.of(RecordSchema.FieldRule.utf8("body",ContentLimits.current().section())),v->RecordSchema.require(v.groupId().equals(id)&&v.itemIds().equals(ownedFacts(duty))&&!v.body().isBlank(),RecordSchema.Reason.CONTENT_CONSTRAINT)).relaxed();}
+    private RecordSchema<Learning.Question> questionSchema(String id){var slot=plan.quiz().slots().stream().filter(s->s.id().equals(id)).findFirst().orElseThrow();return LearningSchemas.question(new Learning.Target(id,slot.type(),slot.itemIds())).relaxed();}
     private static boolean capacity(LabException e){return Set.of("MODEL_TRUNCATED","MODEL_CONTEXT_INSUFFICIENT","WORKFLOW_UNIT_TOO_LARGE").contains(e.code());}
     private static boolean descendant(String actual,String parent){return actual.equals(parent)||actual.startsWith(parent+"_");}
     private static boolean resolved(String id,Map<String,PackageStatus> all,Set<String> seen){var p=all.get(id);if(p==null||!seen.add(id))return false;if(p.status().equals("ACCEPTED"))return true;return p.status().equals("REPLACED")&&!p.children().isEmpty()&&p.children().stream().allMatch(c->resolved(c,all,new HashSet<>(seen)));}

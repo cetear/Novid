@@ -7,7 +7,7 @@ import com.example.ailab.contract.error.LabException;
 public final class ContentReading {
     private ContentReading() { }
     public static final String PROTOCOL = "structure-read-v1";
-    public static final int MAX_PACK_FRAGMENTS = 32;
+    public static final int MAX_PACK_FRAGMENTS = 64;
     public record Document(long knowledgeBaseId, long documentId, int documentVersion, long processingRevision,
                            String title, String format, String textHash, int textLength, List<SectionSnapshot> sections) {
         public Document { sections = List.copyOf(sections); }

@@ -1,5 +1,6 @@
 package com.example.ailab.data.persistence.mapper;
 import com.example.ailab.data.persistence.po.SqlRow;
+import com.example.ailab.data.persistence.po.SqlParameters;
 import org.apache.ibatis.annotations.Param;
 import java.util.List;
 public interface ContentWorkflowMapper {
@@ -10,7 +11,7 @@ public interface ContentWorkflowMapper {
     int savePolicy(@Param("args") Object[] args);
     List<SqlRow> run(@Param("args") Object[] args);
     List<SqlRow> boundResultBytes(@Param("args") Object[] args);
-    int completeReadingNodes(@Param("rows") List<Object[]> rows);
+    int completeReadingNodes(@Param("rows") List<SqlParameters> rows);
     int bind(@Param("args") Object[] args);
     List<SqlRow> node(@Param("args") Object[] args);
     List<SqlRow> nodes(@Param("args") Object[] args);

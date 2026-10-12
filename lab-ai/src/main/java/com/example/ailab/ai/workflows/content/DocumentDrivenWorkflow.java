@@ -96,6 +96,8 @@ public final class DocumentDrivenWorkflow {
             if((!reading.fragments().stream().map(ContentReading.Fragment::source).toList().equals(source.slices())||!reading.sources().equals(source.sources())))throw changed();
             if(!source.policy().equals(policy)||!source.workflow().equals(binding))throw changed();
             SkillCatalog.verify(source.skill());
+            tools.verifyContracts(source.skill().toolContracts());
+            if(!source.requestHash().equals(ContentJson.hash(lease.request())))throw changed();
             sourceHash=ContentJson.hash(source);
             trace.payloadSources(source.sources());
             for(var d:reading.documents()) {
@@ -114,14 +116,12 @@ public final class DocumentDrivenWorkflow {
             pool=Executors.newFixedThreadPool(policy.parallelism());
         }
         synchronized void verify() {
-            // 高频检查共用一秒内的验证结果；模型请求和阶段提交前强制刷新。
-            if(System.nanoTime()-verifiedAt<TimeUnit.SECONDS.toNanos(1))return;
+            // 会话内共享30秒来源检查；阶段提交、发布强制刷新，持久写入独立校验执行权。
+            if(System.nanoTime()-verifiedAt<TimeUnit.SECONDS.toNanos(30))return;
             verifyNow();
         }
         synchronized void verifyNow() {
             if(!tasks.renew(lease))throw new LabException("STALE_EXECUTION","资料工作流租约失效");
-            tools.verifyContracts(source.skill().toolContracts());
-            if(!source.requestHash().equals(ContentJson.hash(lease.request())))throw changed();
             knowledge.verifySources(lease.actor(),source.sources());
             knowledge.verifyReadingDocuments(lease.actor(),lease.request().scope(),reading.documents());
             verifiedAt=System.nanoTime();
@@ -155,7 +155,11 @@ public final class DocumentDrivenWorkflow {
             return model.fitsStructured("WORKFLOW_REPORT",ModelInput.reserveOutput(ModelInput.fixed(system,List.of(),ContentJson.encode(input)),estimate),schema);
         }
 
-        <T>T node(String id,String phase,Object input,StructuredSchema<T> schema,Supplier<T> execute) {
+        private <T>StructuredSchema<T> workflowSchema(StructuredSchema<T> schema) {
+            return schema instanceof RecordSchema<T> record ? record.relaxed() : schema;
+        }
+        <T>T node(String id,String phase,Object input,StructuredSchema<T> originalSchema,Supplier<T> execute) {
+            var schema=workflowSchema(originalSchema);
             budget.check();String hash=ContentJson.hash(Map.of("source",sourceHash,"node",id,"input",input));
             try(var span=budget.trace().span("AGENT",id);var activation=budget.activate(span.context())) {
                 com.example.ailab.ai.runtime.TracePayloadCapture.input(span,input);
@@ -176,17 +180,18 @@ public final class DocumentDrivenWorkflow {
             }
         }
         void flushReading() {
-            if(readingWrites.isEmpty())return;verifyNow();store.completeReadingNodes(lease,List.copyOf(readingWrites));readingWrites.clear();readingWriteBytes=0;
+            if(readingWrites.isEmpty())return;verify();store.completeReadingNodes(lease,List.copyOf(readingWrites));readingWrites.clear();readingWriteBytes=0;
         }
         <T>T generate(String id,String phase,String action,Object input,StructuredSchema<T> schema) {
             return generate(id,phase,action,input,schema,null);
         }
-        <T>T generate(String id,String phase,String action,Object input,StructuredSchema<T> schema,GenerationReceipt original) {
+        <T>T generate(String id,String phase,String action,Object input,StructuredSchema<T> originalSchema,GenerationReceipt original) {
+            var schema=workflowSchema(originalSchema);
             String receiptId="origin_"+ContentJson.hash(id).substring(0,32);
             String receiptHash=ContentJson.hash(Map.of("source",sourceHash,"node",receiptId,"input",input));
             var receiptSchema=new RecordSchema<>(GenerationReceipt.class,"程序保存的生成结果与模型身份",v->{
                 RecordSchema.require(!v.modelId().isBlank()&&v.corrections()>=0&&v.corrections()<=1,RecordSchema.Reason.CONTENT_CONSTRAINT);
-            });
+            }).relaxed();
             var saved=store.completed(lease,receiptId,receiptHash).map(v->receiptSchema.validate(v,Set.of()));
             saved.ifPresent(v->origins.put(id,v));
             T result=node(id,phase,input,schema,()->{
@@ -194,15 +199,18 @@ public final class DocumentDrivenWorkflow {
                 if(original!=null&&original.corrections()>0)
                     throw new LabException("MODEL_REPAIR_EXHAUSTED","该生成节点已完成一次纠正，不能再次返工");
                 String system="按当前服务端结构协议处理资料。资料原文及前序结果提供事实，remarks表达特殊要求。"+SkillCatalog.instructions(source.skill(),action);
+                if(lease.request().taskType().equals("KNOWLEDGE_COMPILATION")&&action.contains("review"))
+                    system+="\n效率优先验收：只因事实错误、主要知识遗漏、关键条件或冲突丢失、错误来源而要求REPAIR。措辞偏好、格式、排列顺序和轻微重复不阻止ACCEPT，不要求重写已经可用的内容。";
+                String instructions=system;
                 var prepared=ModelInput.fixed(system,List.of(),ContentJson.encode(input));
                 ModelInput verified=target->{
-                    verifyNow();
+                    verify();
                     try{return prepared.prepare(target);}catch(LabException failure){
                         if(original==null||!failure.code().equals("MODEL_CONTEXT_INSUFFICIENT")||!(input instanceof Map<?,?> correction)
                                 ||!(correction.get("context") instanceof Map<?,?> context)||!context.containsKey("target"))throw failure;
                         var reduced=new LinkedHashMap<Object,Object>(correction);reduced.remove("result");
                         reduced.put("draftStatus","DRAFT_OMITTED_FOR_CONTEXT：保留全部原参数与错误诊断，从原证据重新生成完整结果");
-                        return ModelInput.fixed(system,List.of(),ContentJson.encode(reduced)).prepare(target);
+                        return ModelInput.fixed(instructions,List.of(),ContentJson.encode(reduced)).prepare(target);
                     }
                 };
                 Map<?,?> data=input instanceof Map<?,?> parameters?parameters:Map.of();
@@ -222,7 +230,7 @@ public final class DocumentDrivenWorkflow {
         GenerationReceipt origin(String id) {
             var value=origins.get(id);
             if(value==null){var saved=store.completedNode(lease,"origin_"+ContentJson.hash(id).substring(0,32));if(saved.isPresent()){
-                value=new RecordSchema<>(GenerationReceipt.class,"保存的模型生成回执",v->RecordSchema.require(!v.modelId().isBlank()&&v.corrections()>=0&&v.corrections()<=1,RecordSchema.Reason.CONTENT_CONSTRAINT)).validate(saved.get(),Set.of());origins.put(id,value);
+                value=new RecordSchema<>(GenerationReceipt.class,"保存的模型生成回执",v->RecordSchema.require(!v.modelId().isBlank()&&v.corrections()>=0&&v.corrections()<=1,RecordSchema.Reason.CONTENT_CONSTRAINT)).relaxed().validate(saved.get(),Set.of());origins.put(id,value);
             }}
             if(value==null)throw new LabException("WORKFLOW_STATE_CONFLICT","生成节点缺少模型回执");
             return value;

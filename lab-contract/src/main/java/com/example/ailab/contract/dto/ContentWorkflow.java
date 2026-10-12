@@ -10,15 +10,15 @@ public final class ContentWorkflow {
                          int executionSeconds, int resultBytes) {
         public Policy {
             if (sourceBytes < 3000 || sourceBytes > 10000000 || pageBytes < 500 || pageBytes > 12000
-                    || readingPackBytes < pageBytes || readingPackBytes > 96000
-                    || maximumItems < 8 || maximumItems > 20000 || indexBytes < 6000 || indexBytes > 64000
-                    || unitInputBytes < Math.max(indexBytes,readingPackBytes) || unitInputBytes > 128000
-                    || packageOutputBytes < 6000 || packageOutputBytes > 30000 || maximumUnits < 1 || maximumUnits > 512
+                    || readingPackBytes < pageBytes || readingPackBytes > 192000
+                    || maximumItems < 8 || maximumItems > 20000 || indexBytes < 6000 || indexBytes > 192000
+                    || unitInputBytes < Math.max(indexBytes,readingPackBytes) || unitInputBytes > 384000
+                    || packageOutputBytes < 6000 || packageOutputBytes > 60000 || maximumUnits < 1 || maximumUnits > 512
                     || parallelism < 1 || parallelism > 16 || turns < 10 || turns > 10000 || attempts < turns || attempts > 20000
                     || tools < 1 || tools > 10000 || executionSeconds < 1200 || executionSeconds > 86400
                     || resultBytes < 500000 || resultBytes > 16000000) throw new IllegalArgumentException("资料工作流资源策略无效");
         }
-        public static Policy defaults() { return new Policy(1000000, 6000, 24000, 4096, 32000, 64000, 24000, 256, 8, 1200, 1800, 1200, 7200, 4000000); }
+        public static Policy defaults() { return new Policy(1000000, 6000, 96000, 4096, 96000, 256000, 48000, 256, 8, 1200, 1800, 1200, 7200, 4000000); }
         public Learning.Limits limits() { return new Learning.Limits(turns, attempts, tools); }
     }
     public record SourcePlan(WorkflowExecutionBinding workflow, TaskExecutionBinding skill, String requestHash,

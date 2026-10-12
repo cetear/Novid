@@ -219,36 +219,9 @@ public class ModelGateway {
                 return schema.validate(turn.text(), referenceIds(turn.evidence()));
             } catch (RuntimeException failure) {
                 span.fail(failure);
-                var diagnostic = new LinkedHashMap<String, Object>();
-                diagnostic.put("kind", "VALIDATION_FAILURE");
-                diagnostic.put("errorCode", com.example.ailab.contract.error.DiagnosticFailure.code(failure));
-                if (failure instanceof LabException lab) {
-                    RecordSchema.reason(lab).ifPresent(reason -> diagnostic.put("reason", reason.name()));
-                    diagnostic.put("issues", lab.validationIssues());
-                }
-                com.example.ailab.ai.runtime.TracePayloadCapture.output(span, diagnostic);
                 throw failure;
             }
         }
-    }
-
-    /** 调用失败保存程序诊断而非供应商回答；不复制可能含凭证的异常消息。 */
-    private void captureCallFailure(com.example.ailab.contract.context.TraceContext.Span span, String code, Throwable failure) {
-        var diagnostic = new LinkedHashMap<String, Object>();
-        diagnostic.put("kind", "CALL_FAILURE");
-        diagnostic.put("errorCode", code);
-        var causes = new ArrayList<String>();
-        var seen = Collections.newSetFromMap(new IdentityHashMap<Throwable, Boolean>());
-        for (var cause = failure; cause != null && causes.size() < 8 && seen.add(cause); cause = cause.getCause()) {
-            causes.add(cause.getClass().getSimpleName());
-            if (cause instanceof java.net.ConnectException) diagnostic.put("reason", "CONNECTION_FAILED");
-            if (cause instanceof DeadlineHttpClient.Failure http) {
-                diagnostic.put("httpStatus", http.status);
-                if (http.retryAfter != null) diagnostic.put("retryAfterSeconds", http.retryAfter.toSeconds());
-            }
-        }
-        diagnostic.put("causes", causes);
-        com.example.ailab.ai.runtime.TracePayloadCapture.output(span, diagnostic);
     }
 
     public record StructuredTurn<T>(T value, Turn turn) {
@@ -302,7 +275,7 @@ public class ModelGateway {
                 budget.check();
                 var permit = health.acquire(id, d.quotaGroup());
                 if (permit == null) break;
-                boolean global = false, local = false, sent = false, responseCaptured = false;
+                boolean global = false, local = false, sent = false;
                 var semaphore = targetConcurrency.computeIfAbsent(id, key -> new Semaphore(d.maxConcurrency(), true));
                 Integer inputUsage = null, outputUsage = null;
                 int reserved = 0;
@@ -344,8 +317,7 @@ public class ModelGateway {
                     modelSpan = budget.trace().span("MODEL", "chat");
                     if (budget.trace().capturesPayloads()) budget.trace().payloadSources(prepared.evidence().stream()
                             .map(e -> new SourceDependency(e.document().knowledgeBaseId(), e.document().id(), e.document().documentVersion())).toList());
-                    com.example.ailab.ai.runtime.TracePayloadCapture.input(modelSpan, messages.stream()
-                            .map(m -> Map.of("role", m.type().name(), "content", m.toString())).toList());
+                    com.example.ailab.ai.runtime.TracePayloadCapture.messages(modelSpan, messages);
                     budget.lastModelNode(modelSpan.id());
                     if (registry.mock()) {
                         if (d.modelName().contains("timeout"))
@@ -356,7 +328,6 @@ public class ModelGateway {
                         if (schema instanceof KnowledgeAnswerSchema)
                             text = "{\"status\":\"NEEDS_INPUT\",\"answer\":\"Mock结构验证（非真实模型）\",\"references\":[]}";
                         com.example.ailab.ai.runtime.TracePayloadCapture.output(modelSpan, text);
-                        responseCaptured = text != null;
                         log.add(usage(id, outcome, reserved, null, null, d));
                         budget.observe(log.get(log.size() - 1));
                         return turn(text, id, null, null, true, AiMessage.from(text), decision, log, prepared.evidence());
@@ -372,8 +343,8 @@ public class ModelGateway {
                     outputUsage = usage == null ? null : usage.outputTokenCount();
                     String text = response.aiMessage().text();
                     com.example.ailab.ai.runtime.TracePayloadCapture.output(modelSpan, response.aiMessage().hasToolExecutionRequests()
-                            ? response.aiMessage().toString() : text);
-                    responseCaptured = response.aiMessage().hasToolExecutionRequests() || text != null;
+                            ? java.util.stream.Stream.concat(text == null ? java.util.stream.Stream.empty() : java.util.stream.Stream.of(text),
+                                    response.aiMessage().toolExecutionRequests().stream().map(tool -> tool.arguments())).toList() : text);
                     String protocolFailure = responsesFailure(d, raw.get());
                     if (protocolFailure != null) throw new LabException(protocolFailure, "模型响应未完成");
                     // SDK可能只返回文字，原始协议refusal必须独立检查，不能修复安全拒绝。
@@ -405,8 +376,6 @@ public class ModelGateway {
                 } catch (RuntimeException error) {
                     String protocolFailure = responsesFailure(d, raw.get());
                     failure = refused(raw.get()) ? "MODEL_REFUSED" : protocolFailure != null ? protocolFailure : classify(error);
-                    if (modelSpan != null && !responseCaptured && !failure.equals("MODEL_TIMEOUT"))
-                        captureCallFailure(modelSpan, failure, error);
                     LOG.warn("event=model.attempt_failed modelId={} attempt={} code={}", id, attempts, failure,
                             com.example.ailab.contract.error.DiagnosticFailure.sanitized(error));
                     outcome = failure;

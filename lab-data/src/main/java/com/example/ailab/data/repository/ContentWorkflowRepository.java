@@ -7,6 +7,7 @@ import com.example.ailab.contract.port.*;
 import com.example.ailab.contract.error.LabException;
 import com.example.ailab.data.persistence.mapper.ContentWorkflowMapper;
 import com.example.ailab.data.persistence.po.SqlRow;
+import com.example.ailab.data.persistence.po.SqlParameters;
 import com.fasterxml.jackson.databind.*;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -123,7 +124,10 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         }
         for(var row:pending){var old=existing.get((String)row[1]);if(old==null||!"COMPLETED".equals(old.string("status")))writes.add(row);}
         if(writes.isEmpty())return;
-        if(mapper.completeReadingNodes(writes)<writes.size())throw conflict();mapper.progress(new Object[]{lease.task().taskId()});
+        var parameters=writes.stream().map(row->new SqlParameters()
+                .addValue("taskId",row[0]).addValue("nodeId",row[1]).addValue("inputHash",row[2])
+                .addValue("outputHash",row[3]).addValue("outputJson",row[4])).toList();
+        if(mapper.completeReadingNodes(parameters)<writes.size())throw conflict();mapper.progress(new Object[]{lease.task().taskId()});
     }
     public void begin(TaskLease lease,String id,String stage,String inputHash) {
         valid(lease);identity(id,inputHash);

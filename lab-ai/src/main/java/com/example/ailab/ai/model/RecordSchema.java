@@ -27,6 +27,7 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
             .enable(DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES)
             .enable(DeserializationFeature.FAIL_ON_NULL_CREATOR_PROPERTIES);
     private static final ThreadLocal<List<ValidationIssue>> ACTIVE = new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> RELAXED = new ThreadLocal<>();
     private static final int MAX_ISSUES = 32;
 
     private static final class Violation extends IllegalArgumentException {
@@ -84,21 +85,32 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
     private final Consumer<T> validate;
     private final List<FieldRule> rules;
     private final String contract;
+    private final boolean relaxed;
 
     public RecordSchema(Class<T> type, String instruction, Consumer<T> validate) {
         this(type, instruction, List.of(), validate);
     }
 
     public RecordSchema(Class<T> type, String instruction, List<FieldRule> rules, Consumer<T> validate) {
+        this(type, instruction, rules, validate, false);
+    }
+
+    private RecordSchema(Class<T> type, String instruction, List<FieldRule> rules, Consumer<T> validate, boolean relaxed) {
         this.type = type;
         this.instruction = instruction;
         this.rules = List.copyOf(rules);
         this.validate = validate;
         this.contract = contract(type).toString();
+        this.relaxed = relaxed;
     }
 
     public RecordSchema<T> withChecks(Consumer<T> checks) {
-        return new RecordSchema<>(type, instruction, rules, validate.andThen(checks));
+        return new RecordSchema<>(type, instruction, rules, validate.andThen(checks), relaxed);
+    }
+
+    /** 资料工作流容忍展示格式和轻微文案超长；身份、来源、覆盖和整体容量仍按业务规则验证。 */
+    public RecordSchema<T> relaxed() {
+        return relaxed ? this : new RecordSchema<>(type, instruction, rules, validate, true);
     }
 
     public List<FieldRule> fieldRules() {
@@ -177,7 +189,8 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
                 require(false, Reason.JSON_TYPE, path, "object");
                 return;
             }
-            require(value.size() == record.getRecordComponents().length, Reason.JSON_FIELDS, path, "仅允许这些必填字段：" + Arrays.stream(record.getRecordComponents()).map(RecordComponent::getName).toList());
+            if (!Boolean.TRUE.equals(RELAXED.get()))
+                require(value.size() == record.getRecordComponents().length, Reason.JSON_FIELDS, path, "仅允许这些必填字段：" + Arrays.stream(record.getRecordComponents()).map(RecordComponent::getName).toList());
             for (var field : record.getRecordComponents())
                 check(value.get(field.getName()), field.getGenericType(), path.equals("$") ? field.getName() : path + "." + field.getName());
             return;
@@ -190,8 +203,11 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
             int size = rule.unit().equals("ITEMS") ? node.size() : rule.unit().equals("UTF-8_BYTES") ? TextWindow.count(node.isContainerNode() ? node.toString() : node.asText()) : node.asText().length();
             if (rule.nonBlank() && node.asText().isBlank())
                 add(new ValidationIssue(path, "NON_BLANK", size, rule.maximum(), rule.unit(), "不能为空"));
-            if (!rule.unit().equals("ENUM") && size > rule.maximum())
-                add(new ValidationIssue(path, "MAXIMUM", size, rule.maximum(), rule.unit(), "不得超过上限"));
+            int maximum = rule.maximum();
+            if (Boolean.TRUE.equals(RELAXED.get()) && rule.unit().equals("UTF-8_BYTES") && !rule.path().equals("$"))
+                maximum += maximum / 4;
+            if (!rule.unit().equals("ENUM") && size > maximum)
+                add(new ValidationIssue(path, "MAXIMUM", size, maximum, rule.unit(), "不得超过上限"));
             if (rule.unit().equals("ENUM") && !rule.allowed().contains(node.asText()))
                 add(new ValidationIssue(path, "ENUM", null, null, "ENUM", String.join("/", rule.allowed())));
             return;
@@ -223,12 +239,21 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
 
     public T validate(String text, Set<String> references) {
         var previous = ACTIVE.get();
+        var previousRelaxed = RELAXED.get();
         var issues = new ArrayList<ValidationIssue>();
         ACTIVE.set(issues);
+        RELAXED.set(relaxed || Boolean.TRUE.equals(previousRelaxed));
         try {
-            if (text == null || text.length() > 200000) {
-                maximum(false, Reason.JSON_SIZE, "$", text == null ? 0 : text.length(), 200000, "UTF-16_UNITS");
+            int maximumJsonChars=Boolean.TRUE.equals(RELAXED.get())?524288:200000;
+            if (text == null || text.length() > maximumJsonChars) {
+                maximum(false, Reason.JSON_SIZE, "$", text == null ? 0 : text.length(), maximumJsonChars, "UTF-16_UNITS");
                 throw invalid(Reason.JSON_SIZE, issues);
+            }
+            if (Boolean.TRUE.equals(RELAXED.get())) {
+                text = text.strip();
+                int line = text.indexOf('\n');
+                if (line >= 0 && (text.substring(0,line).strip().equals("```json") || text.substring(0,line).strip().equals("```")) && text.endsWith("```"))
+                    text = text.substring(line + 1,text.length() - 3).strip();
             }
             var tree = JSON.readTree(text);
             check(tree, type, "$");
@@ -237,7 +262,9 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
                 if (rule.path().equals("$")) field(tree, new String[0], 0, "$", rule);
                 else field(tree, rule.path().split("\\."), 0, "", rule);
             }
-            var value = JSON.readValue(text, type);
+            T value = Boolean.TRUE.equals(RELAXED.get())
+                    ? JSON.readerFor(type).without(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).readValue(tree)
+                    : JSON.treeToValue(tree, type);
             validate.accept(value);
             if (!issues.isEmpty()) throw invalid(issueReason(issues.get(0)), issues);
             return value;
@@ -252,6 +279,8 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
         } finally {
             if (previous == null) ACTIVE.remove();
             else ACTIVE.set(previous);
+            if (previousRelaxed == null) RELAXED.remove();
+            else RELAXED.set(previousRelaxed);
         }
     }
 

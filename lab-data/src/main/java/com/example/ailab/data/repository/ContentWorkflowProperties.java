@@ -8,7 +8,7 @@ import org.springframework.stereotype.Component;
 @Component
 @ConfigurationProperties(prefix = "lab.content-workflow")
 public class ContentWorkflowProperties {
-    private int sourceBytes=1000000, pageBytes=6000, readingPackBytes=24000, maximumItems=4096, indexBytes=32000, unitInputBytes=64000, packageOutputBytes=24000;
+    private int sourceBytes=1000000, pageBytes=6000, readingPackBytes=96000, maximumItems=4096, indexBytes=96000, unitInputBytes=256000, packageOutputBytes=48000;
     private int maximumUnits=256, parallelism=8, turns=1200, attempts=1800, tools=1200, executionSeconds=7200, resultBytes=4000000;
     public ContentWorkflow.Policy snapshot() { return new ContentWorkflow.Policy(sourceBytes,pageBytes,readingPackBytes,maximumItems,indexBytes,unitInputBytes,packageOutputBytes,maximumUnits,parallelism,turns,attempts,tools,executionSeconds,resultBytes); }
     public int getSourceBytes(){return sourceBytes;} public void setSourceBytes(int v){sourceBytes=v;}

@@ -113,16 +113,16 @@ lab:
     source-bytes: 1000000
     # 自然原文片段容量，单位 UTF-8 字节；范围 500～12000，含定位与必要背景。
     page-bytes: 6000
-    # 最多32个相邻自然片段组合的阅读包容量；不小于 page-bytes，最大 96000 字节。
-    reading-pack-bytes: 24000
+    # 最多64个相邻自然片段组合的阅读包容量；不小于 page-bytes，最大 192000 字节。
+    reading-pack-bytes: 96000
     # 整个资料任务可保存的事实条目数上限；范围 8～20000。
     maximum-items: 4096
-    # 知识索引工作包的容量上限，单位 UTF-8 字节；范围 6000～64000。
-    index-bytes: 32000
-    # 完整生成输入包容量，含职责、证据与依赖结果；不小于索引／阅读包，最大 128000 字节。
-    unit-input-bytes: 64000
-    # 合包的预计输出容量，单位 UTF-8 字节；范围 6000～30000，仍核验实际模型输出窗口。
-    package-output-bytes: 24000
+    # 知识索引工作包的容量上限，单位 UTF-8 字节；范围 6000～192000。
+    index-bytes: 96000
+    # 完整生成输入包容量，含职责、证据与依赖结果；不小于索引／阅读包，最大 384000 字节。
+    unit-input-bytes: 256000
+    # 合包的预计输出容量，单位 UTF-8 字节；范围 6000～60000，仍核验实际模型输出窗口。
+    package-output-bytes: 48000
     # 内容目标数量上限，如题目、整编小节或内容页；范围 1～512。
     maximum-units: 256
     # 资料子工作包线程池并发数；范围 1～16，实际还受模型网关和目标模型许可限制。
@@ -361,9 +361,9 @@ lab:
         # 私有资料仍须通过既有来源授权及外发检查。
         data-classifications: [PRIVATE]
         # 工作流模型上下文窗口，单位词元；独立于检索模型配置。
-        context-window: ${WORKFLOW_MODEL_CONTEXT_WINDOW:200000}
+        context-window: ${WORKFLOW_MODEL_CONTEXT_WINDOW:500000}
         # 工作流单次最大输出词元数；Schema 和输入仍计入窗口预检。
-        output-limit: ${WORKFLOW_MODEL_OUTPUT_LIMIT:32768}
+        output-limit: ${WORKFLOW_MODEL_OUTPUT_LIMIT:65536}
         # 单次等待秒数，默认 30 分钟，范围 1～1800，并受调用入口上限及任务剩余期限限制。
         timeout-seconds: ${WORKFLOW_MODEL_TIMEOUT_SECONDS:1800}
         # 默认复用同一凭证账户的配额组；独立账户可覆盖，模型分离不增加账户余额。
