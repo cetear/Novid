@@ -328,6 +328,9 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
             if (!issues.isEmpty()) throw invalid(issueReason(issues.get(0)), issues);
             return value;
         } catch (LabException failure) {
+            // 业务校验可能先收集字段违规再立即退出，不能让无诊断异常覆盖已确认的问题。
+            if (failure.code().equals("MODEL_STRUCTURED_INVALID") && failure.validationIssues().isEmpty() && !issues.isEmpty())
+                throw invalid(issueReason(issues.get(0)), issues);
             throw failure;
         } catch (Violation failure) {
             throw invalid(issueReason(failure.issue), List.of(failure.issue));

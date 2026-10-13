@@ -95,6 +95,8 @@ public class PrivateResourceRepository implements MemoryStorePort, TraceRecordPo
     public void recordGraph(TraceSnapshot run,List<TraceNode> nodes) {
         if(nodes.size()>2000 || nodes.size()!=run.nodeCount()) throw LabException.invalid("观测节点数量不匹配");
         record(run);
+        // record持有运行行写锁；终态已提交后拒绝整个迟到增量，包含尚未插入的节点。
+        if (!mapper.graphRunAccepts(new Object[]{run.traceId(),run.actorUserId(),run.endedAt()==null?null:Timestamp.from(run.endedAt())})) return;
         var rows=new ArrayList<com.example.ailab.data.persistence.po.TraceSpanRow>();
         for(var node:nodes) {
             try {

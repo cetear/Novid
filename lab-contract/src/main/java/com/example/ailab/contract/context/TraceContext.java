@@ -23,6 +23,7 @@ public final class TraceContext {
         final int maximum;
         final java.util.function.BiConsumer<List<TraceNode>, Boolean> finish;
         boolean incomplete, closed;
+        long revision;
         boolean payloadsEnabled;
         int payloadChars;
         final Set<SourceDependency> sources = new LinkedHashSet<>();
@@ -68,6 +69,7 @@ public final class TraceContext {
      */
     public void drop() {
         synchronized (state) {
+            if (!state.incomplete) state.revision++;
             state.incomplete = true;
         }
     }
@@ -85,7 +87,8 @@ public final class TraceContext {
     public void payloadSources(List<SourceDependency> sources) {
         synchronized (state) {
             if (state.closed) return;
-            state.sources.addAll(sources);
+            boolean changed = state.sources.addAll(sources);
+            if (changed || !state.payloadsEnabled) state.revision++;
             state.payloadsEnabled = true;
         }
     }
@@ -108,12 +111,14 @@ public final class TraceContext {
     public Span span(String type, String name, String step, String agent, List<String> dependencies) {
         synchronized (state) {
             if (state.closed || state.nodes.size() >= state.maximum) {
+                if (!state.incomplete) state.revision++;
                 state.incomplete = true;
                 return new Span(this, -1, null);
             }
             String id = UUID.randomUUID().toString();
             int index = state.nodes.size();
             state.nodes.add(new TraceNode(id, parent, safe(type), safe(name), safe(step), safe(agent), dependencies, index + 1, "RUNNING", Instant.now(), null, null, null, null, null, null, null, 0, null, null, "UNKNOWN", null));
+            state.revision++;
             return new Span(new TraceContext(state, id, step, agent), index, id);
         }
     }
@@ -136,18 +141,27 @@ public final class TraceContext {
      * 完成后有限快照，不等待外部观测，不把迟到节点拼入已结束执行。
      */
     public void finish() {
+        Snapshot snapshot;
         synchronized (state) {
             if (state.closed) return;
             state.closed = true;
+            state.revision++;
             if (state.nodes.stream().anyMatch(n -> n.endedAt() == null)) state.incomplete = true;
-            try {
-                var sources = List.copyOf(state.sources);
-                state.finish.accept(state.nodes.stream().map(n -> n.withSources(
-                        n.input() == null && n.output() == null && n.observation()==null && n.diagnostic()==null ? List.of() : sources)).toList(), state.incomplete);
-            } catch (RuntimeException ignored) {
-                state.incomplete = true;
-            }
+            snapshot = snapshotLocked();
         }
+        try { state.finish.accept(snapshot.nodes(), snapshot.incomplete()); }
+        catch (RuntimeException ignored) { drop(); }
+    }
+
+    /** 后台收集器只在版本变化时复制节点；运行中和终态使用同一权限来源绑定。 */
+    public record Snapshot(List<TraceNode> nodes, boolean incomplete, boolean finished, long revision) { }
+    public long revision() { synchronized (state) { return state.revision; } }
+    public Snapshot snapshot() { synchronized (state) { return snapshotLocked(); } }
+    private Snapshot snapshotLocked() {
+        var sources = List.copyOf(state.sources);
+        var nodes = state.nodes.stream().map(n -> n.withSources(
+                n.input() == null && n.output() == null && n.observation() == null && n.diagnostic() == null ? List.of() : sources)).toList();
+        return new Snapshot(nodes, state.incomplete, state.closed, state.revision);
     }
 
     /**
@@ -261,6 +275,7 @@ public final class TraceContext {
                 }
                 var n = state.nodes.get(index);
                 state.nodes.set(index, new TraceNode(n.spanId(), n.parentSpanId(), n.type(), n.name(), n.stepId(), n.agentId(), n.dependsOn(), n.sequence(), status, n.startedAt(), Instant.now(), error, model, task, profile, policy, reason, attempt, in, out, usage, toolHash, input, output, List.of(),observation,diagnostic));
+                state.revision++;
             }
         }
     }

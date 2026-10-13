@@ -301,18 +301,35 @@ final class LearningExecutor {
             try{var review=r.call("compact_review_"+round+"_"+n++,"review","global-review",compactReviewInput(group,outputs,coverage),compactReviewSchema(group));issues.addAll(review.issues());}
             catch(LabException failure){if(!failure.code().equals("MODEL_CONTEXT_INSUFFICIENT"))throw failure;return Optional.empty();}}
         if(groups.size()>1){var master=compactMasterInput(summaries,coverage,round,outputs.keySet());
-            r.bounded(master);var review=r.call("compact_master_"+round,"review","global-review",master,LearningBusinessSchemas.global(outputs.keySet()));issues.addAll(inspectBusiness(review,"compact_master_"+round,master,outputs.keySet(),outputs,summaries));}
+            r.bounded(master);var review=r.call("compact_master_"+round,"review","global-review",master,compactMasterSchema(summaries,coverage,outputs.keySet()));issues.addAll(inspectBusiness(review,"compact_master_"+round,master,outputs.keySet(),outputs,summaries));}
         return Optional.of(issues);
     }
     private RecordSchema<GlobalReview> compactReviewSchema(Collection<String> ids){
         return LearningBusinessSchemas.global(Set.copyOf(ids)).withChecks(v->RecordSchema.require(!v.decision().equals("INSPECT"),RecordSchema.Reason.CONTENT_CONSTRAINT,"decision","已提供完整正文，ACCEPT或REPAIR"));
     }
+    /** 冻结的事实归属和程序计数可直接核对；模型仍负责正文遗漏、条件及来源等语义问题。 */
+    private RecordSchema<GlobalReview> compactMasterSchema(List<UnitSummary> summaries,List<Coverage> coverage,Set<String> allowed){
+        var owned=new LinkedHashMap<String,List<String>>();plan.compilation().sections().forEach(s->owned.put(s.id(),ownedFacts(s)));
+        var all=owned.values().stream().flatMap(Collection::stream).toList();var verified=new HashMap<String,Integer>();
+        if(all.size()==new HashSet<>(all).size()&&new HashSet<>(all).equals(r.facts().keySet()))for(var summary:summaries){
+            var facts=owned.get(summary.id());var counts=coverage.stream().filter(c->c.id().equals(summary.id())&&c.kind().equals("ACCEPTANCE")).toList();
+            if(facts!=null&&facts.size()==summary.itemIds().size()&&new HashSet<>(facts).equals(new HashSet<>(summary.itemIds()))&&counts.size()==1
+                    &&counts.get(0).available()==facts.size()&&counts.get(0).selected()==facts.size())verified.put(summary.id(),facts.size());
+        }
+        return LearningBusinessSchemas.global(allowed).withChecks(v->{
+            for(int i=0;i<v.issues().size();i++){
+                var issue=v.issues().get(i);var count=verified.get(issue.unitId());
+                RecordSchema.require(count==null||!"COVERAGE_MISMATCH".equalsIgnoreCase(issue.code()),RecordSchema.Reason.CONTENT_CONSTRAINT,"issues["+i+"].evidence",
+                        "单元"+issue.unitId()+"的冻结事实归属、units.itemIds、coverage.available/selected经程序核对均为"+count+"项。不得推测未提供的连续事实编号或报告元数据覆盖不一致；若正文遗漏已分配知识，请用MISSING_KNOWLEDGE定位实际正文和已提供的事实依据。");
+            }
+        });
+    }
     private boolean fitsReview(Object input,RecordSchema<?> schema){return TextWindow.count(ContentJson.encode(input))<=r.policy().unitInputBytes()&&r.preflight("global-review",input,schema);}
     /** 只在协调输入不能容纳时压缩导航，单元身份、归属及覆盖计数始终保留。 */
     private Map<String,Object> compactMasterInput(List<UnitSummary> summaries,List<Coverage> coverage,String round,Set<String> allowed){
         var master=new LinkedHashMap<String,Object>();master.put("directory",plan.compilation().directory());master.put("units",summaries);master.put("coverage",coverage);
-        master.put("rule","全部单元已按完整正文和原文证据分批验收。协调跨单元职责、术语和条件，不重复逐单元检查。必要时定位正文单元INSPECT。");
-        var schema=LearningBusinessSchemas.global(allowed);if(fitsReview(master,schema))return master;
+        master.put("rule","全部单元已完成分批正文和原文证据复核。协调跨单元职责、术语和条件，不重复逐单元检查。元数据覆盖以程序提供的units.itemIds和coverage计数为准，不按事实编号推测未提供的条目。COVERAGE_MISMATCH仅用于元数据不一致；正文遗漏用MISSING_KNOWLEDGE并指出具体依据。必要时定位正文单元INSPECT。");
+        var schema=compactMasterSchema(summaries,coverage,allowed);if(fitsReview(master,schema))return master;
         master.put("units",summaries.stream().map(s->new UnitSummary(s.id(),s.chapterId(),s.cognition(),s.title(),"",s.itemIds())).toList());
         master.put("coverage",coverage.stream().map(c->Map.of("id",c.id(),"kind",c.kind(),"available",c.available(),"selected",c.selected())).toList());
         var level=summaries.stream().map(s->new ReviewIndex(List.of(s.id()),new ContentWorkflow.Summary(s.title(),s.summary()))).toList();

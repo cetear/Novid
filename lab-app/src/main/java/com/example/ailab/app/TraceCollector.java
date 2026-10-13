@@ -17,8 +17,9 @@ import java.util.concurrent.*;
 public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(TraceCollector.class);
     private final TraceRecordPort store;
-    private final int maximum, days;
+    private final int maximum, days, capacity;
     private final ArrayBlockingQueue<Batch> queue;
+    private final ConcurrentMap<String, LiveRun> live = new ConcurrentHashMap<>();
     private final Thread worker;
     private final OtlpTraceExporter exporter;
     private volatile boolean running = true;
@@ -26,6 +27,12 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
     private final java.util.concurrent.atomic.AtomicInteger pending = new java.util.concurrent.atomic.AtomicInteger();
 
     private record Batch(TraceSnapshot run, List<TraceNode> nodes, TraceContext context) {
+    }
+    private static final class LiveRun {
+        final TraceSnapshot run;
+        final TraceContext context;
+        volatile long writtenRevision;
+        LiveRun(TraceSnapshot run, TraceContext context) { this.run = run; this.context = context; }
     }
 
     /**
@@ -43,6 +50,7 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
         this.store = store;
         this.maximum = maximum;
         this.days = days;
+        this.capacity = capacity;
         queue = new ArrayBlockingQueue<>(capacity);
         exporter = new OtlpTraceExporter(export, endpoint, authorization);
         worker = new Thread(this::drain, "trace-writer");
@@ -63,20 +71,18 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
             failed = true;
         }
         final String prior = previous;
+        var initial = new TraceSnapshot(id, actor, "RUNNING", "none", 0, false, start, null, session, task, ingestion, prior, true, false, 0);
         var holder = new TraceContext[1];
         var context = new TraceContext(maximum, (nodes, incomplete) -> {
-            var root = nodes.stream().filter(n -> n.parentSpanId() == null).findFirst().orElse(null);
-            var models = nodes.stream().filter(n -> n.type().equals("MODEL") || n.type().equals("EMBEDDING")).toList();
-            String status = root == null ? "FAILED" : root.endedAt() == null ? "INTERRUPTED" : root.status();
-            String model = models.isEmpty() ? "none" : models.get(models.size() - 1).modelId();
-            var run = new TraceSnapshot(id, actor, status, model == null ? "none" : model, models.size(), models.stream().anyMatch(n -> "SIMULATED".equals(n.usageSource())), start, Instant.now(), session, task, ingestion, prior, incomplete, incomplete, nodes.size());
+            var run = snapshotRun(initial, nodes, true, incomplete);
+            pending.incrementAndGet();
+            live.remove(id);
             // 终态先标等待写入；队列丢失不能让数据库伪装为完整成功图。
             try {
                 store.record(mark(run, true, false, 0));
             } catch (RuntimeException ignored) {
                 holder[0].drop();
             }
-            pending.incrementAndGet();
             if (!running || !queue.offer(new Batch(run, nodes, holder[0]))) {
                 LOG.warn("event=trace.queue_dropped traceId={}", id);
                 pending.decrementAndGet();
@@ -89,7 +95,7 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
         });
         holder[0] = context;
         try {
-            store.record(new TraceSnapshot(id, actor, "RUNNING", "none", 0, false, start, null, session, task, ingestion, prior, true, false, 0));
+            store.record(initial);
         } catch (RuntimeException ignored) {
             failed = true;
         }
@@ -97,45 +103,52 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
             context.drop();
             LOG.warn("event=trace.open_failed traceId={}", id);
         }
+        // 活跃运行有界登记；节点变化由后台合并，不在业务线程逐节点写库。
+        synchronized (live) {
+            if (running && live.size() < capacity) live.put(id, new LiveRun(initial, context));
+            else {
+                context.drop();
+                LOG.warn("event=trace.live_dropped traceId={}", id);
+            }
+        }
         return context;
+    }
+
+    private TraceSnapshot snapshotRun(TraceSnapshot base, List<TraceNode> nodes, boolean terminal, boolean incomplete) {
+        var root = nodes.stream().filter(n -> n.parentSpanId() == null).findFirst().orElse(null);
+        var models = nodes.stream().filter(n -> n.type().equals("MODEL") || n.type().equals("EMBEDDING")).toList();
+        String status = !terminal ? "RUNNING" : root == null ? "FAILED" : root.endedAt() == null ? "INTERRUPTED" : root.status();
+        String model = models.isEmpty() ? "none" : models.get(models.size() - 1).modelId();
+        return new TraceSnapshot(base.traceId(), base.actorUserId(), status, model == null ? "none" : model,
+                models.size(), models.stream().anyMatch(n -> "SIMULATED".equals(n.usageSource())), base.createdAt(),
+                terminal ? Instant.now() : null, base.sessionId(), base.taskId(), base.ingestionId(), base.previousTraceId(),
+                !terminal || incomplete, incomplete, nodes.size());
     }
 
     /**
      * 独立串行写入，最多一次重试；导出先脱敏，外部失效只影响观测完整性。
      */
     private void drain() {
+        long nextProgress = 0;
         while (running || !queue.isEmpty()) {
             try {
-                var batch = queue.poll(200, TimeUnit.MILLISECONDS);
-                if (batch == null) continue;
-                writing = true;
-                boolean saved = false;
-                try {
-                    for (int attempt = 0; attempt < 2 && !saved; attempt++) {
-                        try {
-                            store.recordGraph(mark(batch.run(), batch.run().incomplete() || batch.context().incomplete(), batch.context().incomplete(), batch.nodes().size()), batch.nodes());
-                            saved = true;
-                        } catch (RuntimeException ignored) {
-                            LOG.warn("event=trace.write_failed traceId={} attempt={} code={}", batch.run().traceId(), attempt + 1, com.example.ailab.contract.error.DiagnosticFailure.code(ignored));
-                            if (attempt == 1) batch.context().drop();
+                var batch = queue.poll(100, TimeUnit.MILLISECONDS);
+                if (batch != null) {
+                    writing = true;
+                    try { write(batch, true); }
+                    finally { pending.decrementAndGet(); }
+                }
+                if (running && System.nanoTime() >= nextProgress) {
+                    nextProgress = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(100);
+                    for (var active : live.values()) {
+                        if (active.context.revision() == active.writtenRevision) continue;
+                        writing = true;
+                        var snapshot = active.context.snapshot();
+                        if (!snapshot.finished()) {
+                            write(new Batch(snapshotRun(active.run, snapshot.nodes(), false, snapshot.incomplete()), snapshot.nodes(), active.context), false);
+                            active.writtenRevision = snapshot.revision();
                         }
                     }
-                    if (!saved) {
-                        try {
-                            store.record(mark(batch.run(), true, true, 0));
-                        } catch (RuntimeException ignored) {
-                        }
-                    }
-                    if (saved && !exporter.export(batch.run(), batch.nodes())) {
-                        LOG.warn("event=trace.export_failed traceId={}", batch.run().traceId());
-                        batch.context().drop();
-                        try {
-                            store.record(mark(batch.run(), true, true, batch.nodes().size()));
-                        } catch (RuntimeException ignored) {
-                        }
-                    }
-                } finally {
-                    pending.decrementAndGet();
                 }
             } catch (InterruptedException stopped) {
                 Thread.currentThread().interrupt();
@@ -144,6 +157,31 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
                 writing = false;
             }
         }
+    }
+
+    /** 运行中只持久化，外部导出仅发送一次终态；故障只影响观测完整性。 */
+    private void write(Batch batch, boolean terminal) {
+        boolean saved = false;
+        for (int attempt = 0; attempt < 2 && !saved; attempt++) {
+            try {
+                store.recordGraph(mark(batch.run(), batch.run().incomplete() || batch.context().incomplete(), batch.context().incomplete(), batch.nodes().size()), batch.nodes());
+                saved = true;
+            } catch (RuntimeException failure) {
+                LOG.warn("event=trace.write_failed traceId={} attempt={} code={}", batch.run().traceId(), attempt + 1, com.example.ailab.contract.error.DiagnosticFailure.code(failure));
+                if (attempt == 1) batch.context().drop();
+            }
+        }
+        boolean exportFailed = saved && terminal && !exporter.export(batch.run(), batch.nodes());
+        if (exportFailed) LOG.warn("event=trace.export_failed traceId={}", batch.run().traceId());
+        if (!saved || exportFailed) {
+            batch.context().drop();
+            try { store.record(mark(batch.run(), true, true, saved ? batch.nodes().size() : 0)); }
+            catch (RuntimeException ignored) { }
+        }
+    }
+
+    private boolean settled() {
+        return pending.get() == 0 && !writing && (!running || live.values().stream().allMatch(r -> r.context.revision() == r.writtenRevision));
     }
 
     /**
@@ -170,7 +208,7 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
      */
     public boolean flush(long milliseconds) {
         long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(0, Math.min(milliseconds, 5000)));
-        while (pending.get() > 0 && System.nanoTime() < end) {
+        while (!settled() && System.nanoTime() < end) {
             try {
                 Thread.sleep(10);
             } catch (InterruptedException cancelled) {
@@ -178,7 +216,7 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
                 return false;
             }
         }
-        return pending.get() == 0;
+        return settled();
     }
 
     /**

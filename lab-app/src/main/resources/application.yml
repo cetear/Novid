@@ -171,8 +171,31 @@ lab:
     task-tokens: 10000000
     # 单次文档入库任务的总词元硬上限；范围 1～10000000。
     ingestion-tokens: 10000000
-    # 模型价格引用表；键须与报价 ref 一致，币种须一致；空表表示未配置报价，金额状态为 UNKNOWN。
-    prices: {}
+    # 模型价格引用表；键须与报价 ref 一致，币种须一致。
+    # DeepSeek 官方价格核验于 2026-10-13：https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
+    # 按白天高峰价登记：北京时间工作日（不含中国法定节假日）09:00～12:00、14:00～18:00。
+    # 输入按缓存未命中价登记，命中价另注；这些条目仅作高峰上限参考，不是统一输入桶的实际单价。
+    # 当前账本不支持缓存差价，模型暂不绑定这些 price-ref，实际金额继续 UNKNOWN。
+    # effective-at 为本次核验快照时间，不表示官方调价时间；后续核价须更新 version。
+    prices:
+      deepseek-flash-peak:
+        ref: deepseek-flash-peak
+        version: official-peak-verified-20261013
+        currency: CNY
+        unit: PER_MILLION_TOKENS
+        effective-at: 2026-10-13T14:54:03Z
+        # deepseek-flash（DeepSeek-V4.1-Flash）：缓存命中输入为 0.04 元／百万 tokens。
+        input-rate: 2.00
+        output-rate: 8.00
+      deepseek-v4-pro-peak:
+        ref: deepseek-v4-pro-peak
+        version: official-peak-verified-20261013
+        currency: CNY
+        unit: PER_MILLION_TOKENS
+        effective-at: 2026-10-13T14:54:03Z
+        # deepseek-v4-pro（DeepSeek-V4-Pro-0813）：缓存命中输入为 0.30 元／百万 tokens。
+        input-rate: 9.00
+        output-rate: 27.00
   # 运行图追踪、异步存储与可选外部导出配置。
   observability:
     # 单次运行最多记录的追踪节点数；范围 1～2000，超过后标记追踪不完整。

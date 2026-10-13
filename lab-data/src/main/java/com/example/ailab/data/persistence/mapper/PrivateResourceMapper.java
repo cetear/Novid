@@ -14,6 +14,7 @@ public interface PrivateResourceMapper {
     int resetSessionContextsSessionsWrite(@Param("args") Object[] args);
     int recordAiRunsWrite(@Param("args") Object[] args);
     int recordGraphAiSpansWrite(@Param("rows") List<TraceSpanRow> rows);
+    boolean graphRunAccepts(@Param("args") Object[] args);
     List<SqlRow> graphAiSpansSelect(@Param("args") Object[] args);
     List<SqlRow> graphSummary(@Param("args") Object[] args);
     List<SqlRow> node(@Param("args") Object[] args);

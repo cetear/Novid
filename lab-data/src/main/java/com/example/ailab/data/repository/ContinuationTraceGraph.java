@@ -33,7 +33,7 @@ final class ContinuationTraceGraph {
         for(var node:current.nodes())if(!node.type().equals("AGENT")&&node.observation()==null
                 &&Set.of("TASK","ARCHITECTURE").contains(node.type()))wrappers.put(key(node),node);
         var kept=new LinkedHashMap<String,TraceNode>();
-        // 当前结构父节点先登记，历史失败父节点不再作为显示状态。
+        // 优先使用本轮真实结构，历史结构只在尚无对应当前节点时作为祖先保留。
         for(var node:current.nodes())if(wrappers.containsValue(node))kept.put(node.spanId(),node);
         for(var graph:history)for(var node:graph.nodes()) {
             if(graph==current) {
@@ -44,6 +44,19 @@ final class ContinuationTraceGraph {
             } else if(successful(node)&&!invalidModels.contains(node.spanId())) {
                 var owner=owner(node,all);
                 if(owner!=null&&selected.get(owner.name())==owner)kept.putIfAbsent(node.spanId(),node);
+            }
+        }
+        // 当前结构尚未落库时保留成功分支真实祖先；历史状态与来源不冒充本轮事实。
+        for(var node:List.copyOf(kept.values())) {
+            var seen=new HashSet<String>();String id=node.parentSpanId();
+            while(id!=null&&seen.add(id)&&!kept.containsKey(id)) {
+                var ancestor=all.get(id);
+                if(ancestor==null)break;
+                var replacement=ancestor.type().equals("AGENT")?selected.get(ancestor.name()):wrappers.get(key(ancestor));
+                if(replacement!=null)break;
+                if(Set.of("TASK","ARCHITECTURE").contains(ancestor.type())&&ancestor.observation()==null)
+                    kept.putIfAbsent(id,ancestor);
+                id=ancestor.parentSpanId();
             }
         }
         var nodes=new ArrayList<TraceNode>();var nodeRuns=new LinkedHashMap<String,String>();
@@ -89,7 +102,7 @@ final class ContinuationTraceGraph {
             if(replacement!=null&&!replacement.spanId().equals(node.spanId()))return replacement.spanId();
             id=original.parentSpanId();
         }
-        return null;
+        return node.parentSpanId();
     }
     private static String key(TraceNode node) {return node.type()+":"+node.name();}
 }
