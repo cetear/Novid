@@ -40,8 +40,9 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         var rows=mapper.reading(new Object[]{id});
         if(rows.isEmpty()||rows.get(0).get("reading_protocol")==null)return Optional.empty();
         var r=rows.get(0);
-        if(!ContentReading.PROTOCOL.equals(r.string("reading_protocol"))||r.get("plan_json")==null)throw conflict();
-        return Optional.of(decode(r.string("plan_json"),r.string("plan_hash"),ContentReading.Plan.class));
+        if(!ContentReading.supported(r.string("reading_protocol"))||r.get("plan_json")==null)throw conflict();
+        var plan=decode(r.string("plan_json"),r.string("plan_hash"),ContentReading.Plan.class);
+        if(!plan.protocol().equals(r.string("reading_protocol")))throw conflict();return Optional.of(plan);
     }
     private void verifyReading(UserContext actor,ScopeRequest request,ContentReading.Plan p,Policy policy) {
         p.validate(policy.readingPackBytes());

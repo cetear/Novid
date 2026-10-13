@@ -84,7 +84,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
             var contentMapper=sql.mapper(com.example.ailab.data.persistence.mapper.ContentWorkflowMapper.class);
             String text=ContentWorkflowRepository.readingJson(reading);
             contentMapper.saveReading(new Object[]{id,SqlSupport.hash(text),text});
-            contentMapper.markReading(new Object[]{id,ContentReading.PROTOCOL});
+            contentMapper.markReading(new Object[]{id,reading.protocol()});
         }
         // 与任务创建同事务初始化步骤，202 返回时就有完整的待执行列表。
         for (String step : TaskProgress.stepIds(request.taskType()))
@@ -106,7 +106,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
             if(chunks.isEmpty()||chunks.size()>5000)throw new LabException("INDEX_NOT_READY","资料缺少完整解析块");
             input.add(new StructuredReadPlanner.Input(content,sections,chunks.stream().flatMap(c->c.sourceMap().stream()).toList()));
         }
-        return StructuredReadPlanner.build(input,policy);
+        return StructuredReadPlanner.build(input,policy,"KNOWLEDGE_COMPILATION".equals(request.taskType()));
     }
 
     /**

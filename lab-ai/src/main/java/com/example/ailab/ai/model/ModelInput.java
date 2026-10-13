@@ -17,10 +17,20 @@ public interface ModelInput {
     Prepared prepare(ModelProperties.Definition target);
     /** 完整输出的保守词元上界，由实际注册模型的输出窗口另行核验。 */
     default int requiredOutputTokens(){return 0;}
+    record Options(String reasoningEffort,int outputTokens) {
+        public Options{if(outputTokens<0||reasoningEffort!=null&&!Set.of("none","low","high","max").contains(reasoningEffort))throw new IllegalArgumentException("调用参数无效");}
+    }
+    default Options options(){return new Options(null,0);}
+    static ModelInput withOptions(ModelInput input,Options options){return new ModelInput(){
+        public Prepared prepare(ModelProperties.Definition target){return input.prepare(target);}
+        public int requiredOutputTokens(){return input.requiredOutputTokens();}
+        public Options options(){return options;}
+    };}
     static ModelInput reserveOutput(ModelInput input,int required) {
         if(required<0)throw new IllegalArgumentException("输出预留不能为负");
         return new ModelInput(){
             public int requiredOutputTokens(){return Math.max(required,input.requiredOutputTokens());}
+            public Options options(){return input.options();}
             public Prepared prepare(ModelProperties.Definition target){
                 if(requiredOutputTokens()>target.outputLimit())throw new LabException("MODEL_CONTEXT_INSUFFICIENT","完整执行包输出超过候选模型输出窗口");
                 return input.prepare(target);

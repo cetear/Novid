@@ -13,6 +13,10 @@ public final class StructuredReadPlanner {
     private record Block(String id,String type,int start,int end) { }
     public record Input(DocumentContent content,List<SectionSnapshot> sections,List<TextMapping> mappings) { }
     public static Plan build(List<Input> inputs,ContentWorkflow.Policy policy) {
+        return build(inputs,policy,false);
+    }
+    public static Plan build(List<Input> inputs,ContentWorkflow.Policy policy,boolean compact) {
+        int extra=compact?ContentReading.COMPACT_PROTOCOL.length()-ContentReading.PROTOCOL.length():0;int overhead=PACK_OVERHEAD+extra;
         var documents=new ArrayList<Document>();var fragments=new ArrayList<Fragment>();var packs=new ArrayList<Pack>();
         var sources=new LinkedHashSet<SourceDependency>();
         int totalBytes=0;
@@ -62,24 +66,47 @@ public final class StructuredReadPlanner {
                 int cursor=ownStart;
                 for(var b:blocks) {
                     int start=Math.max(ownStart,b.start()),end=Math.min(ownEnd,b.end());if(start>=end)continue;
-                    if(cursor<start)add(text,d,section,cursor,start,"GAP","TEXT",policy.pageBytes(),fragments,documentFragments);
-                    add(text,d,section,start,end,b.id(),b.type(),policy.pageBytes(),fragments,documentFragments);cursor=end;
+                    if(cursor<start)add(text,d,section,cursor,start,"GAP","TEXT",policy.pageBytes()-extra,fragments,documentFragments);
+                    add(text,d,section,start,end,b.id(),b.type(),policy.pageBytes()-extra,fragments,documentFragments);cursor=end;
                 }
-                if(cursor<ownEnd)add(text,d,section,cursor,ownEnd,"TEXT_"+cursor,"TEXT",policy.pageBytes(),fragments,documentFragments);
+                if(cursor<ownEnd)add(text,d,section,cursor,ownEnd,"TEXT_"+cursor,"TEXT",policy.pageBytes()-extra,fragments,documentFragments);
             }
-            var group=new ArrayList<String>();int bytes=PACK_OVERHEAD;
+            if(compact){var merged=merge(text,documentFragments,policy.pageBytes(),overhead);fragments.subList(fragments.size()-documentFragments.size(),fragments.size()).clear();documentFragments=new ArrayList<>();
+                for(var f:merged){var old=f.source();var slice=new Learning.SourceSlice(String.format(Locale.ROOT,"p%05d",fragments.size()+1),old.knowledgeBaseId(),old.documentId(),old.documentVersion(),old.processingRevision(),old.title(),old.startOffset(),old.endOffset(),old.textHash());
+                    var renamed=new Fragment(slice,f.naturalId(),f.sectionId(),f.headingPath(),f.blockType(),f.partIndex(),f.contexts(),f.splitReason(),f.naturalBlocks());fragments.add(renamed);documentFragments.add(renamed);}
+            }
+            var group=new ArrayList<String>();int bytes=overhead,output=0;
             for(var f:documentFragments) {
                 int size=payloadBytes(text,f.source().id(),f.headingPath(),f.blockType(),f.source().startOffset(),f.source().endOffset(),f.contexts());
-                if(!group.isEmpty()&&(bytes+size+1>policy.readingPackBytes()||group.size()>=ContentReading.MAX_PACK_FRAGMENTS)) {
-                    packs.add(new Pack(String.format(Locale.ROOT,"rp%05d",packs.size()+1),d.id(),group,bytes));group=new ArrayList<>();bytes=PACK_OVERHEAD;
+                int expected=TextWindow.count(text.substring(f.source().startOffset(),f.source().endOffset()))*2+200;
+                if(!group.isEmpty()&&(bytes+size+1>policy.readingPackBytes()||group.size()>=ContentReading.MAX_PACK_FRAGMENTS||compact&&output+expected>60000)) {
+                    packs.add(new Pack(String.format(Locale.ROOT,"rp%05d",packs.size()+1),d.id(),group,bytes));group=new ArrayList<>();bytes=overhead;output=0;
                 }
-                if(!group.isEmpty())bytes++;group.add(f.source().id());bytes+=size;
+                if(!group.isEmpty())bytes++;group.add(f.source().id());bytes+=size;output+=expected;
             }
             if(!group.isEmpty())packs.add(new Pack(String.format(Locale.ROOT,"rp%05d",packs.size()+1),d.id(),group,bytes));
         }
-        var plan=new Plan(ContentReading.PROTOCOL,documents,fragments,packs,List.copyOf(sources));plan.validate(policy.readingPackBytes());
+        var plan=new Plan(compact?ContentReading.COMPACT_PROTOCOL:ContentReading.PROTOCOL,documents,fragments,packs,List.copyOf(sources));plan.validate(policy.readingPackBytes());
         if(packs.size()>policy.turns())throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","固定阅读包数量超过父任务调用额度");
         return plan;
+    }
+    private static ArrayList<Fragment> merge(String text,List<Fragment> input,int pageBudget,int overhead) {
+        var out=new ArrayList<Fragment>();
+        for(var current:input) {
+            var blocks=List.of(new Context(current.source().startOffset(),current.source().endOffset(),current.blockType()));
+            var next=new Fragment(current.source(),current.naturalId(),current.sectionId(),current.headingPath(),current.blockType(),current.partIndex(),current.contexts(),current.splitReason(),blocks);
+            if(!out.isEmpty()) {
+                var previous=out.get(out.size()-1);var a=previous.source();var b=next.source();
+                if(previous.sectionId().equals(next.sectionId())&&a.endOffset()==b.startOffset()&&previous.contexts().isEmpty()&&next.contexts().isEmpty()
+                        &&Set.of("PARAGRAPH","TEXT","LIST","WHITESPACE").contains(previous.blockType())&&Set.of("PARAGRAPH","TEXT","LIST","WHITESPACE").contains(next.blockType())
+                        &&TextWindow.count(text.substring(a.startOffset(),b.endOffset()))<=2400&&payloadBytes(text,a.id(),previous.headingPath(),"TEXT",a.startOffset(),b.endOffset(),List.of())+overhead<=pageBudget) {
+                    var ranges=new ArrayList<>(previous.naturalBlocks());ranges.addAll(next.naturalBlocks());
+                    var slice=new Learning.SourceSlice(a.id(),a.knowledgeBaseId(),a.documentId(),a.documentVersion(),a.processingRevision(),a.title(),a.startOffset(),b.endOffset(),Learning.digest(text.substring(a.startOffset(),b.endOffset())));
+                    out.set(out.size()-1,new Fragment(slice,previous.naturalId(),previous.sectionId(),previous.headingPath(),"TEXT",0,List.of(),"SEMANTIC_BLOCK",ranges));continue;
+                }
+            }
+            out.add(next);
+        }return out;
     }
     private static void add(String text,DocumentSnapshot doc,SectionSnapshot section,int start,int end,String natural,String type,int budget,
                             List<Fragment> all,List<Fragment> document) {

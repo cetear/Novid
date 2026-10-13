@@ -113,7 +113,7 @@ public class ModelGateway {
     public boolean fitsStructured(String task,ModelInput input,StructuredSchema<?> schema) {
         var route=registry.route(task,ModelRegistry.Selection.auto(),Set.of("CHAT","STRUCTURED_OUTPUT"));
         for(String id:route.ids()) {
-            var definition=registry.definition(id);if(input.requiredOutputTokens()>definition.outputLimit())continue;
+            var definition=effectiveDefinition(input,registry.definition(id));if(input.requiredOutputTokens()>definition.outputLimit())continue;
             try {
                 var prepared=input.prepare(withReservedSchema(definition,schema,""));
                 var messages=new ArrayList<>(prepared.messages());messages.add(SystemMessage.from(schema.instruction(referenceIds(prepared.evidence()))));
@@ -242,7 +242,7 @@ public class ModelGateway {
                                              ExecutionBudget budget,StructuredSchema<T> schema,String pinned,boolean allowRepair) {
         var attempts = new ArrayList<ModelRoute.Attempt>();
         var preparedInput=new java.util.concurrent.atomic.AtomicReference<ModelInput.Prepared>();
-        ModelInput capture=ModelInput.reserveOutput(target->{var prepared=input.prepare(target);preparedInput.set(prepared);return prepared;},input.requiredOutputTokens());
+        ModelInput capture=ModelInput.withOptions(ModelInput.reserveOutput(target->{var prepared=input.prepare(target);preparedInput.set(prepared);return prepared;},input.requiredOutputTokens()),input.options());
         Turn turn = generate(task, selection, capture, budget, schema, "", attempts, pinned, List.of());
         try {
             return new StructuredTurn<>(validateStructured(schema, turn, budget), turn);
@@ -275,7 +275,7 @@ public class ModelGateway {
                 }
                 return new ModelInput.Prepared(messages,original.evidence(),ModelInput.count(messages));
             };
-            turn = generate(task, selection, ModelInput.reserveOutput(correction,input.requiredOutputTokens()), budget, schema, schema.repairInstruction(invalid), attempts, turn.modelId(), List.of());
+            turn = generate(task, selection, ModelInput.withOptions(ModelInput.reserveOutput(correction,input.requiredOutputTokens()),input.options()), budget, schema, schema.repairInstruction(invalid), attempts, turn.modelId(), List.of());
             try {
                 return new StructuredTurn<>(validateStructured(schema, turn, budget), turn);
             } catch (LabException failed) {
@@ -294,7 +294,7 @@ public class ModelGateway {
         var fixed = ModelInput.fixed("执行服务端指定摘要的局部压缩。", List.of(), prompt);
         ModelInput compressionInput = target -> {
             // 用原目标重新执行来源/租约回调；压缩Schema预留不能令原输入误报容量不足。
-            var checked = input.prepare(registry.definition(original.modelId()));
+            var checked = input.prepare(effectiveDefinition(input,registry.definition(original.modelId())));
             if (!checked.messages().equals(originalInput.messages()) || !checked.evidence().equals(originalInput.evidence()))
                 throw new LabException("WORKFLOW_STATE_CONFLICT", "局部压缩期间原输入或来源已变化");
             var prepared = fixed.prepare(target);
@@ -307,7 +307,7 @@ public class ModelGateway {
         Turn compressed;
         LocalSummaryCompression.Replacements replacements;
         try {
-            compressed = generate(task, selection, compressionInput, budget, patchSchema, "", attempts, original.modelId(), List.of());
+            compressed = generate(task, selection, ModelInput.withOptions(compressionInput,input.options()), budget, patchSchema, "", attempts, original.modelId(), List.of());
             try { replacements = validateStructured(patchSchema, compressed, budget); }
             catch (LabException invalid) {
                 if (invalid.code().equals("MODEL_STRUCTURED_INVALID")) { markInvalid(attempts);budget.invalidStructure(); }
@@ -400,7 +400,7 @@ public class ModelGateway {
         String failure = "MODEL_UNAVAILABLE";
         var blockedQuotas = new HashSet<String>();
         for (String id : ids) {
-            var d = registry.definition(id);
+            var d = effectiveDefinition(input,registry.definition(id));
             if (blockedQuotas.contains(d.quotaGroup())) continue;
             if (input.requiredOutputTokens() > d.outputLimit()) {
                 failure = "MODEL_CONTEXT_INSUFFICIENT";
@@ -477,7 +477,7 @@ public class ModelGateway {
                         return turn(text, id, null, null, true, AiMessage.from(text), decision, log, prepared.evidence());
                     }
                     DeadlineHttpClient.CURRENT.set(new DeadlineHttpClient.Scope(budget, d.timeoutSeconds(), raw,
-                            execution==null?null:execution.pending.capture));
+                            execution==null?null:execution.pending.capture,d.outputLimit(),d.providerId().startsWith("deepseek")?input.options().reasoningEffort():null,responses(d)));
                     var request = ChatRequest.builder().messages(messages);
                     if (!tools.isEmpty()) request.toolSpecifications(tools);
                     if (schema != null) request.responseFormat(ResponseFormat.builder().type(ResponseFormatType.JSON)
@@ -683,6 +683,11 @@ public class ModelGateway {
 
     private boolean responses(ModelProperties.Definition definition) {
         return definition.providerId().equals("deepseek-responses");
+    }
+    private static ModelProperties.Definition effectiveDefinition(ModelInput input,ModelProperties.Definition d){
+        int requested=input.options().outputTokens();if(requested==0)return d;
+        int limit=Math.min(d.outputLimit(),Math.max(requested,input.requiredOutputTokens()));
+        return new ModelProperties.Definition(d.providerId(),d.endpoint(),d.modelName(),d.credentialRef(),d.enabled(),d.capabilities(),d.qualityTags(),d.dataClassifications(),d.contextWindow(),limit,d.dimensions(),d.timeoutSeconds(),d.quotaGroup(),d.priceRef(),d.maxConcurrency());
     }
 
     /** Responses状态与正文分别验收；SDK解析失败也可从原始协议保留拒绝、截断及真实用量。 */

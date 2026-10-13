@@ -192,6 +192,9 @@ public class FeeRepository implements FeeStorePort {
     }
 
     /** 汇总每条叶子一次，未知金额不以零替代；数字小计由costStatus限定含义。 */
+    private static boolean knownTextUsage(SqlRow row) {
+        return Set.of("SETTLED","UNKNOWN").contains(row.string("state"))&&(row.string("state").equals("SETTLED")||row.get("completed_at")!=null)&&row.get("reserved_units")==null&&row.get("input_tokens")!=null&&row.get("output_tokens")!=null;
+    }
     private FeeSummary totals(String id, String runId) {
         var scope = sql.one(mapper.totalsFeeScopesSelect(new Object[]{id}));
         var rows = runId == null ? mapper.totalsFeeAttemptsSelect(new Object[]{id})
@@ -211,7 +214,7 @@ public class FeeRepository implements FeeStorePort {
                 if (row.get("input_tokens") != null) in += ((Number)row.get("input_tokens")).longValue();
                 if (row.get("output_tokens") != null) out += ((Number)row.get("output_tokens")).longValue();
             }
-            if (!state.equals("SETTLED")) tokens += ((Number)row.get("reserved_input")).longValue() + ((Number)row.get("reserved_output")).longValue();
+            if (!knownTextUsage(row)) tokens += ((Number)row.get("reserved_input")).longValue() + ((Number)row.get("reserved_output")).longValue();
         }
         var limit = (BigDecimal)scope.get("limit_amount");
         int legacy = ((Number)scope.get("legacy_untracked_attempts")).intValue();
@@ -219,7 +222,7 @@ public class FeeRepository implements FeeStorePort {
         for(var row:rows) {
             String state=(String)row.get("state");
             if(state.equals("RELEASED")) continue;
-            budgetTokens+=state.equals("SETTLED") && row.get("reserved_units")==null?((Number)row.get("input_tokens")).longValue()+((Number)row.get("output_tokens")).longValue()
+            budgetTokens+=knownTextUsage(row)?((Number)row.get("input_tokens")).longValue()+((Number)row.get("output_tokens")).longValue()
                     :((Number)row.get("reserved_input")).longValue()+((Number)row.get("reserved_output")).longValue();
         }
         boolean over = estimated.add(reserved).compareTo(limit) > 0 || budgetTokens>((Number)scope.get("token_limit")).longValue();

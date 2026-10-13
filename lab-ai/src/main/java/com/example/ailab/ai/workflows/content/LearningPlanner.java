@@ -15,7 +15,7 @@ final class LearningPlanner {
     LearningPlanner(LearningRuntime runtime){r=runtime;cards=r.cards();}
     Plan plan() {
         var existing=r.store().acceptedLearningPlan(r.lease());if(existing.isPresent()){r.store().finish(r.lease(),"organize",List.of(existing.get().quiz()==null?"directory":"quiz_intent"));return existing.get();}
-        cards=r.cards();clarify();
+        cards=r.cards();if(!r.compact())clarify();
         CompilationPlan compilation=null;Blueprint quiz=null;
         if(r.lease().request().taskType().equals("KNOWLEDGE_COMPILATION"))compilation=compilation();else quiz=quiz();
         var execution=LearningPackages.build(r,compilation,quiz);
@@ -46,6 +46,7 @@ final class LearningPlanner {
         return (int)Math.min(Integer.MAX_VALUE,estimate);
     }
     private CompilationPlan compilation() {
+        if(r.compact()){var joined=new CompactCompilationPlanner(r).plan();if(joined.isPresent()){var value=joined.get();r.checkpoint("directory","organize",Map.of("compact",ContentJson.hash(value)),LearningBusinessSchemas.directory(LearningPlanRules.MAX_CHAPTERS),value::directory);return value;}}
         int maximum=r.lease().request().compilationOptions().maximumChapters();if(maximum==0)maximum=LearningPlanRules.MAX_CHAPTERS;else maximum=Math.min(maximum,LearningPlanRules.MAX_CHAPTERS);
         var directory=r.call("directory","organize","directory",Map.of("remarks",r.lease().request().instructions(),"options",r.lease().request().compilationOptions(),"allThemes",index(cards)),LearningBusinessSchemas.directory(maximum));
         var assignments=new LinkedHashMap<String,String>();var fixedDirectory=directory;
@@ -92,7 +93,7 @@ final class LearningPlanner {
         }
     }
     private void normalizeBatches(Map<String,ContentReading.TopicCard> factCard,Map<String,String> chapters,List<Knowledge> canonical,Map<String,String> owner) {
-        int maximumWindow=r.policy().unitInputBytes()>=128000?64:32;
+        int maximumWindow=r.compact()?128:r.policy().unitInputBytes()>=128000?64:32;
         var facts=List.copyOf(r.facts().values());int from=0,window=maximumWindow,batches=0;boolean singleMode=false;long started=System.nanoTime();
         while(from<facts.size()) {
             if(singleMode){normalizeOne(facts.get(from++),factCard,chapters,canonical,owner);continue;}
@@ -312,12 +313,14 @@ final class LearningPlanner {
         }
     }
     private List<?> index(List<?> input) { return index(input,"global_index"); }
-    private List<?> index(List<?> input,String prefix) { return index(input,prefix,r.policy().indexBytes()); }
+    private List<?> index(List<?> input,String prefix) { return index(input,prefix,r.compact()?Math.max(r.policy().indexBytes(),r.policy().unitInputBytes()-16000):r.policy().indexBytes()); }
     private List<?> index(List<?> input,String prefix,int maximum) {
-        List<?> level=input;int depth=0;
+        List<?> level=input;
+        if(r.compact()&&!input.isEmpty()&&input.get(0) instanceof ContentReading.TopicCard)level=CompactCompilationPlanner.themeView(input.stream().map(ContentReading.TopicCard.class::cast).toList());
+        int depth=0;
         while(TextWindow.count(ContentJson.encode(level))>maximum) {
             var groups=partition(level,r.policy().indexBytes()-300,ContentJson::encode);int current=depth;
-            var batches=r.parallel(java.util.stream.IntStream.range(0,groups.size()).boxed().toList(),i->indexSummaries(prefix+"_"+current+"_"+i,groups.get(i)));
+            var batches=r.parallel(java.util.stream.IntStream.range(0,groups.size()).boxed().toList(),i->indexSummaries(r.compact()?"shared_index_"+ContentJson.hash(groups.get(i)).substring(0,32):prefix+"_"+current+"_"+i,groups.get(i)));
             var next=batches.stream().flatMap(List::stream).toList();
             // 容量拆分可能保留条目数；总字节数缩小仍是有效收敛。
             if((next.size()>=level.size()&&TextWindow.count(ContentJson.encode(next))>=TextWindow.count(ContentJson.encode(level)))||++depth>16)throw new LabException("WORKFLOW_INDEX_CAPACITY_EXCEEDED","全范围轻量索引无法收敛");level=next;
@@ -325,7 +328,8 @@ final class LearningPlanner {
     }
     private List<ContentWorkflow.Summary> indexSummaries(String id,List<?> children) {
         try {
-            return List.of(r.call(id,"organize","index",Map.of("children",children),ContentSchemas.summary(ContentLimits.current())));
+            var schema=r.compact()?new com.example.ailab.ai.model.RecordSchema<>(ContentWorkflow.Summary.class,"将children归纳为后续规划的导航。保留主题、条件、例外及冲突；明细与身份由程序保存。尽量精简，但不要为短字节目标删掉必要条件。",v->com.example.ailab.ai.model.RecordSchema.require(!v.title().isBlank()&&!v.summary().isBlank(),com.example.ailab.ai.model.RecordSchema.Reason.CONTENT_CONSTRAINT)):ContentSchemas.summary(ContentLimits.current());
+            return List.of(r.call(id,"organize","index",Map.of("children",children),schema));
         } catch(LabException failure) {
             if(children.size()<2||!Set.of("MODEL_TRUNCATED","MODEL_CONTEXT_INSUFFICIENT").contains(failure.code()))throw failure;
             LOG.info("event=content.index_split node={} children={} code={}",id,children.size(),failure.code());

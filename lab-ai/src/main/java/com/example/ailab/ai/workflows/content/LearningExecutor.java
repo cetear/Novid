@@ -12,7 +12,7 @@ import java.util.stream.Collectors;
 /** 父租约下的有界工作包调度、逐项验收、恢复和局部返工。 */
 final class LearningExecutor {
     private static final Set<String> PRESENTATION_ISSUES=Set.of("BAD_ORGANIZATION","DUPLICATE","STYLE","FORMAT","FORMATTING","WORDING","ORDER","REDUNDANCY");
-    private final LearningRuntime r;private final Plan plan;private int inspectionRemaining;
+    private final LearningRuntime r;private final Plan plan;private int inspectionRemaining;private boolean directReviewed;
     private record CachedSummary(String outputHash,UnitSummary summary) { }
     private final Map<String,CachedSummary> summaryCache=new java.util.concurrent.ConcurrentHashMap<>();
     record PartReceipt(String partId,String producerId,String json) { }
@@ -98,7 +98,12 @@ final class LearningExecutor {
             input.put("dependencyResults",dependencyOutputs);
         }
         r.bounded(input);String producer="write_"+status.workPackage().id();var generated=new LinkedHashMap<String,Object>();
-        if(plan.quiz()==null){var batch=r.call(producer,"generate","package-write",input,LearningBusinessSchemas.sectionBatch(parts));for(var part:batch.parts())generated.put(part.partId(),part);}
+        if(plan.quiz()==null){
+            if(r.compact()){var batch=r.call(producer,"generate","package-write",input,CompactGeneration.schema(parts));for(var part:batch.parts()){
+                var section=part.section();generated.put(part.partId(),section);
+                r.checkpoint(CompactGeneration.navigationId(part.partId(),section),"generate",Map.of("plan",ContentJson.hash(plan),"part",part.partId(),"outputHash",ContentJson.hash(section)),CompactGeneration.navigationSchema(),()->new ContentWorkflow.Summary(part.partId(),part.summary()));
+            }}else {var batch=r.call(producer,"generate","package-write",input,LearningBusinessSchemas.sectionBatch(parts));for(var part:batch.parts())generated.put(part.partId(),part);}
+        }
         else {var slots=plan.quiz().slots().stream().collect(Collectors.toMap(Slot::id,s->s));var batch=r.call(producer,"generate","package-write",input,LearningBusinessSchemas.questions(parts,slots));for(int i=0;i<parts.size();i++)generated.put(parts.get(i).id(),batch.questions().get(i));}
         for(var part:parts) {
             var receipt=new PartReceipt(part.id(),producer,ContentJson.encode(generated.get(part.id())));
@@ -161,6 +166,16 @@ final class LearningExecutor {
     }
     record UnitSummary(String id,String chapterId,String cognition,String title,String summary,List<String> itemIds) { }
     private List<UnitSummary> summaries(Map<String,Object> outputs,String round) {
+        if(r.compact()&&plan.compilation()!=null){
+            var acceptedParts=r.store().packages(r.lease()).stream().filter(p->p.status().equals("ACCEPTED")).flatMap(p->p.parts().stream()).sorted(Comparator.comparing(Part::id)).toList();
+            return outputs.entrySet().stream().map(entry->{var duty=plan.compilation().sections().stream().filter(s->s.id().equals(entry.getKey())).findFirst().orElseThrow();var navigation=new ArrayList<String>();
+                var bodies=acceptedParts.stream().filter(p->p.logicalId().equals(entry.getKey())).map(p->partSchema(p).validate(accepted(p.id()).json(),Set.of())).toList();
+                var actual=(Learning.Section)entry.getValue();
+                if(!actual.body().equals(bodies.stream().map(SectionPart::body).collect(Collectors.joining("\n\n"))))navigation.add(actual.body());
+                else for(var body:bodies)r.store().completedNode(r.lease(),CompactGeneration.navigationId(body.partId(),body)).ifPresent(json->navigation.add(CompactGeneration.navigationSchema().relaxed().validate(json,Set.of()).summary()));
+                return new UnitSummary(duty.id(),duty.chapterId(),"",duty.title(),navigation.isEmpty()?duty.purpose():String.join("\n",navigation),ownedFacts(duty));
+            }).toList();
+        }
         return r.parallel(List.copyOf(outputs.entrySet()),entry->{
             String outputHash=ContentJson.hash(entry.getValue());var cached=summaryCache.get(entry.getKey());
             if(cached!=null&&cached.outputHash().equals(outputHash))return cached.summary();
@@ -174,6 +189,16 @@ final class LearningExecutor {
         });
     }
     private ArrayList<Learning.Issue> globalPass(Map<String,Object> outputs,List<UnitSummary> summaries,List<Coverage> coverage,String round) {
+        directReviewed=false;
+        if(r.compact()&&plan.compilation()!=null){var direct=new LinkedHashMap<String,Object>();direct.put("directory",plan.compilation().directory());direct.put("sections",plan.compilation().sections());direct.put("actualOutput",outputs);direct.put("facts",r.facts().values());direct.put("knowledge",plan.compilation().knowledge());direct.put("coverage",coverage);
+            direct.put("rule","已提供全部正文及证据，统一核对知识覆盖、数字条件、冲突各方和引用。不检查组织偏好。无需INSPECT；返回ACCEPT或定位具体单元的REPAIR。");
+            var schema=LearningBusinessSchemas.global(outputs.keySet()).withChecks(v->RecordSchema.require(!v.decision().equals("INSPECT"),RecordSchema.Reason.CONTENT_CONSTRAINT,"decision","已提供完整正文，ACCEPT或REPAIR"));
+            if(fitsReview(direct,schema)){
+                try{var review=r.call("compact_global_"+round,"review","global-review",direct,schema);directReviewed=true;return new ArrayList<>(review.issues());}
+                catch(LabException failure){if(!failure.code().equals("MODEL_CONTEXT_INSUFFICIENT"))throw failure;}
+            }
+            var batches=compactPass(outputs,summaries,coverage,round);if(batches.isPresent()){directReviewed=true;return batches.get();}
+        }
         var issues=new ArrayList<Learning.Issue>();int i=0;
         for(var group:LearningPlanner.partition(summaries,r.policy().unitInputBytes()-300,v->ContentJson.encode(globalInput(List.of(v),coverage)))) {
             var input=globalInput(group,coverage);r.bounded(input);
@@ -201,6 +226,8 @@ final class LearningExecutor {
         var master=new LinkedHashMap<String,Object>();master.put("allUnitIndex",level);master.put("title",plan.title());master.put("requirements",plan.requirements());
         master.put("coverageCounts",Map.of("readFragments",r.reading().fragments().size(),"facts",r.facts().size(),"chapters",plan.counts().chapters(),"questions",plan.counts().questions(),"sections",plan.counts().sections()));
         Object responsibilities=plan.compilation()!=null?plan.compilation().directory().chapters():plan.quiz().quotas();
+        if(r.compact()){master.put("directory",responsibilities);master.put("terms",plan.compilation()==null?List.of():plan.compilation().directory().terms());r.bounded(master);
+            var whole=r.call("global_master_"+round,"review","global-review",master,LearningBusinessSchemas.global(outputs.keySet()));issues.addAll(inspectBusiness(whole,"global_master_"+round,master,outputs.keySet(),outputs,summaries));return issues;}
         var directoryIndex=new ArrayList<ContentWorkflow.Summary>();int directoryPart=0;
         List<?> entries=responsibilities instanceof List<?> list?list:List.of(responsibilities);
         for(var group:LearningPlanner.partition(entries,r.policy().indexBytes()-500,ContentJson::encode))directoryIndex.add(r.call("directory_review_index_"+round+"_"+directoryPart++,"review","index",Map.of("responsibilities",group),compactSummary()));
@@ -250,7 +277,7 @@ final class LearningExecutor {
                 issues.addAll(inspectBusiness(review,id,input,allowed,outputs,summaries));
             }
         }
-        if(plan.compilation()!=null)for(var knowledge:plan.compilation().knowledge())if(knowledge.relation().equals("CONFLICT")) {
+        if(plan.compilation()!=null&&!directReviewed)for(var knowledge:plan.compilation().knowledge())if(knowledge.relation().equals("CONFLICT")) {
             var affected=summaries.stream().filter(s->!Collections.disjoint(s.itemIds(),knowledge.sourceItemIds())).toList();var allowed=affected.stream().map(UnitSummary::id).collect(Collectors.toSet());
             var fixed=Map.of("conflictId",knowledge.id(),"conditions",knowledge.conditions(),"knowledgeSummary",knowledge.summary(),"affectedSections",affected,"sourceItemIds",knowledge.sourceItemIds());int part=0;
             for(var evidence:LearningPlanner.partition(r.evidence(knowledge.sourceItemIds()),r.policy().unitInputBytes()-TextWindow.count(ContentJson.encode(fixed))-300,ContentJson::encode)) {
@@ -260,6 +287,68 @@ final class LearningExecutor {
             }
         }
         return issues;
+    }
+    private Optional<ArrayList<Learning.Issue>> compactPass(Map<String,Object> outputs,List<UnitSummary> summaries,List<Coverage> coverage,String round){
+        var groups=new ArrayList<List<String>>();var current=new ArrayList<String>();
+        for(String id:outputs.keySet()) {
+            var candidate=new ArrayList<>(current);candidate.add(id);var input=compactReviewInput(candidate,outputs,coverage);
+            if(!current.isEmpty()&&!fitsReview(input,compactReviewSchema(candidate))){groups.add(List.copyOf(current));current.clear();candidate=new ArrayList<>(List.of(id));input=compactReviewInput(candidate,outputs,coverage);}
+            if(!fitsReview(input,compactReviewSchema(candidate)))return Optional.empty();current.add(id);
+        }
+        if(!current.isEmpty())groups.add(List.copyOf(current));
+        var issues=new ArrayList<Learning.Issue>();int n=0;
+        for(var group:groups){
+            try{var review=r.call("compact_review_"+round+"_"+n++,"review","global-review",compactReviewInput(group,outputs,coverage),compactReviewSchema(group));issues.addAll(review.issues());}
+            catch(LabException failure){if(!failure.code().equals("MODEL_CONTEXT_INSUFFICIENT"))throw failure;return Optional.empty();}}
+        if(groups.size()>1){var master=compactMasterInput(summaries,coverage,round,outputs.keySet());
+            r.bounded(master);var review=r.call("compact_master_"+round,"review","global-review",master,LearningBusinessSchemas.global(outputs.keySet()));issues.addAll(inspectBusiness(review,"compact_master_"+round,master,outputs.keySet(),outputs,summaries));}
+        return Optional.of(issues);
+    }
+    private RecordSchema<GlobalReview> compactReviewSchema(Collection<String> ids){
+        return LearningBusinessSchemas.global(Set.copyOf(ids)).withChecks(v->RecordSchema.require(!v.decision().equals("INSPECT"),RecordSchema.Reason.CONTENT_CONSTRAINT,"decision","已提供完整正文，ACCEPT或REPAIR"));
+    }
+    private boolean fitsReview(Object input,RecordSchema<?> schema){return TextWindow.count(ContentJson.encode(input))<=r.policy().unitInputBytes()&&r.preflight("global-review",input,schema);}
+    /** 只在协调输入不能容纳时压缩导航，单元身份、归属及覆盖计数始终保留。 */
+    private Map<String,Object> compactMasterInput(List<UnitSummary> summaries,List<Coverage> coverage,String round,Set<String> allowed){
+        var master=new LinkedHashMap<String,Object>();master.put("directory",plan.compilation().directory());master.put("units",summaries);master.put("coverage",coverage);
+        master.put("rule","全部单元已按完整正文和原文证据分批验收。协调跨单元职责、术语和条件，不重复逐单元检查。必要时定位正文单元INSPECT。");
+        var schema=LearningBusinessSchemas.global(allowed);if(fitsReview(master,schema))return master;
+        master.put("units",summaries.stream().map(s->new UnitSummary(s.id(),s.chapterId(),s.cognition(),s.title(),"",s.itemIds())).toList());
+        master.put("coverage",coverage.stream().map(c->Map.of("id",c.id(),"kind",c.kind(),"available",c.available(),"selected",c.selected())).toList());
+        var level=summaries.stream().map(s->new ReviewIndex(List.of(s.id()),new ContentWorkflow.Summary(s.title(),s.summary()))).toList();
+        master.put("allUnitIndex",level);int depth=0;
+        while(!fitsReview(master,schema)){
+            if(depth>=16)throw new LabException("WORKFLOW_INDEX_CAPACITY_EXCEEDED","协调索引达到有限压缩深度");
+            int before=TextWindow.count(ContentJson.encode(level));
+            var next=reduceCompactIndex(level,"compact_coord_"+round+"_"+depth++,0);
+            if(TextWindow.count(ContentJson.encode(next))>=before)throw new LabException("WORKFLOW_INDEX_CAPACITY_EXCEEDED","必要协调身份与索引无法在固定资源中容纳");
+            level=next;master.put("allUnitIndex",level);
+        }
+        return master;
+    }
+    private List<ReviewIndex> reduceCompactIndex(List<ReviewIndex> group,String id,int depth){
+        var input=Map.of("children",group);var schema=compactSummary();
+        if(TextWindow.count(ContentJson.encode(input))<=Math.min(r.policy().indexBytes(),r.policy().unitInputBytes())&&r.preflight("index",input,schema)){
+            var summary=r.call(id,"review","index",input,schema);
+            return List.of(new ReviewIndex(group.stream().flatMap(v->v.members().stream()).distinct().toList(),summary));
+        }
+        if(depth>=16)throw new LabException("WORKFLOW_INDEX_CAPACITY_EXCEEDED","单段导航无法在固定索引窗口容纳");
+        List<ReviewIndex> left,right;
+        if(group.size()>1){int mid=group.size()/2;left=group.subList(0,mid);right=group.subList(mid,group.size());}
+        else{
+            var one=group.get(0);String text=one.summary().summary();int mid=text.length()/2;
+            if(mid>0&&Character.isLowSurrogate(text.charAt(mid)))mid--;
+            if(mid<=0)throw new LabException("WORKFLOW_INDEX_CAPACITY_EXCEEDED","必要索引身份超出容量");
+            left=List.of(new ReviewIndex(one.members(),new ContentWorkflow.Summary(one.summary().title(),text.substring(0,mid))));
+            right=List.of(new ReviewIndex(one.members(),new ContentWorkflow.Summary(one.summary().title(),text.substring(mid))));
+        }
+        var result=new ArrayList<>(reduceCompactIndex(left,id+"_a",depth+1));result.addAll(reduceCompactIndex(right,id+"_b",depth+1));return result;
+    }
+    private Map<String,Object> compactReviewInput(List<String> ids,Map<String,Object> outputs,List<Coverage> coverage){
+        var duties=plan.compilation().sections().stream().filter(s->ids.contains(s.id())).toList();var facts=duties.stream().flatMap(d->ownedFacts(d).stream()).collect(Collectors.toCollection(LinkedHashSet::new));
+        var knowledge=plan.compilation().knowledge().stream().filter(k->!Collections.disjoint(k.sourceItemIds(),facts)).toList();
+        var body=new LinkedHashMap<String,Object>();ids.forEach(id->body.put(id,outputs.get(id)));
+        return Map.of("directory",plan.compilation().directory(),"sections",duties,"actualOutput",body,"facts",r.evidence(facts),"knowledge",knowledge,"coverage",coverage,"rule","核对实际正文、原文依据和全部冲突条件；只因事实错误、主要遗漏或条件／来源错误要求REPAIR。已提供完整正文，不再INSPECT。");
     }
     private List<Learning.Issue> inspectBusiness(GlobalReview review,String id,Object context,Set<String> allowed,Map<String,Object> outputs,List<UnitSummary> summaries) {
         var issues=new ArrayList<>(review.issues());if(!review.decision().equals("INSPECT"))return issues;

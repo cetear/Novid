@@ -7,6 +7,8 @@ import com.example.ailab.contract.error.LabException;
 public final class ContentReading {
     private ContentReading() { }
     public static final String PROTOCOL = "structure-read-v1";
+    public static final String COMPACT_PROTOCOL = "structure-read-v2-compact";
+    public static boolean supported(String protocol){return PROTOCOL.equals(protocol)||COMPACT_PROTOCOL.equals(protocol);}
     public static final int MAX_PACK_FRAGMENTS = 64;
     public record Document(long knowledgeBaseId, long documentId, int documentVersion, long processingRevision,
                            String title, String format, String textHash, int textLength, List<SectionSnapshot> sections) {
@@ -14,8 +16,9 @@ public final class ContentReading {
     }
     public record Context(int startOffset, int endOffset, String role) { }
     public record Fragment(Learning.SourceSlice source, String naturalId, String sectionId, String headingPath,
-                           String blockType, int partIndex, List<Context> contexts, String splitReason) {
-        public Fragment { contexts = List.copyOf(contexts); }
+                           String blockType, int partIndex, List<Context> contexts, String splitReason,@com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_EMPTY) List<Context> naturalBlocks) {
+        public Fragment { contexts = List.copyOf(contexts);naturalBlocks=naturalBlocks==null?List.of():List.copyOf(naturalBlocks); }
+        public Fragment(Learning.SourceSlice source,String naturalId,String sectionId,String headingPath,String blockType,int partIndex,List<Context> contexts,String splitReason){this(source,naturalId,sectionId,headingPath,blockType,partIndex,contexts,splitReason,List.of());}
     }
     public record Pack(String packId, long documentId, List<String> fragmentIds, int inputBytes) {
         public Pack { fragmentIds = List.copyOf(fragmentIds); }
@@ -24,7 +27,7 @@ public final class ContentReading {
         public Plan { documents = List.copyOf(documents); fragments = List.copyOf(fragments); packs = List.copyOf(packs); sources=List.copyOf(sources); }
         /** 校验区间并集及每片唯一负责包，不能用ID齐全冒充完整阅读。 */
         public void validate(int readingPackBytes) {
-            if (!PROTOCOL.equals(protocol) || documents.isEmpty() || fragments.isEmpty() || packs.isEmpty()
+            if (!supported(protocol) || documents.isEmpty() || fragments.isEmpty() || packs.isEmpty()
                     || fragments.size() > 20000 || packs.size() > 10000) throw invalid();
             var docs = new HashMap<Long,Document>();var cursors = new HashMap<Long,Integer>();var slices = new HashMap<String,Fragment>();
             var sectionOwners=new HashMap<Long,Map<String,SectionSnapshot>>();var sectionEnds=new HashMap<Long,Map<String,Integer>>();
@@ -52,6 +55,10 @@ public final class ContentReading {
                 if(section==null||!section.headingPath().equals(fragment.headingPath())||s.startOffset()<section.startOffset()
                         ||s.endOffset()>sectionEnds.get(d.documentId()).get(fragment.sectionId()))throw invalid();
                 for(var c:fragment.contexts()) if(c.startOffset()<0||c.endOffset()<=c.startOffset()||c.endOffset()>d.textLength())throw invalid();
+                if(COMPACT_PROTOCOL.equals(protocol)) {
+                    int cursor=s.startOffset();for(var block:fragment.naturalBlocks()){if(block.startOffset()!=cursor||block.endOffset()<=cursor||block.endOffset()>s.endOffset())throw invalid();cursor=block.endOffset();}
+                    if(cursor!=s.endOffset())throw invalid();
+                }
                 cursors.put(s.documentId(),s.endOffset());
             }
             for(var d:documents)if(cursors.getOrDefault(d.documentId(),0)!=d.textLength())throw invalid();

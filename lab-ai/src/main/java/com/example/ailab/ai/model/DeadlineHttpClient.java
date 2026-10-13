@@ -17,7 +17,8 @@ final class DeadlineHttpClient implements dev.langchain4j.http.client.HttpClient
     /** 聊天及批量向量共用16 MiB传输上限；错误响应也在收取阶段受限。 */
     private static final int MAXIMUM_RESPONSE_BYTES = 16 * 1024 * 1024;
     record Scope(ExecutionBudget budget, int timeoutSeconds,
-                 java.util.concurrent.atomic.AtomicReference<String> responseBody, Capture capture) {
+                 java.util.concurrent.atomic.AtomicReference<String> responseBody, Capture capture,int outputTokens,String reasoningEffort,boolean responses) {
+        Scope(ExecutionBudget budget,int timeoutSeconds,java.util.concurrent.atomic.AtomicReference<String> responseBody,Capture capture){this(budget,timeoutSeconds,responseBody,capture,0,null,false);}
         Scope(ExecutionBudget budget,int timeoutSeconds,java.util.concurrent.atomic.AtomicReference<String> responseBody) {
             this(budget,timeoutSeconds,responseBody,null);
         }
@@ -70,9 +71,11 @@ final class DeadlineHttpClient implements dev.langchain4j.http.client.HttpClient
         var timeout = remaining.compareTo(configured) < 0 ? remaining : configured;
         var builder = java.net.http.HttpRequest.newBuilder(URI.create(request.url())).timeout(timeout);
         request.headers().forEach((name, values) -> values.forEach(value -> builder.header(name, value)));
-        builder.method(request.method().name(), java.net.http.HttpRequest.BodyPublishers.ofString(request.body()));
+        String requestBody=request.body();
+        if(scope.outputTokens()>0||scope.reasoningEffort()!=null)requestBody=parameters(requestBody,scope.outputTokens(),scope.reasoningEffort(),scope.responses());
+        builder.method(request.method().name(), java.net.http.HttpRequest.BodyPublishers.ofString(requestBody));
         long started=System.nanoTime();
-        if(scope.capture()!=null) {scope.capture().input=request.body();scope.capture().sent=true;}
+        if(scope.capture()!=null) {scope.capture().input=requestBody;scope.capture().sent=true;}
         try {
             var response = com.example.ailab.contract.http.HttpRequests.send(client, builder.build(),
                     com.example.ailab.contract.http.HttpRequests.boundedBytes(MAXIMUM_RESPONSE_BYTES));
@@ -91,6 +94,13 @@ final class DeadlineHttpClient implements dev.langchain4j.http.client.HttpClient
         } finally {
             if(scope.capture()!=null)scope.capture().millis=java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started);
         }
+    }
+    static String parameters(String body,int output,String effort,boolean responses){
+        try{var json=new com.fasterxml.jackson.databind.ObjectMapper();var root=(com.fasterxml.jackson.databind.node.ObjectNode)json.readTree(body);
+            if(output>0)root.put(responses?"max_output_tokens":"max_completion_tokens",output);
+            if(effort!=null){if(responses)root.putObject("reasoning").put("effort",effort);else {root.put("reasoning_effort",effort);root.putObject("thinking").put("type",effort.equals("none")?"disabled":"enabled");}}
+            return json.writeValueAsString(root);
+        }catch(java.io.IOException invalid){throw new IllegalStateException("模型调用参数无法编码");}
     }
 
     /**

@@ -47,7 +47,7 @@ final class LearningPackages {
         var groups=new ArrayList<List<Part>>();var current=new ArrayList<Part>();
         for(var part:parts) {
             var candidate=new ArrayList<>(current);candidate.add(part);
-            boolean related=current.isEmpty()||current.stream().allMatch(p->p.chapterId().equals(part.chapterId())||allowRelated&&related(p.chapterId(),part.chapterId(),compilation,quiz));
+            boolean related=current.isEmpty()||current.stream().allMatch(p->p.chapterId().equals(part.chapterId())||allowRelated&&(r.compact()&&compilation!=null?independent(p.chapterId(),part.chapterId(),compilation):related(p.chapterId(),part.chapterId(),compilation,quiz)));
             if(!current.isEmpty()&&(!related||candidate.size()>maximumParts||bytes(r,candidate,compilation,quiz)>r.policy().unitInputBytes()||output(candidate)>r.policy().packageOutputBytes())){groups.add(List.copyOf(current));current.clear();candidate= new ArrayList<>(List.of(part));}
             if(bytes(r,candidate,compilation,quiz)>r.policy().unitInputBytes())throw new LabException("WORKFLOW_UNIT_TOO_LARGE","最小执行单元的必要证据超出工作包容量");current.add(part);
         }
@@ -69,8 +69,8 @@ final class LearningPackages {
             var owned=pack.partIds().stream().map(byPart::get).toList();var request=input(r,owned,compilation,quiz);
             int dependencyBytes=pack.dependencies().stream().map(byPack::get).mapToInt(WorkPackage::outputBytes).sum();
             if(dependencyBytes>0)request.put("dependencyResultsReservation","X".repeat(dependencyBytes+pack.dependencies().size()*300));
-            var schema=compilation!=null?LearningBusinessSchemas.sectionBatch(owned):LearningBusinessSchemas.questions(owned,quiz.slots().stream().collect(Collectors.toMap(Slot::id,s->s)));
-            if(TextWindow.count(ContentJson.encode(request))>r.policy().unitInputBytes()||!r.preflight(request,schema)) {
+            var schema=compilation!=null?(r.compact()?CompactGeneration.schema(owned):LearningBusinessSchemas.sectionBatch(owned)):LearningBusinessSchemas.questions(owned,quiz.slots().stream().collect(Collectors.toMap(Slot::id,s->s)));
+            if(TextWindow.count(ContentJson.encode(request))>r.policy().unitInputBytes()||!r.preflight("package-write",request,schema)) {
                 if(owned.size()>1)return build(r,compilation,quiz,allowRelated,Math.max(1,owned.size()/2),maximumSectionOutput);
                 var part=owned.get(0);
                 if(compilation!=null&&part.itemIds().size()>1&&maximumSectionOutput>500)return build(r,compilation,quiz,false,1,Math.max(500,maximumSectionOutput/2));
@@ -83,6 +83,12 @@ final class LearningPackages {
         if(a.equals(b))return true;
         if(c!=null){var chapter=c.directory().chapters().stream().filter(x->x.id().equals(a)).findFirst().orElseThrow();var other=c.directory().chapters().stream().filter(x->x.id().equals(b)).findFirst().orElseThrow();return !chapter.resultDependencies().contains(b)&&!other.resultDependencies().contains(a)&&(chapter.relatedChapterIds().contains(b)||other.relatedChapterIds().contains(a));}
         return q.objectives().stream().anyMatch(o->o.primaryChapterId().equals(a)&&o.relatedChapterIds().contains(b)||o.primaryChapterId().equals(b)&&o.relatedChapterIds().contains(a));
+    }
+    private static boolean independent(String a,String b,CompilationPlan c){
+        var parents=c.directory().chapters().stream().collect(Collectors.toMap(DirectoryChapter::id,DirectoryChapter::parentId));
+        var ancestorsA=LearningHierarchy.ancestors(Set.of(a),parents);var ancestorsB=LearningHierarchy.ancestors(Set.of(b),parents);
+        return c.directory().chapters().stream().filter(ch->ch.id().equals(a)).noneMatch(ch->!Collections.disjoint(ch.resultDependencies(),ancestorsB))
+                &&c.directory().chapters().stream().filter(ch->ch.id().equals(b)).noneMatch(ch->!Collections.disjoint(ch.resultDependencies(),ancestorsA));
     }
     static Map<String,Object> input(LearningRuntime r,List<Part> parts,CompilationPlan c,Blueprint q) {
         var input=new LinkedHashMap<String,Object>();input.put("parts",parts);input.put("estimatedOutputBytes",output(parts));input.put("remarks",r.lease().request().instructions());

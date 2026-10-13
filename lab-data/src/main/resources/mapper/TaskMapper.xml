@@ -17,7 +17,7 @@
     <select id="retryFees" resultType="com.example.ailab.data.persistence.po.SqlRow">
         SELECT s.*,COALESCE(SUM(CASE WHEN a.state='SETTLED' THEN COALESCE(a.estimated_amount,0)
           WHEN a.state IN ('SENDING','UNKNOWN','RESERVED') THEN COALESCE(a.reserved_amount,0) ELSE 0 END),0) AS used_amount,
-          COALESCE(SUM(CASE WHEN a.state='RELEASED' THEN 0 WHEN a.state='SETTLED' THEN COALESCE(a.input_tokens,0)+COALESCE(a.output_tokens,0)
+          COALESCE(SUM(CASE WHEN a.state='RELEASED' THEN 0 WHEN (a.state='SETTLED' OR a.state='UNKNOWN' AND a.completed_at IS NOT NULL) AND a.input_tokens IS NOT NULL AND a.output_tokens IS NOT NULL AND a.reserved_units IS NULL THEN a.input_tokens+a.output_tokens
           ELSE a.reserved_input+a.reserved_output END),0) AS used_tokens
         FROM fee_scopes s LEFT JOIN fee_attempts a ON a.scope_id=s.scope_id
         WHERE s.actor_user_id=#{args[1]} AND s.scope_kind='TASK' AND s.resource_id=#{args[0]} GROUP BY s.scope_id

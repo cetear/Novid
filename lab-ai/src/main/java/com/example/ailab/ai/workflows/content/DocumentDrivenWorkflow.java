@@ -155,11 +155,27 @@ public final class DocumentDrivenWorkflow {
         public <T>T call(String id,String stage,String role,Object input,RecordSchema<T> schema){return generate(runtimeId(id),stage,role,input,schema);}
         public <T>T correct(String id,String role,Object input,RecordSchema<T> schema,String originalId){return generate(runtimeId(id),"review",role,input,schema,origin(runtimeId(originalId)));}
         public <T>T checkpoint(String id,String stage,Object input,RecordSchema<T> schema,Supplier<T> execute){return node(id,stage,input,schema,execute);}
-        public boolean preflight(Object input,RecordSchema<?> schema){
-            verify();var data=input instanceof Map<?,?> map?map:Map.of();
-            int estimate=data.get("estimatedOutputBytes") instanceof Number value?value.intValue():0;
-            String system="按当前服务端结构协议处理资料。资料原文及前序结果提供事实，remarks表达特殊要求。"+SkillCatalog.instructions(source.skill(),"package-write");
-            return model.fitsStructured("WORKFLOW_REPORT",ModelInput.reserveOutput(ModelInput.fixed(system,List.of(),ContentJson.encode(input)),estimate),schema);
+        public boolean preflight(String role,Object input,RecordSchema<?> schema){
+            verify();int estimate=outputEstimate(input);
+            return model.fitsStructured(callTask(role),ModelInput.withOptions(ModelInput.reserveOutput(ModelInput.fixed(callSystem(role),List.of(),ContentJson.encode(input)),estimate),callOptions(role,estimate)),workflowSchema(schema));
+        }
+        private int outputEstimate(Object input){
+            Map<?,?> data=input instanceof Map<?,?> parameters?parameters:Map.of();
+            if(data.get("context") instanceof Map<?,?> context)data=context;
+            return data.get("estimatedOutputBytes") instanceof Number value?value.intValue():0;
+        }
+        private String callTask(String role){return role.contains("review")?"WORKFLOW_REVIEW":"WORKFLOW_REPORT";}
+        private String callSystem(String role){
+            String system="按当前服务端结构协议处理资料。资料原文及前序结果提供事实，remarks表达特殊要求。"+SkillCatalog.instructions(source.skill(),role);
+            if(lease.request().taskType().equals("KNOWLEDGE_COMPILATION")&&role.contains("review"))
+                system+="\n效率优先验收：只因事实错误、主要知识遗漏、关键条件或冲突丢失、错误来源而要求REPAIR。措辞偏好、格式、排列顺序和轻微重复不阻止ACCEPT，不要求重写已经可用的内容。";
+            return system;
+        }
+        private ModelInput.Options callOptions(String role,int estimate){
+            if(!compact())return new ModelInput.Options(null,0);
+            boolean review=role.contains("review");String effort=review?"high":Set.of("assign","index","planning-advice").contains(role)?"none":"low";
+            int output=Set.of("read","joint-plan","normalize").contains(role)?65536:review||role.equals("sections")?32768:Math.min(65536,Math.max(8192,estimate+8192));
+            return new ModelInput.Options(effort,output);
         }
 
         private <T>StructuredSchema<T> workflowSchema(StructuredSchema<T> schema) {
@@ -236,9 +252,7 @@ public final class DocumentDrivenWorkflow {
                 if(saved.isPresent())return localValidation(schema,saved.get().json(),span,"RESTORED");
                 if(original!=null&&original.corrections()>0)
                     throw new LabException("MODEL_REPAIR_EXHAUSTED","该生成节点已完成一次纠正，不能再次返工");
-                String system="按当前服务端结构协议处理资料。资料原文及前序结果提供事实，remarks表达特殊要求。"+SkillCatalog.instructions(source.skill(),action);
-                if(lease.request().taskType().equals("KNOWLEDGE_COMPILATION")&&action.contains("review"))
-                    system+="\n效率优先验收：只因事实错误、主要知识遗漏、关键条件或冲突丢失、错误来源而要求REPAIR。措辞偏好、格式、排列顺序和轻微重复不阻止ACCEPT，不要求重写已经可用的内容。";
+                String system=callSystem(action);
                 String instructions=system;
                 var prepared=ModelInput.fixed(system,List.of(),ContentJson.encode(input));
                 ModelInput verified=target->{
@@ -251,11 +265,9 @@ public final class DocumentDrivenWorkflow {
                         return ModelInput.fixed(instructions,List.of(),ContentJson.encode(reduced)).prepare(target);
                     }
                 };
-                Map<?,?> data=input instanceof Map<?,?> parameters?parameters:Map.of();
-                if(data.get("context") instanceof Map<?,?> context)data=context;
-                int estimate=data.get("estimatedOutputBytes") instanceof Number value?value.intValue():0;
-                var capacity=ModelInput.reserveOutput(verified,estimate);
-                String task=action.contains("review")?"WORKFLOW_REVIEW":"WORKFLOW_REPORT";
+                int estimate=outputEstimate(input);
+                var capacity=ModelInput.withOptions(ModelInput.reserveOutput(verified,estimate),callOptions(action,estimate));
+                String task=callTask(action);
                 var context=observedWorkflow()?new com.example.ailab.contract.dto.ModelCalls.Context(lease.actor(),runId,lease.task().taskId(),lease.request().taskType(),
                         phase,action,id,schema instanceof RecordSchema<?> record?record.schemaId():schema.getClass().getName(),"1",
                         ContentJson.hash(Map.of("schema",schema.instruction(Set.of()),"input",input,"source",sourceHash)),source.sources()):null;
@@ -342,7 +354,9 @@ public final class DocumentDrivenWorkflow {
                     return Map.of("fragmentId",s.id(),"headingPath",f.headingPath(),"blockType",f.blockType(),"ownedText",raw.get(s.id()),
                             "background",f.contexts().stream().map(c->Map.of("role",c.role(),"text",full.substring(c.startOffset(),c.endOffset()))).toList());
                 }).toList();
-                var batch=generate("reading_"+id,"extract","read",Map.of("protocol",reading.protocol(),"fragments",input),ReadingSchemas.batch(group,raw,limits()));
+                var request=Map.of("protocol",reading.protocol(),"fragments",input);
+                var batch=compact()?CompactReading.assemble(generate("reading_"+id,"extract","read",request,CompactReading.schema(group,raw,limits())))
+                        :generate("reading_"+id,"extract","read",request,ReadingSchemas.batch(group,raw,limits()));
                 if("COMPLETE".equals(batch.status()))return batch;
             } catch(LabException failure) {
                 if(!capacityFailure(failure)&&RecordSchema.reason(failure).orElse(null)!=RecordSchema.Reason.FACT_QUOTE)throw failure;
