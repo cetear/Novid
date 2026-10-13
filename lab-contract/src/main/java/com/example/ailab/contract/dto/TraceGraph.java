@@ -4,7 +4,14 @@ import java.util.List;
 
 /** 调用嵌套与调度依赖分别返回；缺失节点明确列出，不补造静态步骤。 */
 public record TraceGraph(TraceSnapshot run, List<TraceNode> nodes, List<Edge> edges, List<String> missingNodeIds,
-                         boolean incomplete, String costStatus) {
+                         boolean incomplete, String costStatus, java.util.Map<String,String> nodeRuns) {
+    public TraceGraph {
+        nodeRuns = nodeRuns == null ? java.util.Map.of() : java.util.Map.copyOf(nodeRuns);
+    }
+    public TraceGraph(TraceSnapshot run,List<TraceNode> nodes,List<Edge> edges,List<String> missingNodeIds,
+                      boolean incomplete,String costStatus) {
+        this(run,nodes,edges,missingNodeIds,incomplete,costStatus,java.util.Map.of());
+    }
     public record Edge(String from, String to, String kind) { }
     /** 对持久节点重建图，序号只表示登记顺序，时间线使用实际时间。 */
     public static TraceGraph from(TraceSnapshot run, List<TraceNode> nodes) {

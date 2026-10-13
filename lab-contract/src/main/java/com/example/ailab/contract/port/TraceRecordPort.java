@@ -30,7 +30,11 @@ public interface TraceRecordPort {
     /** 私人图在端口再次校验所有者，缺节点时明确不完整。 */
     default TraceGraph graph(UserContext actor, String traceId) { return TraceGraph.from(read(actor,traceId), List.of()); }
     default TraceGraph graphSummary(UserContext actor,String traceId) {
-        var graph=graph(actor,traceId);return new TraceGraph(graph.run(),graph.nodes().stream().map(TraceNode::summary).toList(),graph.edges(),graph.missingNodeIds(),graph.incomplete(),graph.costStatus());
+        var graph=graph(actor,traceId);return new TraceGraph(graph.run(),graph.nodes().stream().map(TraceNode::summary).toList(),graph.edges(),graph.missingNodeIds(),graph.incomplete(),graph.costStatus(),graph.nodeRuns());
+    }
+    /** 单轮原始图保留失败历史；延续视图不修改原执行事实。 */
+    default TraceGraph executionGraph(UserContext actor,String traceId,boolean summary) {
+        return summary?graphSummary(actor,traceId):graph(actor,traceId);
     }
     default TraceNode node(UserContext actor,String traceId,String nodeId) {
         return graph(actor,traceId).nodes().stream().filter(n->n.spanId().equals(nodeId)).findFirst().orElseThrow(com.example.ailab.contract.error.LabException::denied);

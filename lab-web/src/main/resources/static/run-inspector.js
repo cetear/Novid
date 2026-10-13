@@ -4,6 +4,7 @@ let token = null;
 let detailGeneration = 0;
 let nodeGeneration = 0;
 let selectedRun = null;
+let nodeRuns = {};
 const byId = id => document.getElementById(id);
 // 所有服务器数据通过textContent展示，不让正文或标识成为HTML／图语法。
 function text(tag, value) { const node = document.createElement(tag); node.textContent = value; return node; }
@@ -25,19 +26,21 @@ async function refresh() {
   } catch (error) { if (requestedToken === token) byId("message").textContent = error.message; }
 }
 // 显示实际节点时间线，模型用量只显示叶节点，未知值不填零。
-async function show(id) {
+async function show(id, execution = false) {
   // 费用查询会异步等待；退出／换账号或选择另一运行后，旧响应不得重新写回私人详情。
   const requestedToken = token, generation = ++detailGeneration;
-  selectedRun = id; ++nodeGeneration;
+  selectedRun = id; nodeRuns = {}; ++nodeGeneration;
   const current = () => token === requestedToken && generation === detailGeneration;
   byId("detail").replaceChildren(); byId("nodes").replaceChildren(); byId("graph").replaceChildren();
   byId("node-detail").replaceChildren(); byId("node-detail").hidden = true;
   try {
-    const g = await api("/api/v1/runs/" + encodeURIComponent(id) + "/graph?view=summary");
+    const g = await api("/api/v1/runs/" + encodeURIComponent(id) + "/graph?view=summary&scope=" + (execution ? "execution" : "continuation"));
     if (!current()) return;
+    nodeRuns = g.nodeRuns || {};
     const allCalls = text("button", "查看本次已登记调用（含图中缺失的调用）");
     allCalls.onclick = () => showCalls(id, null); byId("detail").append(allCalls);
-    byId("detail").append(text("h2", "运行 " + g.run.traceId), text("p", g.incomplete ? "链路不完整（写入中、丢失、截断或旧摘要）。" : "本次记录完整。"));
+    byId("detail").append(text("h2", (execution ? "历史执行 " : "任务链路 · 当前运行 ") + g.run.traceId), text("p", g.incomplete ? "链路不完整（写入中、丢失、截断或历史记录不可用）。" : "链路记录完整。"));
+    if (!execution && Object.values(nodeRuns).some(source => source !== id)) byId("detail").append(text("p", "已完成分支沿用原成功调用；失败分支显示本轮执行结果。"));
     byId("detail").append(text("p", "任务：" + (g.run.taskId ?? "无") + "；会话：" + (g.run.sessionId ?? "无") + "；服务器首次放行：" + (g.run.firstDeliverableAt ?? "未知")));
     // 可靠费用单独查询，图不完整不推断免费；费用失败也不能阻断图显示。
     try {
@@ -46,11 +49,12 @@ async function show(id) {
       byId("detail").append(text("p", "费用状态：" + fees.costStatus + "；已定价估算小计：" + fees.estimatedAmount + " " + (fees.currency ?? "币种未知") + "；保留预留小计：" + fees.reservedAmount + "；未知尝试：" + fees.unknownAttempts + "；待结算：" + fees.pendingAttempts + "。小计不包含未知金额，也不是供应商账单。"));
     } catch (error) { if (!current()) return; byId("detail").append(text("p", "费用记录暂不可读：" + error.message)); }
     if (!current()) return;
-    if (g.run.previousTraceId) { const button = text("button", "查看上次执行"); button.onclick = () => show(g.run.previousTraceId); byId("detail").append(button); }
-    const start = Date.parse(g.run.createdAt); const total = Math.max(1, Date.parse(g.run.endedAt ?? new Date().toISOString()) - start);
+    if (g.run.previousTraceId) { const button = text("button", "查看上次执行"); button.onclick = () => show(g.run.previousTraceId, true); byId("detail").append(button); }
+    const start = g.nodes.reduce((earliest, node) => Math.min(earliest, Date.parse(node.startedAt)), Date.parse(g.run.createdAt)); const total = Math.max(1, Date.parse(g.run.endedAt ?? new Date().toISOString()) - start);
     for (const node of g.nodes) {
       const article = document.createElement("article");
       article.append(text("h3", node.sequence + " · " + node.type + " · " + node.name + " · " + node.status));
+      if (nodeRuns[node.spanId] && nodeRuns[node.spanId] !== id) article.append(text("p", "沿用已完成节点 · 来源运行 " + nodeRuns[node.spanId]));
       const duration = node.endedAt ? Date.parse(node.endedAt) - Date.parse(node.startedAt) : null;
       const bar = document.createElement("div"); bar.className = "bar";
       bar.style.marginLeft = Math.max(0, 100 * (Date.parse(node.startedAt) - start) / total) + "%";
@@ -82,7 +86,7 @@ function draw(g) {
 }
 // 内容只按纯文本交付，未记录、截断和来源隐藏分别说明。
 async function selectNode(summary) {
-  const id = selectedRun, requestedToken = token, runGeneration = detailGeneration, generation = ++nodeGeneration;
+  const id = nodeRuns[summary.spanId] || selectedRun, requestedToken = token, runGeneration = detailGeneration, generation = ++nodeGeneration;
   const current = () => token === requestedToken && runGeneration === detailGeneration && generation === nodeGeneration;
   const panel = byId("node-detail"); panel.replaceChildren(); panel.hidden = false;
   panel.append(text("p", "正在读取节点详情…"));
@@ -92,6 +96,7 @@ async function selectNode(summary) {
   if (!current()) return;
   panel.replaceChildren();
   panel.append(text("h2", node.name + " · " + node.status));
+  if (id !== selectedRun) panel.append(text("p", "沿用原成功调用 · 来源运行 " + id));
   const duration = node.endedAt ? Date.parse(node.endedAt) - Date.parse(node.startedAt) : null;
   panel.append(text("p", "开始：" + node.startedAt + "；结束：" + (node.endedAt ?? "未结束") + "；耗时：" + (duration === null ? "未知" : duration + "毫秒")));
   if (!node.input && !node.output && node.payloadSources?.length) panel.append(text("p", "来源当前不可访问，输入和输出内容已隐藏。"));
@@ -109,7 +114,7 @@ async function selectNode(summary) {
     panel.append(text("p", "调用：" + o.callStatus + "；校验：" + o.validationStatus + "；HTTP " + o.httpMillis + "ms；校验 " + o.validationMillis + "ms；归档 " + o.archiveMillis + "ms"), text("p", "输入归档：" + (o.input?.state ?? "已隐藏") + "；输出归档：" + (o.output?.state ?? "已隐藏")));
   }
   if (node.observation?.callId && node.observation.input?.state !== "DISABLED") {
-    const open = text("button", "查看本次模型调用全文与校验"); open.onclick = () => showCall(id, node.observation.callId); panel.append(open);
+    const open = text("button", "查看该模型调用全文与校验"); open.onclick = () => showCall(id, node.observation.callId); panel.append(open);
   } else if (node.type === "AGENT") {
     const attempts = text("button", "展开业务节点的模型尝试"); attempts.onclick = () => showCalls(id, node.name); panel.append(attempts);
   }
@@ -193,7 +198,7 @@ byId("login").onsubmit = async event => {
 };
 // 注销后清除页面中所有私人数据，无论远程注销是否成功。
 byId("logout").onclick = async () => {
-  const previousToken = token; token = null; selectedRun = null; ++detailGeneration; ++nodeGeneration;
+  const previousToken = token; token = null; selectedRun = null; nodeRuns = {}; ++detailGeneration; ++nodeGeneration;
   for (const id of ["runs", "detail", "nodes", "graph", "node-detail"]) byId(id).replaceChildren();
   byId("node-detail").hidden = true; byId("login").hidden = false; byId("logout").hidden = true; byId("refresh").hidden = true;
   byId("message").textContent = "已退出，页面私人内容已清除。";

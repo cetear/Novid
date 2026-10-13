@@ -51,6 +51,12 @@ public record TraceNode(String spanId, String parentSpanId, String type, String 
                 modelId,taskType,profile,policyVersion,routeReason,attempt,inputTokens,outputTokens,usageSource,
                 toolCallHash,null,null,payloadSources,observation==null?null:observation.withoutPreviews(),null);
     }
+    /** 延续图只调整布局关系，原调用身份、内容、状态和耗时保持不变。 */
+    public TraceNode layout(String parent,List<String> dependencies,int order) {
+        return new TraceNode(spanId,parent,type,name,stepId,agentId,dependencies,order,status,startedAt,endedAt,errorCode,
+                modelId,taskType,profile,policyVersion,routeReason,attempt,inputTokens,outputTokens,usageSource,
+                toolCallHash,input,output,payloadSources,observation,diagnostic);
+    }
     /** 归档到期后，节点副本也不能继续交付预览和失败摘录。 */
     public TraceNode readableAt(Instant now) {
         if(observation==null)return this;

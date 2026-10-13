@@ -112,6 +112,10 @@ public class PersonalApplicationService {
         if(id==null||!id.matches("[0-9a-fA-F-]{36}"))throw LabException.invalid("运行标识无效");
         return traces.graphSummary(policy.current(actor),id);
     }
+    public TraceGraph executionGraph(UserContext actor,String id,boolean summary) {
+        if(id==null||!id.matches("[0-9a-fA-F-]{36}"))throw LabException.invalid("运行标识无效");
+        return traces.executionGraph(policy.current(actor),id,summary);
+    }
 
     /**
      * 观测失败不阻断已经过权限复核的交付，数据库仍按本人过滤。

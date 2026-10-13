@@ -112,16 +112,48 @@ public class PrivateResourceRepository implements MemoryStorePort, TraceRecordPo
         return graph(actor,id,false);
     }
     public TraceGraph graphSummary(UserContext actor,String id) { return graph(actor,id,true); }
+    public TraceGraph executionGraph(UserContext actor,String id,boolean summary) {
+        return executionGraph(actor,read(actor,id),summary);
+    }
     public TraceNode node(UserContext actor,String id,String nodeId) {
         read(actor,id);
         var nodes=sql.project(mapper.node(new Object[]{id,actor.userId(),nodeId}), (r,n)->{
             try {return traceJson.readValue(r.string(1),TraceNode.class);}
             catch(com.fasterxml.jackson.core.JsonProcessingException invalid) {throw new IllegalStateException("节点读取失败");}
         });
-        return authorizedNodes(actor,nodes).stream().findFirst().orElseThrow(LabException::denied);
+        if(!nodes.isEmpty())return authorizedNodes(actor,nodes).get(0);
+        // 延续图节点仍属于原运行；来源只能从已授权的延续图解析，不能由请求指定。
+        var graph=graphSummary(actor,id);String source=graph.nodeRuns().get(nodeId);
+        if(source==null||source.equals(id))throw LabException.denied();
+        var layout=graph.nodes().stream().filter(n->n.spanId().equals(nodeId)).findFirst().orElseThrow(LabException::denied);
+        return node(actor,source,nodeId).layout(layout.parentSpanId(),layout.dependsOn(),layout.sequence());
     }
     private TraceGraph graph(UserContext actor,String id,boolean summary) {
         var run=read(actor,id);
+        var current=executionGraph(actor,run,summary);
+        if(run.taskId()==null||run.previousTraceId()==null)return current;
+        if(!current.nodes().isEmpty()&&current.nodes().stream().noneMatch(n->n.type().equals("TASK")&&n.name().equals("document_learning_workflow")))return current;
+        var history=new ArrayList<TraceGraph>();history.add(current);
+        var seen=new HashSet<String>();seen.add(id);boolean missing=false;
+        String previous=run.previousTraceId();
+        while(previous!=null) {
+            if(history.size()>=32||!seen.add(previous)){missing=true;break;}
+            TraceSnapshot prior;
+            try {prior=read(actor,previous);}
+            catch(LabException unavailable) {
+                if(!unavailable.code().equals("ACCESS_DENIED"))throw unavailable;
+                missing=true;break;
+            }
+            if(prior.actorUserId()!=run.actorUserId()||!Objects.equals(prior.taskId(),run.taskId())
+                    ||prior.createdAt().isAfter(run.createdAt())){missing=true;break;}
+            history.add(executionGraph(actor,prior,summary));previous=prior.previousTraceId();
+        }
+        Collections.reverse(history);
+        if(history.stream().flatMap(g->g.nodes().stream()).noneMatch(n->n.type().equals("TASK")&&n.name().equals("document_learning_workflow")))return current;
+        return ContinuationTraceGraph.merge(history,missing);
+    }
+    private TraceGraph executionGraph(UserContext actor,TraceSnapshot run,boolean summary) {
+        String id=run.traceId();
         var nodes=sql.project(summary?mapper.graphSummary(new Object[]{id,actor.userId()}):mapper.graphAiSpansSelect(new Object[]{id, actor.userId()}), (r,n)->{
             try { return traceJson.readValue(r.string(1),TraceNode.class); }
             catch(com.fasterxml.jackson.core.JsonProcessingException invalid) { throw new IllegalStateException("观测读取失败"); }

@@ -278,9 +278,12 @@ public class AssistantController {
      * 图的节点与调用／依赖边只来自本人持久执行事实，禁止浏览器缓存私人链路。
      */
     @GetMapping("/runs/{id}/graph")
-    public org.springframework.http.ResponseEntity<TraceGraph> graph(Authentication a, @PathVariable String id,@RequestParam(defaultValue="full") String view) {
+    public org.springframework.http.ResponseEntity<TraceGraph> graph(Authentication a, @PathVariable String id,@RequestParam(defaultValue="full") String view,
+            @RequestParam(defaultValue="continuation") String scope) {
         if(!java.util.Set.of("full","summary").contains(view))throw com.example.ailab.contract.error.LabException.invalid("图视图无效");
+        if(!java.util.Set.of("continuation","execution").contains(scope))throw com.example.ailab.contract.error.LabException.invalid("图范围无效");
         return org.springframework.http.ResponseEntity.ok().header("Cache-Control", "no-store")
-                .body(view.equals("summary")?personal.graphSummary(CurrentUser.from(a),id):personal.graph(CurrentUser.from(a), id));
+                .body(scope.equals("execution")?personal.executionGraph(CurrentUser.from(a),id,view.equals("summary")):
+                        view.equals("summary")?personal.graphSummary(CurrentUser.from(a),id):personal.graph(CurrentUser.from(a), id));
     }
 }

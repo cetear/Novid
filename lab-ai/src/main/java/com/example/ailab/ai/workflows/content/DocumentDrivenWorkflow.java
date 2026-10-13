@@ -179,14 +179,33 @@ public final class DocumentDrivenWorkflow {
         <T>T node(String id,String phase,Object input,StructuredSchema<T> originalSchema,Function<TraceContext.Span,T> execute,boolean modelValidated) {
             var schema=workflowSchema(originalSchema);
             budget.check();String hash=ContentJson.hash(Map.of("source",sourceHash,"node",id,"input",input));
+            boolean readingCheckpoint=readingCheckpointIds.contains(id);
+            String checkpoint=null;ValidationDiagnostic checkpointDiagnostic=null;
+            try {
+                var restored=restoredReading.get(id);
+                if(restored!=null&&!hash.equals(restored.inputHash()))throw changed();
+                var old=restored!=null?Optional.of(restored.output()):readingCheckpoint?Optional.<String>empty():store.completed(lease,id,hash);
+                if(old.isPresent()) {
+                    checkpoint=old.get();
+                    // 成功复用不创建新span；原成功分支由延续图保留，不消耗本轮采集额度。
+                    if(observedWorkflow()&&schema instanceof RecordSchema<T> record) {
+                        var checked=record.validateObserved(checkpoint,Set.of(),"RESTORED");checkpointDiagnostic=checked.diagnostic();
+                        if(checked.failure()!=null)throw checked.failure();return checked.value();
+                    }
+                    return schema.validate(checkpoint,Set.of());
+                }
+            } catch(RuntimeException failure) {
+                try(var span=budget.trace().span("AGENT",id)) {
+                    if(observedWorkflow())span.input("恢复检查点；阶段："+phase+"；业务节点："+id);
+                    else com.example.ailab.ai.runtime.TracePayloadCapture.input(span,checkpoint==null?input:checkpoint);
+                    span.diagnostic(checkpointDiagnostic);span.fail(failure);
+                }
+                throw failure;
+            }
             try(var span=budget.trace().span("AGENT",id);var activation=budget.activate(span.context())) {
                 if(observedWorkflow())span.input("阶段："+phase+"；业务节点："+id+"；模型尝试可展开查看");
                 else com.example.ailab.ai.runtime.TracePayloadCapture.input(span,input);
                 try {
-                    var restored=restoredReading.get(id);
-                    if(restored!=null&&!hash.equals(restored.inputHash()))throw changed();
-                    boolean readingCheckpoint=readingCheckpointIds.contains(id);
-                    var old=restored!=null?Optional.of(restored.output()):readingCheckpoint?Optional.<String>empty():store.completed(lease,id,hash);if(old.isPresent()){span.status("REUSED");var value=localValidation(schema,old.get(),span,"RESTORED");if(observedWorkflow())span.output("复用已核验的检查点");else com.example.ailab.ai.runtime.TracePayloadCapture.output(span,value);return value;}
                     if(readingCheckpoint) {
                         T value=execute.apply(span);String json=ContentJson.encode(value);if(!modelValidated||!observedWorkflow())value=localValidation(schema,json,span,"ASSEMBLED");
                         readingWrites.add(new ContentWorkflowStorePort.ReadingWrite(id,hash,json));readingWriteBytes+=TextWindow.count(json);
