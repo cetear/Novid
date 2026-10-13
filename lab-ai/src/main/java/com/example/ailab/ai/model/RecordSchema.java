@@ -156,6 +156,12 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
         return rules;
     }
 
+    /** 字段文本统一保留50%内部容差；严格模式、数量与整体容量沿用原上限。 */
+    static int acceptedMaximum(FieldRule rule, boolean relaxed) {
+        return rule.maximum() + (relaxed && rule.unit().equals("UTF-8_BYTES") && !rule.path().equals("$")
+                ? rule.maximum() / 2 : 0);
+    }
+
     public String schemaId() { return type.getName(); }
     public record Checked<T>(T value, LabException failure, com.example.ailab.contract.dto.ValidationDiagnostic diagnostic) { }
     public Checked<T> validateObserved(String text, Set<String> references, String origin) {
@@ -263,9 +269,7 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
             int size = rule.unit().equals("ITEMS") ? node.size() : rule.unit().equals("UTF-8_BYTES") ? TextWindow.count(node.isContainerNode() ? node.toString() : node.asText()) : node.asText().length();
             if (rule.nonBlank() && node.asText().isBlank())
                 add(new ValidationIssue(path, "NON_BLANK", size, rule.maximum(), rule.unit(), "不能为空"));
-            int maximum = rule.maximum();
-            if (Boolean.TRUE.equals(RELAXED.get()) && rule.unit().equals("UTF-8_BYTES") && !rule.path().equals("$"))
-                maximum += maximum / 4;
+            int maximum = acceptedMaximum(rule, Boolean.TRUE.equals(RELAXED.get()));
             if (!rule.unit().equals("ENUM") && size > maximum)
                 add(new ValidationIssue(path, "MAXIMUM", size, maximum, rule.unit(), "不得超过上限"));
             if (rule.unit().equals("ENUM") && !rule.allowed().contains(node.asText()))

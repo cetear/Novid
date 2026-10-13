@@ -13,7 +13,7 @@ final class LocalSummaryCompression {
     private static final int MAX_FIELDS = 32;
     public record Replacement(String path, String value) { }
     public record Replacements(List<Replacement> replacements) { }
-    private record Field(String path, String pointer, int maximum, String original, JsonNode context) { }
+    private record Field(String path, String pointer, int maximum, int acceptedMaximum, String original, JsonNode context) { }
 
     static Optional<Plan> plan(RecordSchema<?> schema, JsonNode tree, Set<String> paths, boolean relaxed, Set<String> references) {
         if (tree == null || !tree.isObject()) return Optional.empty();
@@ -45,12 +45,12 @@ final class LocalSummaryCompression {
         String nextPath = path.isEmpty() ? name : path + "." + name;
         String nextPointer = pointer + "/" + name;
         if (index == segments.length - 1) {
-            int accepted = rule.maximum() + (relaxed ? rule.maximum() / 4 : 0);
+            int accepted = acceptedMaximum(rule, relaxed);
             if (child.isTextual() && TextWindow.count(child.asText()) > accepted) {
                 var context = ((ObjectNode)node).objectNode();
                 for (String key : List.of("title", "contentRole", "conditions", "relations"))
                     if (node.has(key)) context.set(key, node.get(key).deepCopy());
-                fields.add(new Field(nextPath, nextPointer, rule.maximum(), child.asText(), context));
+                fields.add(new Field(nextPath, nextPointer, rule.maximum(), accepted, child.asText(), context));
             }
         } else if (array && child.isArray()) {
             for (int i = 0; i < child.size(); i++)
@@ -91,8 +91,9 @@ final class LocalSummaryCompression {
                     var field = fields.stream().filter(f -> f.path().equals(replacement.path())).findFirst();
                     if (field.isEmpty()) continue; // ENUM规则已拒绝未知路径；绝不执行模型提供的任意路径。
                     require(!replacement.value().isBlank(), Reason.CONTENT_CONSTRAINT, path + ".value", "非空摘要");
-                    maximum(TextWindow.count(replacement.value()) <= field.get().maximum(), Reason.CONTENT_CONSTRAINT,
-                            path + ".value", TextWindow.count(replacement.value()), field.get().maximum(), "UTF-8_BYTES");
+                    // 生成目标仍为原上限；内部验收与原字段一致，不能在组合前丢失其容差。
+                    maximum(TextWindow.count(replacement.value()) <= field.get().acceptedMaximum(), Reason.CONTENT_CONSTRAINT,
+                            path + ".value", TextWindow.count(replacement.value()), field.get().acceptedMaximum(), "UTF-8_BYTES");
                 }
             });
         }
