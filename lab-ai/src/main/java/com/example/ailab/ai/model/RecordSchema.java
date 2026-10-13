@@ -87,6 +87,7 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
     private final List<FieldRule> rules;
     private final String contract;
     private final boolean relaxed;
+    private final Set<String> compressionPaths;
 
     public RecordSchema(Class<T> type, String instruction, Consumer<T> validate) {
         this(type, instruction, List.of(), validate);
@@ -97,21 +98,58 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
     }
 
     private RecordSchema(Class<T> type, String instruction, List<FieldRule> rules, Consumer<T> validate, boolean relaxed) {
+        this(type, instruction, rules, validate, relaxed, Set.of());
+    }
+
+    private RecordSchema(Class<T> type, String instruction, List<FieldRule> rules, Consumer<T> validate, boolean relaxed, Set<String> compressionPaths) {
         this.type = type;
         this.instruction = instruction;
         this.rules = List.copyOf(rules);
         this.validate = validate;
         this.contract = contract(type).toString();
         this.relaxed = relaxed;
+        this.compressionPaths = Set.copyOf(compressionPaths);
     }
 
     public RecordSchema<T> withChecks(Consumer<T> checks) {
-        return new RecordSchema<>(type, instruction, rules, validate.andThen(checks), relaxed);
+        return new RecordSchema<>(type, instruction, rules, validate.andThen(checks), relaxed, compressionPaths);
     }
 
     /** 资料工作流容忍展示格式和轻微文案超长；身份、来源、覆盖和整体容量仍按业务规则验证。 */
     public RecordSchema<T> relaxed() {
-        return relaxed ? this : new RecordSchema<>(type, instruction, rules, validate, true);
+        return relaxed ? this : new RecordSchema<>(type, instruction, rules, validate, true, compressionPaths);
+    }
+
+    /** 第一阶段只开放可改写摘要；引用、正文和题目字段不能隐式进入压缩。 */
+    public RecordSchema<T> withSummaryCompression(String... paths) {
+        var selected = Set.of(paths);
+        for (String path : selected) {
+            if (!(path.equals("summary") || path.endsWith(".summary")) || rules.stream().noneMatch(r ->
+                    r.path().equals(path) && r.unit().equals("UTF-8_BYTES") && r.maximum() > 0))
+                throw new IllegalArgumentException("局部压缩必须绑定已有摘要字节规则");
+        }
+        return new RecordSchema<>(type, instruction, rules, validate, relaxed, selected);
+    }
+
+    Optional<LocalSummaryCompression.Plan> compressionPlan(String text, Set<String> references) {
+        if (compressionPaths.isEmpty()) return Optional.empty();
+        try {
+            if (text == null || text.length() > (relaxed ? 524288 : 200000)) return Optional.empty();
+            var tree = JSON.readTree(normalize(text));
+            return LocalSummaryCompression.plan(this, tree, compressionPaths, relaxed, references);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
+            return Optional.empty();
+        }
+    }
+
+    private String normalize(String text) {
+        if (relaxed || Boolean.TRUE.equals(RELAXED.get())) {
+            text = text.strip();
+            int line = text.indexOf('\n');
+            if (line >= 0 && (text.substring(0,line).strip().equals("```json") || text.substring(0,line).strip().equals("```")) && text.endsWith("```"))
+                text = text.substring(line + 1,text.length() - 3).strip();
+        }
+        return text;
     }
 
     public List<FieldRule> fieldRules() {
@@ -271,12 +309,7 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
                 maximum(false, Reason.JSON_SIZE, "$", text == null ? 0 : text.length(), maximumJsonChars, "UTF-16_UNITS");
                 throw invalid(Reason.JSON_SIZE, issues);
             }
-            if (Boolean.TRUE.equals(RELAXED.get())) {
-                text = text.strip();
-                int line = text.indexOf('\n');
-                if (line >= 0 && (text.substring(0,line).strip().equals("```json") || text.substring(0,line).strip().equals("```")) && text.endsWith("```"))
-                    text = text.substring(line + 1,text.length() - 3).strip();
-            }
+            text = normalize(text);
             var tree = JSON.readTree(text);
             check(tree, type, "$");
             if (!issues.isEmpty()) throw invalid(Reason.valueOf(issues.get(0).rule()), issues);
@@ -340,10 +373,20 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
             default -> "按同一JSON Schema重新生成，修正全部列出的问题，保持既定身份、来源和目标。";
         };
         try {
-            return "\n上次输出校验失败 reason=" + reason + "。" + hint + "\n字段问题：" + JSON.writeValueAsString(failure.validationIssues());
+            return "\n上次输出校验失败 reason=" + reason + "。" + hint + "\n字段问题：" + JSON.writeValueAsString(
+                    failure.validationIssues().stream().map(this::repairIssue).toList());
         } catch (Exception invalid) {
             throw new IllegalStateException(invalid);
         }
+    }
+
+    /** 模型只接收字段原始上限；内部验收容差保留在异常、日志与私人诊断中。 */
+    private ValidationIssue repairIssue(ValidationIssue issue) {
+        if (!issue.unit().equals("UTF-8_BYTES") || issue.maximum() == null) return issue;
+        String path = issue.path().replaceAll("\\[[0-9]+\\]", "[]");
+        var rule = rules.stream().filter(r -> r.path().equals(path) && r.unit().equals(issue.unit())).findFirst();
+        return rule.map(r -> new ValidationIssue(issue.path(), issue.rule(), issue.actual(), r.maximum(), issue.unit(), issue.expected()))
+                .orElse(issue);
     }
 
     public static Optional<Reason> reason(LabException failure) {

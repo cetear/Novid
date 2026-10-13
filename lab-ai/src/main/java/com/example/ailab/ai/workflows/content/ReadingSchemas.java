@@ -31,12 +31,12 @@ public final class ReadingSchemas {
                 nested(path,()->ContentSchemas.facts(id,id,raw.get(id),32,false,limits).validate(ContentJson.encode(new ContentWorkflow.Facts(observation.items(),v.status())),Set.of()));
                 topics(id,observation.items(),observation.topics(),path+".topics");
             }
-        });
+        }).withSummaryCompression("fragments[].topics[].summary");
     }
     public static RecordSchema<Topics> topics(String prefix,List<Learning.Item> facts) {
         return new RecordSchema<>(Topics.class,"按本批事实归纳主题卡。id使用"+prefix+"_t1起连续编号；每张卡的itemIds非空且不重复，每条事实恰好归属一张卡；"
                 +"dependencyItemIds不重复且仅引用本批事实。无事实时topics为空，有事实时不得为空。保留条件和矛盾关系。",
-                topicRules("topics"),v->topics(prefix,facts,v.topics(),"topics"));
+                topicRules("topics"),v->topics(prefix,facts,v.topics(),"topics")).withSummaryCompression("topics[].summary");
     }
     private static List<FieldRule> topicRules(String path) {
         var rules=new ArrayList<>(List.of(items(path,32),utf8(path+"[].title",160),utf8(path+"[].summary",600),utf8(path+"[].contentRole",120)));

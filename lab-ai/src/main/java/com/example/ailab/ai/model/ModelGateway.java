@@ -151,9 +151,7 @@ public class ModelGateway {
         }, budget);
     }
 
-    /**
-     * 一次结构修复共享原预算；保留原输入，草稿只作为assistant数据，诊断由程序提供。
-     */
+    /** 一次纠正共享原预算；资料摘要支持局部替换，其余错误沿用完整结构修复。 */
     public <T> StructuredTurn<T> structured(String task, ModelRegistry.Selection selection, ModelInput input,
                                             ExecutionBudget budget, StructuredSchema<T> schema) {
         return structured(task,selection,input,budget,schema,null,true);
@@ -167,8 +165,9 @@ public class ModelGateway {
     public void callArchive(com.example.ailab.contract.port.ModelCallArchivePort archive) { callArchive=archive; }
     private static final class CallExecution {
         final com.example.ailab.contract.dto.ModelCalls.Context context;
+        com.example.ailab.contract.dto.ModelCalls.Context attemptContext;
         PendingCall pending;
-        CallExecution(com.example.ailab.contract.dto.ModelCalls.Context context) { this.context=context; }
+        CallExecution(com.example.ailab.contract.dto.ModelCalls.Context context) { this.context=context;this.attemptContext=context; }
     }
     private static final class PendingCall {
         final String id=java.util.UUID.randomUUID().toString();
@@ -176,11 +175,12 @@ public class ModelGateway {
         final DeadlineHttpClient.Capture capture=new DeadlineHttpClient.Capture();
         final com.example.ailab.contract.context.TraceContext.Span span;
         final String parent,model;final int attempt;
+        final com.example.ailab.contract.dto.ModelCalls.Context context;
         String outcome="RUNNING",validation="SKIPPED",error;
         long validationMillis;
         com.example.ailab.contract.dto.ValidationDiagnostic diagnostic;
-        PendingCall(com.example.ailab.contract.context.TraceContext.Span span,String parent,String model,int attempt) {
-            this.span=span;this.parent=parent;this.model=model;this.attempt=attempt;
+        PendingCall(com.example.ailab.contract.context.TraceContext.Span span,String parent,String model,int attempt,com.example.ailab.contract.dto.ModelCalls.Context context) {
+            this.span=span;this.parent=parent;this.model=model;this.attempt=attempt;this.context=context;
         }
     }
     /** 不可变阶段契约显式绑定；内部仍沿用原路由、预算与一次纠正规则。 */
@@ -202,7 +202,7 @@ public class ModelGateway {
         }
     }
     private com.example.ailab.contract.dto.ModelCalls.CallRecord callRecord(CallExecution execution,PendingCall p,boolean ended) {
-        return new com.example.ailab.contract.dto.ModelCalls.CallRecord(p.id,execution.context,
+        return new com.example.ailab.contract.dto.ModelCalls.CallRecord(p.id,p.context,
                 p.span.id().equals("missing-node")?null:p.span.id(),p.parent,p.model,p.attempt,
                 registry.mock()?"SIMULATED":p.capture.sent?"SENT":"NOT_SENT",p.outcome,p.validation,p.error,
                 p.capture.millis,p.validationMillis,p.diagnostic,p.started,ended?java.time.Instant.now():null);
@@ -223,7 +223,7 @@ public class ModelGateway {
                 input=detail.input();output=detail.output();
             }
         } catch(RuntimeException unavailable) { LOG.warn("event=model.call_archive_failed callId={} code=SAVE_FAILED",p.id); }
-        p.span.observation(new com.example.ailab.contract.dto.ModelCalls.Observation(p.id,p.outcome,p.validation,execution.context.schemaId(),
+        p.span.observation(new com.example.ailab.contract.dto.ModelCalls.Observation(p.id,p.outcome,p.validation,p.context.schemaId(),
                 p.capture.millis,p.validationMillis,java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started),input,output));
         p.span.diagnostic(p.diagnostic);
         if(p.error!=null)p.span.fail(new LabException(p.error,"模型调用或校验失败"));
@@ -252,6 +252,12 @@ public class ModelGateway {
             budget.invalidStructure();
             if(!allowRepair)throw invalid;
             budget.repair();
+            var execution = callExecution.get();
+            if (execution != null && schema instanceof RecordSchema<T> record) {
+                var plan = record.compressionPlan(turn.text(), referenceIds(turn.evidence()));
+                if (plan.isPresent())
+                    return compressSummary(task, selection, input, budget, record, plan.get(), turn, preparedInput.get(), attempts, execution);
+            }
             // 修复固定当前成功目标，避免把结构错误当服务故障，或跨模型追求更有利的安全结果。
             var original=preparedInput.get();String draft=turn.text();
             ModelInput correction=target->{
@@ -277,6 +283,52 @@ public class ModelGateway {
                 budget.invalidStructure();
                 throw failed;
             }
+        }
+    }
+
+    private <T> StructuredTurn<T> compressSummary(String task, ModelRegistry.Selection selection, ModelInput input,
+            ExecutionBudget budget, RecordSchema<T> schema, LocalSummaryCompression.Plan plan, Turn original,
+            ModelInput.Prepared originalInput, List<ModelRoute.Attempt> attempts, CallExecution execution) {
+        var patchSchema = plan.schema();
+        String prompt = plan.input();
+        var fixed = ModelInput.fixed("执行服务端指定摘要的局部压缩。", List.of(), prompt);
+        ModelInput compressionInput = target -> {
+            // 用原目标重新执行来源/租约回调；压缩Schema预留不能令原输入误报容量不足。
+            var checked = input.prepare(registry.definition(original.modelId()));
+            if (!checked.messages().equals(originalInput.messages()) || !checked.evidence().equals(originalInput.evidence()))
+                throw new LabException("WORKFLOW_STATE_CONFLICT", "局部压缩期间原输入或来源已变化");
+            var prepared = fixed.prepare(target);
+            return new ModelInput.Prepared(prepared.messages(), originalInput.evidence(), prepared.inputTokens());
+        };
+        var context = execution.context;
+        execution.attemptContext = new ModelCalls.Context(context.actor(), context.traceId(), context.taskId(), context.taskType(),
+                context.stage(), "local-summary-compression", context.businessNodeId(), patchSchema.schemaId(), "1",
+                Learning.digest(context.contractHash() + "\n" + patchSchema.instruction(Set.of()) + "\n" + prompt), context.sources());
+        Turn compressed;
+        LocalSummaryCompression.Replacements replacements;
+        try {
+            compressed = generate(task, selection, compressionInput, budget, patchSchema, "", attempts, original.modelId(), List.of());
+            try { replacements = validateStructured(patchSchema, compressed, budget); }
+            catch (LabException invalid) {
+                if (invalid.code().equals("MODEL_STRUCTURED_INVALID")) { markInvalid(attempts);budget.invalidStructure(); }
+                throw invalid;
+            }
+        } finally { execution.attemptContext = context; }
+        String assembled = plan.assemble(replacements);
+        // 合成校验属于本地后处理，不伪造提供方响应或归档，也不产生第二次付费纠正。
+        try (var span = budget.trace().span("VALIDATION", "assembled_summary")) {
+            var checked = schema.validateObserved(assembled, referenceIds(original.evidence()), "ASSEMBLED_RESULT");
+            // 本地组合没有归档载荷的到期引用，只留规则和位置，避免正文摘录成为永久副本。
+            if (checked.diagnostic() != null) {
+                var diagnostic = checked.diagnostic();
+                span.diagnostic(new ValidationDiagnostic(diagnostic.schemaId(), diagnostic.origin(), diagnostic.items().stream()
+                        .map(i -> new ValidationDiagnostic.Item(i.issue(), i.pointer(), i.actualType(), null, i.start(), i.end(),
+                                i.excerptTruncated(), i.line(), i.column(), i.locationBasis())).toList(),
+                        diagnostic.collectionTruncated(), diagnostic.stoppedEarly()));
+            }
+            if (checked.failure() != null) { span.fail(checked.failure());throw checked.failure(); }
+            span.output("局部摘要替换后的完整结果已通过原业务校验");
+            return new StructuredTurn<>(checked.value(), compressed);
         }
     }
 
@@ -402,7 +454,7 @@ public class ModelGateway {
                     modelSpan = budget.trace().span("MODEL", "chat");
                     var execution=callExecution.get();
                     if(execution!=null) {
-                        execution.pending=new PendingCall(modelSpan,budget.trace().currentSpanId(),id,attempts);
+                        execution.pending=new PendingCall(modelSpan,budget.trace().currentSpanId(),id,attempts,execution.attemptContext);
                         try {if(callArchive!=null&&callArchive.enabled())callArchive.begin(callRecord(execution,execution.pending,false));}
                         catch(RuntimeException unavailable) {LOG.warn("event=model.call_archive_begin_failed code=SAVE_FAILED");}
                     }

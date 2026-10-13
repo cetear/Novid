@@ -34,7 +34,7 @@ public final class ContentSchemas {
     public static RecordSchema<Summary> summary(){return summary(ContentLimits.current());}
     public static RecordSchema<Summary> summary(ContentLimits limits) {
         return new RecordSchema<>(Summary.class,"输出title和summary。保留主题、条件、例外、重复和冲突；明细由程序保留。",
-                List.of(utf8("title",limits.summaryTitle()),utf8("summary",limits.summary())),v->{});
+                List.of(utf8("title",limits.summaryTitle()),utf8("summary",limits.summary())),v->{}).withSummaryCompression("summary");
     }
     public static RecordSchema<Intent> intent(int maximumThemes){return intent(maximumThemes,ContentLimits.current());}
     public static RecordSchema<Intent> intent(int maximumThemes,ContentLimits limits) {
