@@ -67,7 +67,7 @@ public class DocumentIngestionPipeline {
      * 每代次领取独立运行，已有向量恢复只记复用，绝不补造模型尝试。
      */
     private void executeObserved(IngestionLease lease, com.example.ailab.contract.context.TraceContext trace, String runId) {
-        var content = trace.call("AUTHORIZATION", "verify", () -> current(lease));
+        var document = trace.call("AUTHORIZATION", "verify", () -> current(lease));
         store.phase(lease, "PARSING");
         var start = Instant.now();
         var parsed = trace.call("PARSER", "parse", () -> parser.parse(lease));
@@ -102,7 +102,7 @@ public class DocumentIngestionPipeline {
                             reused.status("REUSED");
                         }
                     }
-                    var indexed = items(content.document(), lease, chunks, saved);
+                    var indexed = items(document, lease, chunks, saved);
                     store.phase(lease, "INDEXING");
                     // ES响应丢失或部分成功时，以搜索事实确定缺失项；同ID补写不会重新生成向量。
                     var present = batchTrace.call("DATA", "es_present", () -> index.present(indexed));
@@ -126,7 +126,7 @@ public class DocumentIngestionPipeline {
         // 最终逐批重查可见性，另核全集数量以发现额外索引项；不能仅按成功批次数激活。
         for (var plan : plans) {
             current(lease);
-            index.verify(items(content.document(), lease, parsed.chunks().subList(plan.start(), plan.start() + plan.count()), store.batch(lease, plan.ordinal())));
+            index.verify(items(document, lease, parsed.chunks().subList(plan.start(), plan.start() + plan.count()), store.batch(lease, plan.ordinal())));
         }
         index.verifyGeneration(lease.documentId(), lease.documentVersion(), lease.processingRevision(), parsed.chunks().size());
         current(lease);
@@ -139,12 +139,12 @@ public class DocumentIngestionPipeline {
     /**
      * 每批前复核当前身份、内容与租约，旧版本不可再发送到模型或开始ES写入。
      */
-    private DocumentContent current(IngestionLease lease) {
+    private DocumentSnapshot current(IngestionLease lease) {
         if (!store.renew(lease)) throw new LabException("STALE_EXECUTION", "入库执行权或累计期限已失效");
-        var content = knowledge.document(lease.actor(), ScopeRequest.self(), lease.documentId());
-        if (content.document().documentVersion() != lease.documentVersion())
+        var document = knowledge.documentMetadata(lease.actor(), ScopeRequest.self(), lease.documentId());
+        if (document.documentVersion() != lease.documentVersion())
             throw new LabException("STALE_EXECUTION", "内容版本已变化");
-        return content;
+        return document;
     }
 
     /**

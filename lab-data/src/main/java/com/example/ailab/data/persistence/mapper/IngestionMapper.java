@@ -42,6 +42,7 @@ public interface IngestionMapper {
     int completeEmbeddingDocumentIngestionsWrite(@Param("args") Object[] args);
     List<SqlRow> completeEmbeddingIngestionBatchesSelect(@Param("args") Object[] args);
     int completeEmbeddingIngestionBatchesWrite(@Param("args") Object[] args);
+    int appendEmbeddingIngestionBatchesWrite(@Param("args") Object[] args);
     int completeEmbeddingIngestionModelAttemptsWrite2(@Param("args") Object[] args);
     int completeEmbeddingDocumentIngestionsWrite2(@Param("args") Object[] args);
     int phaseDocumentIngestionsWrite(@Param("args") Object[] args);

@@ -25,6 +25,11 @@ public interface DocumentStorePort {
      */
     DocumentContent read(AuthorizedKnowledgeScope scope, long documentId);
 
+    /** 当前元数据与衍生来源权限复核；生产实现不传输全文，旧适配器保留完整授权读取。 */
+    default DocumentSnapshot readMetadata(AuthorizedKnowledgeScope scope, long documentId) {
+        return read(scope, documentId).document();
+    }
+
     /**
      * 自有文档 CAS 修订，保留服务器来源约束。
      */

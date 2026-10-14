@@ -20,6 +20,11 @@ public interface KnowledgeCapabilityPort {
      */
     DocumentContent document(UserContext actor, ScopeRequest request, long documentId);
 
+    /** 每次核验当前文档及来源权限，仅返回元数据；生产适配器避免读取全文。 */
+    default DocumentSnapshot documentMetadata(UserContext actor, ScopeRequest request, long documentId) {
+        return document(actor, request, documentId).document();
+    }
+
     /** 只核验历史来源存在和当前权限，不读取祖先正文，也不受本次正文scope限制。 */
     void verifySources(UserContext actor, List<SourceDependency> sources);
 

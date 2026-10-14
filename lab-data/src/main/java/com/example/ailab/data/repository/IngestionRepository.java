@@ -19,6 +19,7 @@ import java.util.*;
 public class IngestionRepository implements DocumentIngestionStorePort {
     private static final int STRUCTURE_BATCH_SIZE = 256;
     private static final int STRUCTURE_BATCH_BYTES = 512 * 1024;
+    private static final int VECTOR_WRITE_BYTES = 128 * 1024;
     private final IngestionMapper mapper;
     private final SqlSupport sql;
     private final DocumentSqlRepository docs;
@@ -172,7 +173,7 @@ public class IngestionRepository implements DocumentIngestionStorePort {
     }
 
     /** 付费成功先落盘，后续ES故障复用这些向量；非法响应不保存成功。 */
-    @Transactional
+    @Transactional(timeout = 30)
     public void completeEmbedding(IngestionLease l,int ordinal,List<List<Float>> vectors,String model,Integer actual) {
         try { valid(l); }
         catch(LabException stale) {
@@ -190,9 +191,29 @@ public class IngestionRepository implements DocumentIngestionStorePort {
         int dimensions=vectors.isEmpty()?0:vectors.get(0).size();
         if(dimensions<1 || dimensions>4096 || vectors.stream().anyMatch(v->v.size()!=dimensions || v.stream().anyMatch(x->x==null || !Float.isFinite(x))))
             throw new LabException("MODEL_INVALID_OUTPUT","向量维度或数值非法");
-        mapper.completeEmbeddingIngestionBatchesWrite(new Object[]{encode(vectors), model, l.ingestionId(), ordinal});
+        var parts=vectorWriteParts(vectors);
+        if(mapper.completeEmbeddingIngestionBatchesWrite(new Object[]{parts.get(0), model, l.ingestionId(), ordinal})!=1)
+            throw new LabException("INGESTION_PLAN_CONFLICT","向量结果未完整保存");
+        for(int i=1;i<parts.size();i++) {
+            if(mapper.appendEmbeddingIngestionBatchesWrite(new Object[]{parts.get(i), l.ingestionId(), ordinal})!=1)
+                throw new LabException("INGESTION_PLAN_CONFLICT","向量结果未完整保存");
+        }
         mapper.completeEmbeddingIngestionModelAttemptsWrite2(new Object[]{actual, l.ingestionId(), ordinal});
         mapper.completeEmbeddingDocumentIngestionsWrite2(new Object[]{actual==null?0:actual, actual==null?0:1, count, l.ingestionId()});
+    }
+
+    /** 有限浮点数JSON仅含ASCII；按完整向量拆分SQL参数，同一事务提交后才可见完整数组。 */
+    private List<String> vectorWriteParts(List<List<Float>> vectors) {
+        var parts=new ArrayList<String>();var part=new StringBuilder("[");
+        for(var vector:vectors) {
+            String encoded=encode(vector);
+            if(part.length()>1 && part.length()+encoded.length()+2>VECTOR_WRITE_BYTES) {
+                parts.add(part.append(']').toString());part=new StringBuilder("[");
+            }
+            if(part.length()>1)part.append(',');
+            part.append(encoded);
+        }
+        parts.add(part.append(']').toString());return parts;
     }
 
     /** 只允许受控阶段，失败时保存最后实际执行阶段。 */

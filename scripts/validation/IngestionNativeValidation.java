@@ -102,7 +102,7 @@ public final class IngestionNativeValidation {
             var sql=ValidationSql.from(context);sql.actor(owner,true);
             ids[0]=sql.insert("INSERT INTO documents(knowledge_base_id,owner_user_id,title,format) VALUES(?,?,?,'txt')",baseId,owner.userId(),"S03 synthetic");DOCUMENTS.add(ids[0]);
             jdbc.update("INSERT INTO document_versions(document_id,document_version,raw_text,checksum) VALUES(?,1,?,?)",ids[0],text,SqlSupport.hash(text));
-            ids[1]=sql.insert("INSERT INTO document_ingestions(document_id,document_version,processing_revision,actor_user_id,status,attempt,worker_id,fencing_token,lease_until,execution_deadline) VALUES(?,1,1,?,'PROCESSING',1,'s03-explicit',1,DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND),DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 600 SECOND))",ids[0],owner.userId());
+            ids[1]=sql.insert("INSERT INTO document_ingestions(document_id,document_version,processing_revision,actor_user_id,status,attempt,worker_id,fencing_token,lease_until,execution_deadline) VALUES(?,1,1,?,'PROCESSING',1,'s03-explicit',1,DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND),DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 1500 SECOND))",ids[0],owner.userId());
         });
         return new IngestionLease(ids[1],ids[0],1,1,owner,"s03-explicit",1,"S03 synthetic","txt",text);
     }

@@ -87,6 +87,24 @@ public class DocumentSqlRepository implements DocumentStorePort {
     // 读取无业务状态写入，权限拒绝可被上层候选过滤；不把合法候选的整批事务标成rollback-only。
     @Transactional(noRollbackFor = LabException.class)
     public DocumentContent read(AuthorizedKnowledgeScope scope, long id) {
+        var authorized = authorizeRead(scope, id);
+        var doc = authorized.document();
+        String text = sql.scalar(mapper.readDocumentVersionsSelect(new Object[]{id, doc.documentVersion()}), String.class);
+        sql.audit(scope, "READ_DOCUMENT", id, 1);
+        return new DocumentContent(doc, text, authorized.sources());
+    }
+
+    /** 处理状态只需元数据；沿用正文读取的范围、来源及审计检查，不查询 raw_text。 */
+    @Transactional(noRollbackFor = LabException.class)
+    public DocumentSnapshot readMetadata(AuthorizedKnowledgeScope scope, long id) {
+        var authorized = authorizeRead(scope, id);
+        sql.audit(scope, "READ_DOCUMENT", id, 1);
+        return authorized.document();
+    }
+
+    private record AuthorizedRead(DocumentSnapshot document, List<SourceDependency> sources) { }
+
+    private AuthorizedRead authorizeRead(AuthorizedKnowledgeScope scope, long id) {
         sql.actorShared(scope.actor());
         var p = new SqlParameters().addValue("id", id);
         sql.scope(scope, p);
@@ -95,9 +113,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
         var doc = docs.get(0);
         var sources = dependencies(id, doc.documentVersion());
         verifySources(scope, sources);
-        String text = sql.scalar(mapper.readDocumentVersionsSelect(new Object[]{id, doc.documentVersion()}), String.class);
-        sql.audit(scope, "READ_DOCUMENT", id, 1);
-        return new DocumentContent(doc, text, sources);
+        return new AuthorizedRead(doc, sources);
     }
 
     /**

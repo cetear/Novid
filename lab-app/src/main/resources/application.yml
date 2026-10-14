@@ -31,9 +31,9 @@ spring:
       connection-init-sql: SET SESSION innodb_lock_wait_timeout=3
       # 诊断超长借出连接；0关闭，启用后仅告警，不自动回收连接。
       leak-detection-threshold: ${DB_LEAK_DETECTION_MS:0}
-  # Spring事务期限同步到MyBatis语句；SQL取消及网络等待分别受限。
+  # 默认事务总期限30秒，为多条SQL和同步审计预留累计时间；显式事务期限优先，单条SQL默认10秒。
   transaction:
-    default-timeout: 10s
+    default-timeout: 30s
   # 数据库版本迁移配置。
   flyway:
     # 启动时扫描数据库迁移脚本的位置。

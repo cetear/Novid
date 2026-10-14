@@ -22,7 +22,7 @@
     </select>
 
     <update id="claimDocumentIngestionsWrite3">
-        UPDATE document_ingestions SET status='PROCESSING',attempt=attempt+1,worker_id=#{args[0]},fencing_token=fencing_token+1,lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND),execution_deadline=COALESCE(execution_deadline,DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 600 SECOND)) WHERE id=#{args[1]}
+        UPDATE document_ingestions SET status='PROCESSING',attempt=attempt+1,worker_id=#{args[0]},fencing_token=fencing_token+1,lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 180 SECOND),execution_deadline=COALESCE(execution_deadline,DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 1500 SECOND)) WHERE id=#{args[1]}
     </update>
 
     <select id="claimDocumentIngestionsSelect2" resultType="com.example.ailab.data.persistence.po.SqlRow">
@@ -85,7 +85,7 @@
     </insert>
 
     <update id="planDocumentIngestionsWrite">
-        UPDATE document_ingestions SET execution_deadline=COALESCE(execution_deadline,DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 600 SECOND)) WHERE id=#{args[0]}
+        UPDATE document_ingestions SET execution_deadline=COALESCE(execution_deadline,DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 1500 SECOND)) WHERE id=#{args[0]}
     </update>
 
     <select id="batchIngestionBatchesSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
@@ -129,7 +129,11 @@
     </select>
 
     <update id="completeEmbeddingIngestionBatchesWrite">
-        UPDATE ingestion_batches SET state='EMBEDDED',vector_json=#{args[0]},model_version=#{args[1]} WHERE ingestion_id=#{args[2]} AND ordinal=#{args[3]}
+        UPDATE ingestion_batches SET state='EMBEDDED',vector_json=#{args[0]},model_version=#{args[1]} WHERE ingestion_id=#{args[2]} AND ordinal=#{args[3]} AND state='SENDING'
+    </update>
+
+    <update id="appendEmbeddingIngestionBatchesWrite">
+        UPDATE ingestion_batches SET vector_json=JSON_MERGE_PRESERVE(vector_json,CAST(#{args[0]} AS JSON)) WHERE ingestion_id=#{args[1]} AND ordinal=#{args[2]} AND state='EMBEDDED'
     </update>
 
     <update id="completeEmbeddingIngestionModelAttemptsWrite2">

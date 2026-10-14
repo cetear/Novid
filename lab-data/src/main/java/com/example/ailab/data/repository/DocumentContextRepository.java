@@ -64,7 +64,7 @@ public class DocumentContextRepository implements DocumentContextPort {
     /** 最新处理意图可失败或未激活，明确同时返回当前已激活代次。 */
     @Transactional
     public IngestionMetadata ingestion(AuthorizedKnowledgeScope scope, long id) {
-        sql.actorShared(scope.actor()); var d = docs.read(scope, id).document();
+        sql.actorShared(scope.actor()); var d = docs.readMetadata(scope, id);
         // 累计执行事实属于本人管理状态，管理员跨库正文读取权不扩大到这些记录。
         if(d.ownerUserId()!=scope.actor().userId()) throw LabException.denied();
         return sql.project(mapper.ingestionDocumentIngestionsSelect(new Object[]{id, d.documentVersion()}), (r,n) ->

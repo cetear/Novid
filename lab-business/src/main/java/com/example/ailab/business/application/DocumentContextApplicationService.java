@@ -45,6 +45,7 @@ public class DocumentContextApplicationService {
      * 失败意图也可查询，但授权失败不能获得处理计数或错误信息。
      */
     public IngestionMetadata ingestion(UserContext actor, long id) {
-        return context.ingestion(scope(actor, id), id);
+        // 入库管理状态仅属于本人；数据端复核当前文档及来源，无须读取全文推导库。
+        return context.ingestion(policy.authorize(actor, ScopeRequest.self()), id);
     }
 }

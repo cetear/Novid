@@ -36,6 +36,10 @@ public class KnowledgeCapabilityAdapter implements KnowledgeCapabilityPort {
         return documents.read(authorize(actor, scope), id);
     }
 
+    public DocumentSnapshot documentMetadata(UserContext actor, ScopeRequest scope, long id) {
+        return documents.readMetadata(authorize(actor, scope), id);
+    }
+
     public void verifySources(UserContext actor, java.util.List<SourceDependency> sources) {
         var scope = new ScopeRequest(actor.role() == UserContext.Role.ADMIN ? ScopeRequest.Mode.ALL : ScopeRequest.Mode.SELF,
                 java.util.List.of(), null);
