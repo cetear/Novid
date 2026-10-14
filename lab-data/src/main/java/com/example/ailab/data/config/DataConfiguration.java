@@ -16,6 +16,7 @@ public class DataConfiguration {
     @Bean
     public com.baomidou.mybatisplus.autoconfigure.ConfigurationCustomizer databaseMapping() {
         return configuration -> {
+            configuration.setDefaultStatementTimeout(5);
             configuration.setMapUnderscoreToCamelCase(true);
             configuration.getTypeHandlerRegistry().register(com.example.ailab.data.persistence.po.SqlRow.class,
                     new com.example.ailab.data.persistence.po.SqlRowTypeHandler());

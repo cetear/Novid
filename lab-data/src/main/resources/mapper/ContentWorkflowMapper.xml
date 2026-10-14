@@ -16,6 +16,8 @@
  <insert id="bind">INSERT INTO task_content_runs(task_id,source_hash,source_json) VALUES(#{args[0]},#{args[1]},#{args[2]})</insert>
  <select id="node" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_nodes WHERE task_id=#{args[0]} AND node_id=#{args[1]}</select>
  <select id="nodes" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_nodes WHERE task_id=#{args[0]} ORDER BY node_id</select>
+ <select id="nodeProof" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT node_id,status,output_hash FROM task_content_nodes WHERE task_id=#{args[0]} ORDER BY node_id</select>
+ <select id="planProof" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT r.source_hash,r.plan_hash,p.plan_hash AS reading_hash FROM task_content_runs r JOIN task_content_read_plans p ON p.task_id=r.task_id WHERE r.task_id=#{args[0]}</select>
  <select id="completedNodeSummary" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT node_id FROM task_content_nodes WHERE task_id=#{args[0]} AND status='COMPLETED'</select>
  <select id="nodesByIds" resultType="com.example.ailab.data.persistence.po.SqlRow">
   SELECT * FROM task_content_nodes WHERE task_id=#{taskId} AND node_id IN

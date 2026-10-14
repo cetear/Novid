@@ -41,6 +41,7 @@ public class KnowledgeBaseSqlRepository implements KnowledgeBaseRepository {
      */
     @Transactional
     public KnowledgeBaseSnapshot create(UserContext actor, String name, String description) {
+        sql.exclusiveKnowledge();
         sql.actor(actor, true);
         if (mapper.selectCount(new QueryWrapper<KnowledgeBasePo>().eq("owner_user_id", actor.userId()).eq("deleted", false)) >= 100)
             throw new LabException("DOCUMENT_LIMIT_EXCEEDED", "每用户最多 100 个库");
@@ -56,7 +57,7 @@ public class KnowledgeBaseSqlRepository implements KnowledgeBaseRepository {
      */
     @Transactional
     public List<KnowledgeBaseSnapshot> list(AuthorizedKnowledgeScope scope, int offset, int limit) {
-        sql.actor(scope.actor(), true);
+        sql.actorShared(scope.actor());
         var p = new SqlParameters().addValue("offset", offset).addValue("limit", limit);
         sql.scope(scope, p);
         var result = mapper.listAuthorized(p).stream().map(KnowledgeBasePo::snapshot).toList();
@@ -94,7 +95,7 @@ public class KnowledgeBaseSqlRepository implements KnowledgeBaseRepository {
     /** 已由业务判断的本人／管理员元数据读取，事务内再次核验并可靠审计。 */
     @Transactional
     public KnowledgeBaseSnapshot read(UserContext actor, long id) {
-        sql.actor(actor, true);
+        sql.actorShared(actor);
         var base = find(id).orElseThrow(LabException::denied);
         if (base.deleted() || base.ownerUserId() != actor.userId()
                 && (actor.role() != UserContext.Role.ADMIN || !base.enabled())) throw LabException.denied();

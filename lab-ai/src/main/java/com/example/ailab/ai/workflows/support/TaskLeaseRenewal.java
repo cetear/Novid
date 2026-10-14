@@ -12,7 +12,7 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
-/** 事务代理外的有限续租恢复；只重试未取得连接的事务，不重放模型或业务写入。 */
+/** 事务代理外的有限续租恢复；仅重试取连接失败或已回滚的续租锁竞争。 */
 @Component
 public final class TaskLeaseRenewal {
     public static final String UNAVAILABLE="DATABASE_TEMPORARILY_UNAVAILABLE";
@@ -42,9 +42,13 @@ public final class TaskLeaseRenewal {
                     check(deadline);
                     if(attempt>1)LOG.info("event=task.renew_recovered taskId={} attempt={} valid={}",lease.task().taskId(),attempt,renewed);
                     return renewed;
-                } catch(CannotCreateTransactionException failure) {
-                    if(!acquisitionTimeout(failure))throw failure;
-                    LOG.warn("event=task.renew_unavailable taskId={} attempt={}",lease.task().taskId(),attempt);
+                } catch(RuntimeException failure) {
+                    // renew只有租约延长；事务代理已回滚后才会到这里，语句期限也可有限恢复。
+                    if(!temporaryContention(failure)&&!(failure instanceof org.springframework.dao.QueryTimeoutException)
+                            &&!(failure instanceof org.springframework.transaction.TransactionTimedOutException))throw failure;
+                    String reason=failure instanceof CannotCreateTransactionException?"CONNECTION_ACQUISITION"
+                            :temporaryContention(failure)?"LOCK_CONTENTION":"STATEMENT_DEADLINE";
+                    LOG.warn("event=task.renew_unavailable taskId={} attempt={} reason={}",lease.task().taskId(),attempt,reason);
                     long remaining=windowMillis-TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started);
                     if(attempt==attempts||remaining<=0) {
                         LOG.warn("event=task.renew_deferred taskId={}",lease.task().taskId(),
@@ -69,6 +73,15 @@ public final class TaskLeaseRenewal {
         var seen=Collections.newSetFromMap(new IdentityHashMap<Throwable,Boolean>());
         for(var cause=failure;cause!=null&&seen.add(cause);cause=cause.getCause())
             if(cause instanceof SQLTransientConnectionException)return true;
+        return false;
+    }
+    /** 调用点必须在事务代理外；不把网络中断、SQL语法或不确定提交分类为锁重试。 */
+    static boolean temporaryContention(Throwable failure) {
+        if(failure instanceof CannotCreateTransactionException)return acquisitionTimeout(failure);
+        if(!(failure instanceof org.springframework.dao.PessimisticLockingFailureException))return false;
+        var seen=Collections.newSetFromMap(new IdentityHashMap<Throwable,Boolean>());
+        for(var cause=failure;cause!=null&&seen.add(cause);cause=cause.getCause())
+            if(cause instanceof java.sql.SQLException sql&&(sql.getErrorCode()==1205||sql.getErrorCode()==1213))return true;
         return false;
     }
     private static void check(Instant deadline) {

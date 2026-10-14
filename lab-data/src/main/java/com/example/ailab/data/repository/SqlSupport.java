@@ -27,12 +27,26 @@ public class SqlSupport {
     }
     public <T> T mapper(Class<T> type) { return session.getMapper(type); }
 
-    /**
-     * user 行锁与权限版本核验，写入以数据库当前事实为准。
-     */
+    /** 只包围最终数据库核验与提交；调用者的编码、哈希在本方法之前完成。 */
+    @org.springframework.transaction.annotation.Transactional(timeout = 5)
+    public void write(Runnable commit) { commit.run(); }
+
+    /** 知识激活必须先排他，再核验执行权；不从共享闸门升级。 */
+    public void exclusiveKnowledge() { scalar(mapper.actorSystemControlSelect(new Object[]{}), Integer.class); }
+
+    /** 共享授权闸门与用户锁；不同读取及任务可并行，撤权／知识修改仍排他。 */
+    public void actorShared(UserContext actor) {
+        scalar(mapper.actorSharedSystemControlSelect(new Object[]{}), Integer.class);
+        checkActor(actor, mapper(com.example.ailab.data.persistence.mapper.UserMapper.class).selectAuthorized(actor.userId()));
+    }
+
     public void actor(UserContext actor, boolean lock) {
-        if (lock) scalar(mapper.actorSystemControlSelect(new Object[]{}), Integer.class);
+        if (lock) scalar(mapper.actorSharedSystemControlSelect(new Object[]{}), Integer.class);
         var row = mapper(com.example.ailab.data.persistence.mapper.UserMapper.class).selectCurrent(actor.userId(), lock);
+        checkActor(actor, row);
+    }
+
+    private void checkActor(UserContext actor, com.example.ailab.data.persistence.po.UserPo row) {
         if (row == null) throw LabException.denied();
         var u = row.snapshot();
         if (!u.enabled() || u.role() != actor.role() || u.permissionVersion() != actor.permissionVersion() || u.passwordChangeRequired())
@@ -43,6 +57,7 @@ public class SqlSupport {
      * owner 写校验；使用 actor → base 的锁顺序。
      */
     public KnowledgeBaseSnapshot owner(UserContext actor, long id, boolean enabled) {
+        exclusiveKnowledge();
         actor(actor, true);
         var row = mapper(com.example.ailab.data.persistence.mapper.KnowledgeBaseMapper.class).selectLocked(id);
         if (row == null) throw LabException.denied();

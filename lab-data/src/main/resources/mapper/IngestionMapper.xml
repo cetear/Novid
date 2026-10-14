@@ -2,23 +2,23 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.example.ailab.data.persistence.mapper.IngestionMapper">
     <select id="claimSystemControlSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
-        SELECT id FROM system_control WHERE id=1 FOR UPDATE SKIP LOCKED
+        SELECT id FROM system_control WHERE id=1 FOR SHARE SKIP LOCKED
     </select>
 
     <update id="claimDocumentIngestionsWrite">
-        UPDATE document_ingestions i SET i.status='FAILED',i.retryable=FALSE,i.error_code='EMBEDDING_RESULT_UNKNOWN',i.failure_stage='EMBEDDING',i.lease_until=NULL WHERE i.status='PROCESSING' AND i.lease_until&lt;CURRENT_TIMESTAMP(6) AND EXISTS(SELECT 1 FROM ingestion_batches b WHERE b.ingestion_id=i.id AND b.state='SENDING')
+        UPDATE document_ingestions i SET i.status='FAILED',i.retryable=FALSE,i.error_code='EMBEDDING_RESULT_UNKNOWN',i.failure_stage='EMBEDDING',i.lease_until=NULL WHERE i.id=#{args[0]} AND (i.status='PROCESSING' AND i.lease_until&lt;CURRENT_TIMESTAMP(6) AND EXISTS(SELECT 1 FROM ingestion_batches b WHERE b.ingestion_id=i.id AND b.state='SENDING'))
     </update>
 
     <update id="claimIngestionBatchesWrite">
-        UPDATE ingestion_batches b JOIN document_ingestions i ON i.id=b.ingestion_id SET b.state='UNKNOWN' WHERE b.state='SENDING' AND i.error_code='EMBEDDING_RESULT_UNKNOWN'
+        UPDATE ingestion_batches b JOIN document_ingestions i ON i.id=b.ingestion_id SET b.state='UNKNOWN' WHERE i.id=#{args[0]} AND (b.state='SENDING' AND i.error_code='EMBEDDING_RESULT_UNKNOWN')
     </update>
 
     <update id="claimDocumentIngestionsWrite2">
-        UPDATE document_ingestions SET status='FAILED',retryable=FALSE,error_code='INGESTION_BUDGET_EXCEEDED',failure_stage=phase,lease_until=NULL WHERE retryable=TRUE AND status IN ('RECEIVED','FAILED','PROCESSING') AND (execution_deadline&lt;=CURRENT_TIMESTAMP(6) OR attempt&gt;=3 AND (status&lt;&gt;'PROCESSING' OR lease_until&lt;CURRENT_TIMESTAMP(6)))
+        UPDATE document_ingestions SET status='FAILED',retryable=FALSE,error_code='INGESTION_BUDGET_EXCEEDED',failure_stage=phase,lease_until=NULL WHERE id=#{args[0]} AND (retryable=TRUE AND status IN ('RECEIVED','FAILED','PROCESSING') AND (execution_deadline&lt;=CURRENT_TIMESTAMP(6) OR attempt&gt;=3 AND (status&lt;&gt;'PROCESSING' OR lease_until&lt;CURRENT_TIMESTAMP(6))))
     </update>
 
     <select id="claimDocumentIngestionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
-        SELECT i.id FROM document_ingestions i JOIN documents d ON d.id=i.document_id JOIN users u ON u.id=i.actor_user_id JOIN knowledge_bases k ON k.id=d.knowledge_base_id WHERE d.deleted=FALSE AND k.enabled=TRUE AND k.deleted=FALSE AND u.enabled=TRUE AND u.password_change_required=FALSE AND d.current_version=i.document_version AND i.attempt&lt;3 AND i.retryable=TRUE AND (i.execution_deadline IS NULL OR i.execution_deadline&gt;CURRENT_TIMESTAMP(6)) AND i.processing_revision=(SELECT MAX(newest.processing_revision) FROM document_ingestions newest WHERE newest.document_id=i.document_id AND newest.document_version=i.document_version) AND i.next_attempt_at&lt;=CURRENT_TIMESTAMP(6) AND (i.status='RECEIVED' OR i.status='FAILED' OR i.status='PROCESSING' AND i.lease_until&lt;CURRENT_TIMESTAMP(6)) ORDER BY i.id LIMIT 1 FOR UPDATE SKIP LOCKED
+        SELECT i.id FROM document_ingestions i JOIN documents d ON d.id=i.document_id JOIN users u ON u.id=i.actor_user_id JOIN knowledge_bases k ON k.id=d.knowledge_base_id WHERE NOT EXISTS(SELECT 1 FROM ingestion_batches b WHERE b.ingestion_id=i.id AND b.state='SENDING') AND d.deleted=FALSE AND k.enabled=TRUE AND k.deleted=FALSE AND u.enabled=TRUE AND u.password_change_required=FALSE AND d.current_version=i.document_version AND i.attempt&lt;3 AND i.retryable=TRUE AND (i.execution_deadline IS NULL OR i.execution_deadline&gt;CURRENT_TIMESTAMP(6)) AND i.processing_revision=(SELECT MAX(newest.processing_revision) FROM document_ingestions newest WHERE newest.document_id=i.document_id AND newest.document_version=i.document_version) AND i.next_attempt_at&lt;=CURRENT_TIMESTAMP(6) AND (i.status='RECEIVED' OR i.status='FAILED' OR i.status='PROCESSING' AND i.lease_until&lt;CURRENT_TIMESTAMP(6)) ORDER BY i.id LIMIT 1 FOR UPDATE OF i SKIP LOCKED
     </select>
 
     <update id="claimDocumentIngestionsWrite3">
@@ -54,15 +54,18 @@
     </delete>
 
     <insert id="saveStructureDocumentSectionsWrite2">
-        INSERT INTO document_sections VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]},#{args[8]},#{args[9]})
+        INSERT INTO document_sections(section_id,document_id,document_version,processing_revision,parent_section_id,ancestor_json,heading_path,ordinal,start_offset,end_offset) VALUES
+        <foreach collection="rows" item="row" separator=","><foreach collection="row" item="value" open="(" separator="," close=")">#{value}</foreach></foreach>
     </insert>
 
     <insert id="saveStructureContextParentsWrite2">
-        INSERT INTO context_parents VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]})
+        INSERT INTO context_parents(parent_id,document_id,document_version,processing_revision,section_id,ordinal,start_offset,end_offset) VALUES
+        <foreach collection="rows" item="row" separator=","><foreach collection="row" item="value" open="(" separator="," close=")">#{value}</foreach></foreach>
     </insert>
 
     <insert id="saveStructureChunksWrite2">
-        INSERT INTO chunks(chunk_id,document_id,document_version,processing_revision,section_id,parent_id,index_in_section,index_in_parent,start_offset,end_offset,raw_text,embedding_text,chunk_hash,block_type,block_id,part_index,source_map,token_count,count_source) VALUES(#{args[0]},#{args[1]},#{args[2]},#{args[3]},#{args[4]},#{args[5]},#{args[6]},#{args[7]},#{args[8]},#{args[9]},#{args[10]},#{args[11]},#{args[12]},#{args[13]},#{args[14]},#{args[15]},#{args[16]},#{args[17]},#{args[18]})
+        INSERT INTO chunks(chunk_id,document_id,document_version,processing_revision,section_id,parent_id,index_in_section,index_in_parent,start_offset,end_offset,raw_text,embedding_text,chunk_hash,block_type,block_id,part_index,source_map,token_count,count_source) VALUES
+        <foreach collection="rows" item="row" separator=","><foreach collection="row" item="value" open="(" separator="," close=")">#{value}</foreach></foreach>
     </insert>
 
     <update id="saveStructureDocumentIngestionsWrite">
@@ -198,6 +201,14 @@
     </update>
 
     <select id="validDocumentIngestionsSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
-        SELECT COUNT(*) FROM document_ingestions i JOIN documents d ON d.id=i.document_id JOIN knowledge_bases k ON k.id=d.knowledge_base_id WHERE i.id=#{args[0]} AND i.document_id=#{args[1]} AND i.document_version=#{args[2]} AND i.processing_revision=#{args[3]} AND i.actor_user_id=#{args[4]} AND i.worker_id=#{args[5]} AND i.fencing_token=#{args[6]} AND i.status='PROCESSING' AND i.lease_until&gt;CURRENT_TIMESTAMP(6) AND (i.execution_deadline IS NULL OR i.execution_deadline&gt;CURRENT_TIMESTAMP(6)) AND d.current_version=i.document_version AND d.deleted=FALSE AND k.deleted=FALSE AND k.enabled=TRUE AND d.owner_user_id=i.actor_user_id AND i.processing_revision=(SELECT MAX(j.processing_revision) FROM document_ingestions j WHERE j.document_id=i.document_id AND j.document_version=i.document_version)
+        SELECT 1 FROM document_ingestions i JOIN documents d ON d.id=i.document_id JOIN knowledge_bases k ON k.id=d.knowledge_base_id WHERE i.id=#{args[0]} AND i.document_id=#{args[1]} AND i.document_version=#{args[2]} AND i.processing_revision=#{args[3]} AND i.actor_user_id=#{args[4]} AND i.worker_id=#{args[5]} AND i.fencing_token=#{args[6]} AND i.status='PROCESSING' AND i.lease_until&gt;CURRENT_TIMESTAMP(6) AND (i.execution_deadline IS NULL OR i.execution_deadline&gt;CURRENT_TIMESTAMP(6)) AND d.current_version=i.document_version AND d.deleted=FALSE AND k.deleted=FALSE AND k.enabled=TRUE AND d.owner_user_id=i.actor_user_id AND i.processing_revision=(SELECT MAX(j.processing_revision) FROM document_ingestions j WHERE j.document_id=i.document_id AND j.document_version=i.document_version) FOR UPDATE OF i
+    </select>
+
+    <select id="unknownCandidates" timeout="3" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT i.id FROM document_ingestions i WHERE (i.status='PROCESSING' AND i.lease_until&lt;CURRENT_TIMESTAMP(6) AND EXISTS(SELECT 1 FROM ingestion_batches b WHERE b.ingestion_id=i.id AND b.state='SENDING')) ORDER BY i.id LIMIT 16 FOR UPDATE SKIP LOCKED
+    </select>
+
+    <select id="exhaustedCandidates" timeout="3" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT id FROM document_ingestions WHERE (retryable=TRUE AND status IN ('RECEIVED','FAILED','PROCESSING') AND (execution_deadline&lt;=CURRENT_TIMESTAMP(6) OR attempt&gt;=3 AND (status&lt;&gt;'PROCESSING' OR lease_until&lt;CURRENT_TIMESTAMP(6)))) ORDER BY id LIMIT 16 FOR UPDATE SKIP LOCKED
     </select>
 </mapper>

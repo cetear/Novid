@@ -26,8 +26,9 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
     private final DocumentSqlRepository documents;
     private final WorkflowRunStorePort workflows;
     private final ContentWorkflowMapper mapper;
+    private final SqlSupport sql;
     public ContentWorkflowRepository(TaskRepository tasks, DocumentSqlRepository documents, WorkflowRunStorePort workflows, SqlSupport sql) {
-        this.tasks=tasks; this.documents=documents; this.workflows=workflows; this.mapper=sql.mapper(ContentWorkflowMapper.class);
+        this.tasks=tasks; this.documents=documents; this.workflows=workflows; this.mapper=sql.mapper(ContentWorkflowMapper.class); this.sql=sql;
     }
     public Optional<SourcePlan> sourcePlan(TaskLease lease) { valid(lease); return source(lease.task().taskId()); }
     public Optional<ContentReading.Plan> readingPlan(TaskLease lease) {
@@ -284,12 +285,25 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         if(rows.isEmpty()||rows.get(0).get("plan_hash")==null)return Optional.empty();
         return Optional.of((LearningContent.Plan)contentPlan(rows.get(0),lease.request().taskType()));
     }
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public void accept(TaskLease lease,LearningContent.Plan plan) {
-        valid(lease);var source=source(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict);var row=run(lease.task().taskId());
-        if(row.get("plan_hash")!=null){if(!hash(plan).equals(row.string("plan_hash")))throw conflict();return;}
-        verify(documents,lease.actor(),lease.request().scope(),source);var p=readingPlan(lease).orElseThrow(ContentWorkflowRepository::conflict);
-        verifyReadingProof(lease.task().taskId(),lease.actor(),lease.request().scope(),p);
+        var source=source(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict);
+        var p=reading(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict);
+        var scope=new AuthorizedKnowledgeScope(lease.actor(),lease.request().scope().mode(),lease.request().scope().knowledgeBaseIds(),lease.request().scope().ownerUserId(),Instant.now());
+        var previous=mapper.planProof(new Object[]{lease.task().taskId()});
+        if(previous.size()==1&&previous.get(0).get("plan_hash")!=null) {
+            String expected=hash(plan);
+            sql.write(() -> {
+                valid(lease);documents.verifySources(scope,p.sources());documents.verifyReadingDocuments(scope,p.documents());
+                var current=mapper.planProof(new Object[]{lease.task().taskId()});
+                if(current.size()!=1||!expected.equals(current.get(0).string("plan_hash")))throw conflict();
+            });
+            return;
+        }
+        verify(documents,lease.actor(),lease.request().scope(),source);
+        verifyReading(lease.actor(),lease.request().scope(),p,source.policy());
         var facts=new HashSet<String>();var nodes=mapper.nodes(new Object[]{lease.task().taskId()}).stream().collect(Collectors.toMap(n->n.string("node_id"),n->n));
+        verifyReadingProof(lease.actor(),lease.request().scope(),p,nodes);
         for(var slice:source.slices())readingNode(nodes,"read_"+slice.id(),Facts.class).items().forEach(i->facts.add(i.id()));
         LearningPlanRules.validate(plan,lease.request(),facts,source.policy());
         if(plan.quiz()!=null){var fragments=p.fragments().stream().collect(Collectors.toMap(f->f.source().id(),f->f));var evidence=new HashMap<String,ContentReading.Evidence>();
@@ -302,9 +316,27 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         }
         if(!plan.sourceHash().equals(hash(source))||plan.estimatedTurns()>tasks.remainingModelTurns(lease)||plan.estimatedAttempts()>tasks.remainingModelAttempts(lease))
             throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","业务计划与执行包超过剩余父任务预算");
-        if(mapper.accept(new Object[]{hash(plan),encode(plan),lease.task().taskId()})!=1)throw conflict();
-        for(var pack:plan.execution().packages())savePackage(lease,pack,plan.execution().parts().stream().filter(part->pack.partIds().contains(part.id())).toList());
-        mapper.progress(new Object[]{lease.task().taskId()});
+        String planJson=encode(plan),planHash=SqlSupport.hash(planJson),sourceHash=hash(source),readingHash=hash(p);
+        var packages=plan.execution().packages().stream().map(pack->{
+            var parts=plan.execution().parts().stream().filter(part->pack.partIds().contains(part.id())).toList();
+            return new Object[]{lease.task().taskId(),pack.id(),pack.parentId(),hash(Map.of("package",pack,"parts",parts)),encode(pack),encode(parts)};
+        }).toList();
+        var proof=nodes.values().stream().collect(Collectors.toMap(n->n.string("node_id"),n->List.of(n.string("status"),Objects.toString(n.get("output_hash"),""))));
+        sql.write(() -> {
+            valid(lease); // 共享权限／知识闸门，再锁当前任务；包括fencing及期限。
+            documents.verifySources(scope,p.sources());
+            documents.verifyReadingDocuments(scope,p.documents());
+            var current=mapper.planProof(new Object[]{lease.task().taskId()});
+            if(current.size()!=1||!sourceHash.equals(current.get(0).string("source_hash"))||!readingHash.equals(current.get(0).string("reading_hash")))throw conflict();
+            if(current.get(0).get("plan_hash")!=null){if(!planHash.equals(current.get(0).string("plan_hash")))throw conflict();return;}
+            var latest=mapper.nodeProof(new Object[]{lease.task().taskId()}).stream().collect(Collectors.toMap(n->n.string("node_id"),n->List.of(n.string("status"),Objects.toString(n.get("output_hash"),""))));
+            if(!latest.entrySet().containsAll(proof.entrySet()))throw conflict();
+            if(plan.estimatedTurns()>tasks.remainingModelTurns(lease)||plan.estimatedAttempts()>tasks.remainingModelAttempts(lease))
+                throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","提交前父任务预算已变化");
+            if(mapper.accept(new Object[]{planHash,planJson,lease.task().taskId()})!=1)throw conflict();
+            packages.forEach(mapper::savePackage);
+            mapper.progress(new Object[]{lease.task().taskId()});
+        });
     }
     private void savePackage(TaskLease lease,LearningContent.WorkPackage pack,List<LearningContent.Part> parts) {
         mapper.savePackage(new Object[]{lease.task().taskId(),pack.id(),pack.parentId(),hash(Map.of("package",pack,"parts",parts)),encode(pack),encode(parts)});

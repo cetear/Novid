@@ -27,10 +27,9 @@ public class IndexCleanupRepository implements IndexCleanupStorePort {
     /**
      * 全局锁繁忙时留待下次轮询；执行权带 fencing，成功分批不消耗异常尝试预算。
      */
-    @Transactional
+    @Transactional(timeout=3, isolation=org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Optional<IndexCleanupLease> claim(String worker) {
         if (mapper.claimSystemControlSelect(new Object[]{}).isEmpty()) return Optional.empty();
-        mapper.claimOutboxEventsWrite(new Object[]{});
         var events = sql.project(mapper.claimOutboxEventsSelect(new Object[]{}), (r, n) -> new IndexCleanupLease(r.longValue("id"), r.string("event_type"), r.longValue("resource_id"), r.longValue("resource_version"), 0, 0, worker, r.longValue("fencing_token") + 1));
         if (events.isEmpty()) return Optional.empty();
         var event = events.get(0);

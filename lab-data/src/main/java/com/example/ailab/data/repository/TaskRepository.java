@@ -158,22 +158,16 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     /**
      * 程序领取当前角色；attempt 仅统计异常租约恢复，模型和累计时长预算保持单调。
      */
-    @Transactional
+    @Transactional(timeout=3, isolation=org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Optional<TaskLease> claim(String worker) { return claimInternal(worker,false); }
 
     /** 媒体查询等待不增加异常恢复次数，普通Worker不会消费媒体任务。 */
-    @Transactional
+    @Transactional(timeout=3, isolation=org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Optional<TaskLease> claimMedia(String worker) { return claimInternal(worker,true); }
 
     /** 全局锁繁忙时延后轮询；同一锁顺序串行转换，媒体等待只挑到期原ID查询。 */
     private Optional<TaskLease> claimInternal(String worker,boolean mediaQueue) {
         if (mapper.claimInternalSystemControlSelect(new Object[]{}).isEmpty()) return Optional.empty();
-        mapper.claimInternalAiTasksWrite(new Object[]{});
-        // 自动撤销与显式取消采用相同步骤状态，不留下误导性的“执行中”标记。
-        mapper.claimInternalTaskStepProgressWrite(new Object[]{});
-        // 正常暂停不消耗异常租约恢复次数；超限队列明确终止，不能永久停留 QUEUED。
-        mapper.claimInternalAiTasksWrite2(new Object[]{});
-        mapper.claimInternalTaskStepProgressWrite2(new Object[]{});
         var ids = sql.project(mapper.claimInternalAiTasksSelect(new Object[]{}, mediaQueue), (r, n) -> r.longValue(1));
         if (ids.isEmpty()) return Optional.empty();
         long id = ids.get(0);
@@ -186,7 +180,7 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
     /**
      * 续租失败后执行者不能开始新的模型／工具步骤。
      */
-    @Transactional
+    @Transactional(timeout = 3)
     public boolean renew(TaskLease lease) {
         try {
             valid(lease);
@@ -454,9 +448,9 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
      */
     void valid(TaskLease lease) {
         if (TaskRequest.retired(lease.request().taskType())) throw new LabException("WORKFLOW_RETIRED", "此工作流已停止执行");
-        sql.actor(lease.actor(), true);
-        int count = sql.scalar(mapper.validAiTasksSelect(new Object[]{lease.task().taskId(), lease.actor().userId(), lease.workerId(), lease.fencingToken()}), Integer.class);
-        if (count != 1) throw new LabException("STALE_EXECUTION", "任务执行权或累计期限已失效");
+        sql.actorShared(lease.actor());
+        var rows = mapper.validAiTasksSelect(new Object[]{lease.task().taskId(), lease.actor().userId(), lease.workerId(), lease.fencingToken()});
+        if (rows.isEmpty() || sql.scalar(rows, Integer.class) != 1) throw new LabException("STALE_EXECUTION", "任务执行权或累计期限已失效");
     }
 
     /**

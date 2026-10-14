@@ -39,7 +39,7 @@ public final class LearningTaskWorker {
             }
             catch(Exception failure) {
                 // 其他仓库在开启事务时也可能拿不到连接；退出本轮，不从头重放工作流。
-                if(failure instanceof org.springframework.transaction.CannotCreateTransactionException&&TaskLeaseRenewal.acquisitionTimeout(failure)) {
+                if(TaskLeaseRenewal.temporaryContention(failure)) {
                     span.fail(new LabException(TaskLeaseRenewal.UNAVAILABLE,"数据库暂不可用，等待租约恢复"));
                     LOG.warn("event=learning.deferred code={}",TaskLeaseRenewal.UNAVAILABLE,com.example.ailab.contract.error.DiagnosticFailure.sanitized(failure));
                 } else {

@@ -15,6 +15,8 @@ public interface ContentWorkflowMapper {
     int bind(@Param("args") Object[] args);
     List<SqlRow> node(@Param("args") Object[] args);
     List<SqlRow> nodes(@Param("args") Object[] args);
+    List<SqlRow> nodeProof(@Param("args") Object[] args);
+    List<SqlRow> planProof(@Param("args") Object[] args);
     List<SqlRow> completedNodeSummary(@Param("args") Object[] args);
     List<SqlRow> nodesByIds(@Param("taskId") long taskId,@Param("nodeIds") List<String> nodeIds);
     List<SqlRow> completedNodeIds(@Param("taskId") long taskId,@Param("nodeIds") List<String> nodeIds);

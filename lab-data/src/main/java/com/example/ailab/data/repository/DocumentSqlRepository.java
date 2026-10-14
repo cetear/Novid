@@ -71,7 +71,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
      */
     @Transactional
     public List<DocumentSnapshot> list(AuthorizedKnowledgeScope scope, int offset, int limit) {
-        sql.actor(scope.actor(), true);
+        sql.actorShared(scope.actor());
         var p = new SqlParameters().addValue("limit", limit).addValue("offset", offset);
         sql.scope(scope, p);
         var rows = sql.project(mapper.listRowsSelect(p), SqlSupport::document);
@@ -87,7 +87,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
     // 读取无业务状态写入，权限拒绝可被上层候选过滤；不把合法候选的整批事务标成rollback-only。
     @Transactional(noRollbackFor = LabException.class)
     public DocumentContent read(AuthorizedKnowledgeScope scope, long id) {
-        sql.actor(scope.actor(), true);
+        sql.actorShared(scope.actor());
         var p = new SqlParameters().addValue("id", id);
         sql.scope(scope, p);
         var docs = sql.project(mapper.readRowsSelect(p), SqlSupport::document);
@@ -105,6 +105,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
      */
     @Transactional
     public DocumentSnapshot revise(UserContext actor, long id, int version, String title, String text) {
+        sql.exclusiveKnowledge();
         sql.actor(actor, true);
         var doc = metadata(id);
         sql.owner(actor, doc.knowledgeBaseId(), true);
@@ -123,6 +124,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
      */
     @Transactional
     public void delete(UserContext actor, long id, int version) {
+        sql.exclusiveKnowledge();
         sql.actor(actor, true);
         var doc = metadata(id);
         sql.owner(actor, doc.knowledgeBaseId(), false);
@@ -138,7 +140,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
      */
     @Transactional
     public KnowledgeStatistics statistics(AuthorizedKnowledgeScope scope) {
-        sql.actor(scope.actor(), true);
+        sql.actorShared(scope.actor());
         var p = new SqlParameters();
         sql.scope(scope, p);
         // 所有来源在保存时已扁平化，SQL 按当前用户角色／来源库状态复核。

@@ -94,27 +94,27 @@
     </update>
 
     <select id="claimInternalSystemControlSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
-        SELECT id FROM system_control WHERE id=1 FOR UPDATE SKIP LOCKED
+        SELECT id FROM system_control WHERE id=1 FOR SHARE SKIP LOCKED
     </select>
 
     <update id="claimInternalAiTasksWrite">
-        UPDATE ai_tasks t JOIN users u ON u.id=t.requester_user_id SET t.status='CANCELLED',t.state_version=t.state_version+1,t.fencing_token=t.fencing_token+1,t.worker_id=NULL,t.lease_until=NULL WHERE u.enabled=FALSE AND t.status IN ('QUEUED','RUNNING','PAUSED')
+        UPDATE ai_tasks t JOIN users u ON u.id=t.requester_user_id SET t.status='CANCELLED',t.state_version=t.state_version+1,t.fencing_token=t.fencing_token+1,t.worker_id=NULL,t.lease_until=NULL WHERE t.id=#{args[0]} AND (u.enabled=FALSE AND t.status IN ('QUEUED','RUNNING','PAUSED'))
     </update>
 
     <update id="claimInternalTaskStepProgressWrite">
-        UPDATE task_step_progress p JOIN ai_tasks t ON t.id=p.task_id SET p.status='CANCELLED' WHERE t.status='CANCELLED' AND p.status NOT IN ('SUCCEEDED','CANCELLED')
+        UPDATE task_step_progress p JOIN ai_tasks t ON t.id=p.task_id SET p.status='CANCELLED' WHERE t.id=#{args[0]} AND (t.status='CANCELLED' AND p.status NOT IN ('SUCCEEDED','CANCELLED'))
     </update>
 
     <update id="claimInternalAiTasksWrite2">
-        UPDATE ai_tasks SET total_execution_seconds=total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6))),claimed_at=NULL,status='FAILED',error_code='BUDGET_EXCEEDED',fencing_token=fencing_token+1,state_version=state_version+1,worker_id=NULL,lease_until=NULL WHERE status IN ('QUEUED','RUNNING') AND (total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6)))&gt;=execution_seconds_limit OR status='RUNNING' AND attempt&gt;=3 AND lease_until&lt;CURRENT_TIMESTAMP(6) OR task_type NOT IN ('NOTES_PPT','NOTES_VIDEO','QUIZ_GENERATION','KNOWLEDGE_COMPILATION') AND (model_attempts&gt;=model_attempt_limit OR model_turns&gt;=model_turn_limit) AND completed_steps&lt;3 AND (status='QUEUED' OR lease_until&lt;CURRENT_TIMESTAMP(6)))
+        UPDATE ai_tasks SET total_execution_seconds=total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6))),claimed_at=NULL,status='FAILED',error_code='BUDGET_EXCEEDED',fencing_token=fencing_token+1,state_version=state_version+1,worker_id=NULL,lease_until=NULL WHERE id=#{args[0]} AND (status IN ('QUEUED','RUNNING') AND (total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6)))&gt;=execution_seconds_limit OR status='RUNNING' AND attempt&gt;=3 AND lease_until&lt;CURRENT_TIMESTAMP(6) OR task_type NOT IN ('NOTES_PPT','NOTES_VIDEO','QUIZ_GENERATION','KNOWLEDGE_COMPILATION') AND (model_attempts&gt;=model_attempt_limit OR model_turns&gt;=model_turn_limit) AND completed_steps&lt;3 AND (status='QUEUED' OR lease_until&lt;CURRENT_TIMESTAMP(6))))
     </update>
 
     <update id="claimInternalTaskStepProgressWrite2">
-        UPDATE task_step_progress p JOIN ai_tasks t ON t.id=p.task_id SET p.status='FAILED',p.error_code=t.error_code WHERE t.status='FAILED' AND p.status IN ('RUNNING','PAUSED')
+        UPDATE task_step_progress p JOIN ai_tasks t ON t.id=p.task_id SET p.status='FAILED',p.error_code=t.error_code WHERE t.id=#{args[0]} AND (t.status='FAILED' AND p.status IN ('RUNNING','PAUSED'))
     </update>
 
     <select id="claimInternalAiTasksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
-        SELECT t.id FROM ai_tasks t JOIN users u ON u.id=t.requester_user_id WHERE u.enabled=TRUE AND u.password_change_required=FALSE AND (t.status='QUEUED' OR t.status='RUNNING' AND t.attempt&lt;3 AND t.lease_until&lt;CURRENT_TIMESTAMP(6) OR t.status='WAITING_EXTERNAL' AND EXISTS(SELECT 1 FROM media_operations m WHERE m.task_id=t.id AND m.state IN ('WAITING_EXTERNAL','SENDING','REMOTE_READY') AND m.next_poll_at&lt;=CURRENT_TIMESTAMP(6))) AND <choose><when test="mediaQueue">t.task_type IN ('NOTES_PPT','NOTES_VIDEO')</when><otherwise>t.task_type IN ('QUIZ_GENERATION','KNOWLEDGE_COMPILATION')</otherwise></choose> ORDER BY t.id LIMIT 1 FOR UPDATE SKIP LOCKED
+        SELECT t.id FROM ai_tasks t JOIN users u ON u.id=t.requester_user_id WHERE t.total_execution_seconds+IF(t.claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,t.claimed_at,CURRENT_TIMESTAMP(6)))&lt;t.execution_seconds_limit AND u.enabled=TRUE AND u.password_change_required=FALSE AND (t.status='QUEUED' OR t.status='RUNNING' AND t.attempt&lt;3 AND t.lease_until&lt;CURRENT_TIMESTAMP(6) OR t.status='WAITING_EXTERNAL' AND EXISTS(SELECT 1 FROM media_operations m WHERE m.task_id=t.id AND m.state IN ('WAITING_EXTERNAL','SENDING','REMOTE_READY') AND m.next_poll_at&lt;=CURRENT_TIMESTAMP(6))) AND <choose><when test="mediaQueue">t.task_type IN ('NOTES_PPT','NOTES_VIDEO')</when><otherwise>t.task_type IN ('QUIZ_GENERATION','KNOWLEDGE_COMPILATION')</otherwise></choose> ORDER BY t.id LIMIT 1 FOR UPDATE OF t SKIP LOCKED
     </select>
 
     <update id="claimInternalAiTasksWrite3">
@@ -232,10 +232,18 @@
     </select>
 
     <select id="validAiTasksSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
-        SELECT COUNT(*) FROM ai_tasks WHERE id=#{args[0]} AND requester_user_id=#{args[1]} AND worker_id=#{args[2]} AND fencing_token=#{args[3]} AND status='RUNNING' AND lease_until&gt;CURRENT_TIMESTAMP(6) AND total_execution_seconds+TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6))&lt;execution_seconds_limit
+        SELECT 1 FROM ai_tasks WHERE id=#{args[0]} AND requester_user_id=#{args[1]} AND worker_id=#{args[2]} AND fencing_token=#{args[3]} AND status='RUNNING' AND lease_until&gt;CURRENT_TIMESTAMP(6) AND total_execution_seconds+TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6))&lt;execution_seconds_limit FOR UPDATE
     </select>
 
     <select id="taskTaskStepProgressSelect" resultType="com.example.ailab.data.persistence.po.SqlRow">
         SELECT * FROM task_step_progress WHERE task_id=#{args[0]} ORDER BY FIELD(step_id,'prepare','research','analysis','report','extract','organize','generate','review','publish')
+    </select>
+
+    <select id="cancelCandidates" timeout="3" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT t.id FROM ai_tasks t WHERE (EXISTS(SELECT 1 FROM users u WHERE u.id=t.requester_user_id AND u.enabled=FALSE) AND t.status IN ('QUEUED','RUNNING','PAUSED') OR t.status='CANCELLED' AND EXISTS(SELECT 1 FROM task_step_progress p WHERE p.task_id=t.id AND p.status NOT IN ('SUCCEEDED','CANCELLED'))) ORDER BY t.id LIMIT 16 FOR UPDATE SKIP LOCKED
+    </select>
+
+    <select id="failCandidates" timeout="3" resultType="com.example.ailab.data.persistence.po.SqlRow">
+        SELECT id FROM ai_tasks WHERE (status IN ('QUEUED','RUNNING') AND (total_execution_seconds+IF(claimed_at IS NULL,0,TIMESTAMPDIFF(SECOND,claimed_at,CURRENT_TIMESTAMP(6)))&gt;=execution_seconds_limit OR status='RUNNING' AND attempt&gt;=3 AND lease_until&lt;CURRENT_TIMESTAMP(6) OR task_type NOT IN ('NOTES_PPT','NOTES_VIDEO','QUIZ_GENERATION','KNOWLEDGE_COMPILATION') AND (model_attempts&gt;=model_attempt_limit OR model_turns&gt;=model_turn_limit) AND completed_steps&lt;3 AND (status='QUEUED' OR lease_until&lt;CURRENT_TIMESTAMP(6))) OR status='FAILED' AND EXISTS(SELECT 1 FROM task_step_progress p WHERE p.task_id=ai_tasks.id AND p.status IN ('RUNNING','PAUSED'))) ORDER BY id LIMIT 16 FOR UPDATE SKIP LOCKED
     </select>
 </mapper>

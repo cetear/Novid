@@ -12,6 +12,9 @@ public interface UserMapper extends BaseMapper<UserPo> {
     UserPo selectCurrent(@org.apache.ibatis.annotations.Param("id") long id,
                          @org.apache.ibatis.annotations.Param("lock") boolean lock);
 
+    @org.apache.ibatis.annotations.Select("SELECT * FROM users WHERE id=#{id} FOR SHARE")
+    UserPo selectAuthorized(@org.apache.ibatis.annotations.Param("id") long id);
+
     @org.apache.ibatis.annotations.Select("SELECT * FROM users ORDER BY id LIMIT #{limit} OFFSET #{offset}")
     java.util.List<UserPo> selectPageUsers(@org.apache.ibatis.annotations.Param("offset") int offset,
                                          @org.apache.ibatis.annotations.Param("limit") int limit);

@@ -17,6 +17,7 @@ import java.util.*;
  */
 @Repository
 public class IngestionRepository implements DocumentIngestionStorePort {
+    private static final int STRUCTURE_BATCH_SIZE = 64;
     private final IngestionMapper mapper;
     private final SqlSupport sql;
     private final DocumentSqlRepository docs;
@@ -33,14 +34,9 @@ public class IngestionRepository implements DocumentIngestionStorePort {
     /**
      * 全局锁及队列行均使用 SKIP LOCKED 领取；过期租约只能在三次以内恢复。
      */
-    @Transactional
+    @Transactional(timeout=3, isolation=org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Optional<IngestionLease> claim(String worker) {
         if (mapper.claimSystemControlSelect(new Object[]{}).isEmpty()) return Optional.empty();
-        // 发送窗口崩溃且无提供方查询能力时明确未知，不能靠重领重购。
-        mapper.claimDocumentIngestionsWrite(new Object[]{});
-        mapper.claimIngestionBatchesWrite(new Object[]{});
-        // 耗尽的代次明确失败；保留向量及尝试事实，不留下永远无法领取的处理中状态。
-        mapper.claimDocumentIngestionsWrite2(new Object[]{});
         var ids = sql.project(mapper.claimDocumentIngestionsSelect(new Object[]{}), (r, n) -> r.longValue(1));
         if (ids.isEmpty()) return Optional.empty();
         long id = ids.get(0);
@@ -51,7 +47,7 @@ public class IngestionRepository implements DocumentIngestionStorePort {
     /**
      * 续租复核当前用户，禁止降级／禁用后继续新的操作。
      */
-    @Transactional
+    @Transactional(timeout = 3)
     public boolean renew(IngestionLease l) {
         try {
             valid(l);
@@ -64,16 +60,24 @@ public class IngestionRepository implements DocumentIngestionStorePort {
     /**
      * 结构保存与批次清理仅影响当前未激活 revision。
      */
-    @Transactional
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public void saveStructure(IngestionLease l, ParsedDocument parsed) {
-        valid(l);
         if (parsed.chunks().isEmpty() || parsed.chunks().size() > 5000)
             throw new LabException("DOCUMENT_LIMIT_EXCEEDED", "切片数量不合法");
+        var sections=parsed.sections().stream().map(s -> new Object[]{s.sectionId(), l.documentId(), l.documentVersion(), l.processingRevision(), s.parentSectionId(), encode(s.ancestorSectionIds()), s.headingPath(), s.ordinal(), s.startOffset(), s.endOffset()}).toList();
+        var parents=parsed.parents().stream().map(p -> new Object[]{p.contextParentId(), l.documentId(), l.documentVersion(), l.processingRevision(), p.sectionId(), p.ordinal(), p.startOffset(), p.endOffset()}).toList();
+        var chunks=parsed.chunks().stream().map(c -> new Object[]{c.chunkId(), l.documentId(), l.documentVersion(), l.processingRevision(), c.sectionId(), c.contextParentId(), c.chunkIndexInSection(), c.chunkIndexInParent(), c.startOffset(), c.endOffset(), c.rawText(), c.embeddingText(), c.chunkHash(), c.blockType(), c.blockId(), c.partIndex(), encode(c.sourceMap()), c.tokenCount(), c.countSource()}).toList();
+        var expected=parsed.chunks().stream().map(c -> Map.entry(c.chunkId(),c.chunkHash())).collect(java.util.stream.Collectors.toSet());
+        sql.write(() -> savePreparedStructure(l,parsed,sections,parents,chunks,expected));
+    }
+
+    private void savePreparedStructure(IngestionLease l, ParsedDocument parsed, List<Object[]> sections,
+                                      List<Object[]> parents,List<Object[]> chunks,Set<Map.Entry<String,String>> expected) {
+        valid(l);
         String existing = sql.scalar(mapper.saveStructureDocumentIngestionsSelect(new Object[]{l.ingestionId()}), String.class);
         if (existing != null) {
             // 恢复仅复用同一配置及完整ID/hash；禁止重解析覆盖已付费输入。
             var hashes = sql.project(mapper.saveStructureChunksSelect(new Object[]{l.documentId(), l.documentVersion(), l.processingRevision()}), (r,n) -> Map.entry(r.string(1),r.string(2)));
-            var expected = parsed.chunks().stream().map(c -> Map.entry(c.chunkId(),c.chunkHash())).collect(java.util.stream.Collectors.toSet());
             if (!existing.equals(parsed.configHash()) || hashes.size()!=expected.size() || !expected.equals(new HashSet<>(hashes)))
                 throw new LabException("INGESTION_PLAN_CONFLICT", "恢复配置或输入与持久事实不同，请明确新建处理代次");
             return;
@@ -81,14 +85,20 @@ public class IngestionRepository implements DocumentIngestionStorePort {
         mapper.saveStructureChunksWrite(new Object[]{l.documentId(), l.documentVersion(), l.processingRevision()});
         mapper.saveStructureContextParentsWrite(new Object[]{l.documentId(), l.documentVersion(), l.processingRevision()});
         mapper.saveStructureDocumentSectionsWrite(new Object[]{l.documentId(), l.documentVersion(), l.processingRevision()});
-        for (var s : parsed.sections())
-            mapper.saveStructureDocumentSectionsWrite2(new Object[]{s.sectionId(), l.documentId(), l.documentVersion(), l.processingRevision(), s.parentSectionId(), encode(s.ancestorSectionIds()), s.headingPath(), s.ordinal(), s.startOffset(), s.endOffset()});
-        for (var p : parsed.parents())
-            mapper.saveStructureContextParentsWrite2(new Object[]{p.contextParentId(), l.documentId(), l.documentVersion(), l.processingRevision(), p.sectionId(), p.ordinal(), p.startOffset(), p.endOffset()});
-        for (var c : parsed.chunks())
-            mapper.saveStructureChunksWrite2(new Object[]{c.chunkId(), l.documentId(), l.documentVersion(), l.processingRevision(), c.sectionId(), c.contextParentId(), c.chunkIndexInSection(), c.chunkIndexInParent(), c.startOffset(), c.endOffset(), c.rawText(), c.embeddingText(), c.chunkHash(), c.blockType(), c.blockId(), c.partIndex(), encode(c.sourceMap()), c.tokenCount(), c.countSource()});
+        // 编码已完成；同一短事务批量保存，完整标记与结构一起提交，失败整体回滚。
+        structureBatches(sections, mapper::saveStructureDocumentSectionsWrite2);
+        structureBatches(parents, mapper::saveStructureContextParentsWrite2);
+        structureBatches(chunks, mapper::saveStructureChunksWrite2);
         // 处理事实由已保存的新映射产生；旧批次不回填假解析版本。
         mapper.saveStructureDocumentIngestionsWrite(new Object[]{parsed.chunks().size(), parsed.configHash(), parsed.parserVersion(), parsed.splitPolicyVersion(), parsed.mappingVersion(), parsed.tokenizerRef(), parsed.countSource(), l.ingestionId()});
+    }
+
+    private void structureBatches(List<Object[]> rows, java.util.function.ToIntFunction<List<Object[]>> write) {
+        for (int from = 0; from < rows.size(); from += STRUCTURE_BATCH_SIZE) {
+            var batch = rows.subList(from, Math.min(rows.size(), from + STRUCTURE_BATCH_SIZE));
+            if (write.applyAsInt(batch) != batch.size())
+                throw new LabException("INGESTION_PLAN_CONFLICT", "结构批次未完整保存");
+        }
     }
 
     /** 计划只首次写入，顺序、摘要与额度在数据端再次守住。 */
@@ -199,6 +209,7 @@ public class IngestionRepository implements DocumentIngestionStorePort {
      */
     @Transactional
     public void activate(IngestionLease l, int count) {
+        sql.exclusiveKnowledge();
         valid(l);
         int actual = sql.scalar(mapper.activateChunksSelect(new Object[]{l.documentId(), l.documentVersion(), l.processingRevision()}), Integer.class);
         if (actual != count || count == 0) throw new LabException("CONTEXT_MAPPING_INVALID", "批次切片不完整");
@@ -258,6 +269,7 @@ public class IngestionRepository implements DocumentIngestionStorePort {
      */
     @Transactional
     public void reprocess(UserContext actor, long id) {
+        sql.exclusiveKnowledge();
         sql.actor(actor, true);
         var d = docs.metadata(id);
         sql.owner(actor, d.knowledgeBaseId(), true);
@@ -268,6 +280,7 @@ public class IngestionRepository implements DocumentIngestionStorePort {
     /** 恢复必须锁定本人当前有效资料，只有最新且可恢复的失败代次可提前调度。 */
     @Transactional
     public void recover(UserContext actor,long id,long revision) {
+        sql.exclusiveKnowledge();
         sql.actor(actor,true);var d=docs.metadata(id);sql.owner(actor,d.knowledgeBaseId(),true);
         docs.read(new AuthorizedKnowledgeScope(actor,ScopeRequest.Mode.SELF,List.of(),null,java.time.Instant.now()),id);
         int updated=mapper.recoverDocumentIngestionsWrite(new Object[]{id, d.documentVersion(), revision, id, d.documentVersion()});
@@ -278,9 +291,9 @@ public class IngestionRepository implements DocumentIngestionStorePort {
      * 当前内容、最新意图、未到期租约和 fencing 共同校验。
      */
     private void valid(IngestionLease l) {
-        sql.actor(l.actor(), true);
-        var count = sql.scalar(mapper.validDocumentIngestionsSelect(new Object[]{l.ingestionId(), l.documentId(), l.documentVersion(), l.processingRevision(), l.actor().userId(), l.workerId(), l.fencingToken()}), Integer.class);
-        if (count != 1) throw new LabException("STALE_EXECUTION", "入库执行权已失效");
+        sql.actorShared(l.actor());
+        var rows = mapper.validDocumentIngestionsSelect(new Object[]{l.ingestionId(), l.documentId(), l.documentVersion(), l.processingRevision(), l.actor().userId(), l.workerId(), l.fencingToken()});
+        if (rows.isEmpty() || sql.scalar(rows, Integer.class) != 1) throw new LabException("STALE_EXECUTION", "入库执行权已失效");
     }
 
     /**

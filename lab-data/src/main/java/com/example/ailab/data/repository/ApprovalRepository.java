@@ -63,6 +63,7 @@ public class ApprovalRepository implements OperationStorePort {
      */
     @Transactional
     public ApprovalSnapshot decide(UserContext actor, String id, boolean approve) {
+        sql.exclusiveKnowledge();
         sql.actor(actor, true);
         var a = load(actor, id, true);
         // 重放成功只返回既有事实，仍复核当前来源，绝不创建第二份文档。

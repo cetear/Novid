@@ -6,6 +6,10 @@ import java.util.List;
 
 /** 自定义 SQL 由 MyBatis 执行，参数绑定与事务使用统一数据源。 */
 public interface TaskMapper {
+    List<SqlRow> failCandidates(@Param("args") Object[] args);
+
+    List<SqlRow> cancelCandidates(@Param("args") Object[] args);
+
     List<SqlRow> retryTask(@Param("args") Object[] args,@Param("lock") boolean lock);
     List<SqlRow> retryEvent(@Param("args") Object[] args);
     List<SqlRow> retryStats(@Param("args") Object[] args);

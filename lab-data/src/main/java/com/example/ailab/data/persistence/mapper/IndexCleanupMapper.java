@@ -6,6 +6,8 @@ import java.util.List;
 
 /** 自定义 SQL 由 MyBatis 执行，参数绑定与事务使用统一数据源。 */
 public interface IndexCleanupMapper {
+    List<SqlRow> exhaustedCandidates(@Param("args") Object[] args);
+
     List<SqlRow> claimSystemControlSelect(@Param("args") Object[] args);
     int claimOutboxEventsWrite(@Param("args") Object[] args);
     List<SqlRow> claimOutboxEventsSelect(@Param("args") Object[] args);

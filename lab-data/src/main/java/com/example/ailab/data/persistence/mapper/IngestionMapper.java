@@ -6,6 +6,10 @@ import java.util.List;
 
 /** 自定义 SQL 由 MyBatis 执行，参数绑定与事务使用统一数据源。 */
 public interface IngestionMapper {
+    List<SqlRow> exhaustedCandidates(@Param("args") Object[] args);
+
+    List<SqlRow> unknownCandidates(@Param("args") Object[] args);
+
     List<SqlRow> claimSystemControlSelect(@Param("args") Object[] args);
     int claimDocumentIngestionsWrite(@Param("args") Object[] args);
     int claimIngestionBatchesWrite(@Param("args") Object[] args);
@@ -19,9 +23,9 @@ public interface IngestionMapper {
     int saveStructureChunksWrite(@Param("args") Object[] args);
     int saveStructureContextParentsWrite(@Param("args") Object[] args);
     int saveStructureDocumentSectionsWrite(@Param("args") Object[] args);
-    int saveStructureDocumentSectionsWrite2(@Param("args") Object[] args);
-    int saveStructureContextParentsWrite2(@Param("args") Object[] args);
-    int saveStructureChunksWrite2(@Param("args") Object[] args);
+    int saveStructureDocumentSectionsWrite2(@Param("rows") List<Object[]> rows);
+    int saveStructureContextParentsWrite2(@Param("rows") List<Object[]> rows);
+    int saveStructureChunksWrite2(@Param("rows") List<Object[]> rows);
     int saveStructureDocumentIngestionsWrite(@Param("args") Object[] args);
     List<SqlRow> planDocumentIngestionsSelect(@Param("args") Object[] args);
     List<SqlRow> planIngestionBatchesSelect(@Param("args") Object[] args);
