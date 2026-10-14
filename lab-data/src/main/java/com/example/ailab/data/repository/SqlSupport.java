@@ -31,6 +31,10 @@ public class SqlSupport {
     @org.springframework.transaction.annotation.Transactional(timeout = 5)
     public void write(Runnable commit) { commit.run(); }
 
+    /** 结构需原子保存多个有界 SQL 批次；整体期限独立于单条 SQL 的 5 秒期限。 */
+    @org.springframework.transaction.annotation.Transactional(timeout = 30)
+    public void writeIngestionStructure(Runnable commit) { commit.run(); }
+
     /** 知识激活必须先排他，再核验执行权；不从共享闸门升级。 */
     public void exclusiveKnowledge() { scalar(mapper.actorSystemControlSelect(new Object[]{}), Integer.class); }
 

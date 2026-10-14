@@ -74,6 +74,10 @@ logging:
     com.example.ailab: ${LAB_LOG_LEVEL:INFO}
   # 供 log4j2-spring.xml 读取的自定义滚动归档参数。
   log4j2:
+    # 慢 SQL 单独滚动和清理；不计入主日志归档大小。
+    slow-sql-max-file-size: ${SLOW_SQL_MAX_FILE_SIZE:20MB}
+    slow-sql-max-history-days: ${SLOW_SQL_MAX_HISTORY_DAYS:7}
+    slow-sql-max-archive-size: ${SLOW_SQL_MAX_ARCHIVE_SIZE:256MB}
     # 单个日志文件触发按大小滚动的阈值；同时按天滚动。
     max-file-size: ${LOG_MAX_FILE_SIZE:20MB}
     # 应用日志归档保留天数，由 Log4j2 归档删除规则使用。
@@ -122,6 +126,13 @@ management:
 lab:
   # 满池等待告警采样周期；不输出SQL、凭证或业务正文。
   database:
+    # 应用侧语句耗时，包含查询结果读取／映射；不改变 SQL 超时和事务期限。
+    slow-sql:
+      enabled: ${SLOW_SQL_ENABLED:true}
+      # 单位毫秒；范围 1～600000，达到阈值时登记成功或失败语句。
+      threshold-ms: ${SLOW_SQL_THRESHOLD_MS:1000}
+      # 脱敏模板最大展示字符数；范围 128～65536，不输出绑定参数。
+      max-sql-length: ${SLOW_SQL_MAX_SQL_LENGTH:4096}
     pool-diagnostics-ms: ${DB_POOL_DIAGNOSTICS_MS:10000}
     # 资料仓库同时至多4个事务；实际值不超过池容量减2，不改变模型并行数。
     content-concurrency: ${DB_CONTENT_CONCURRENCY:4}

@@ -17,7 +17,8 @@ import java.util.*;
  */
 @Repository
 public class IngestionRepository implements DocumentIngestionStorePort {
-    private static final int STRUCTURE_BATCH_SIZE = 64;
+    private static final int STRUCTURE_BATCH_SIZE = 256;
+    private static final int STRUCTURE_BATCH_BYTES = 512 * 1024;
     private final IngestionMapper mapper;
     private final SqlSupport sql;
     private final DocumentSqlRepository docs;
@@ -68,11 +69,12 @@ public class IngestionRepository implements DocumentIngestionStorePort {
         var parents=parsed.parents().stream().map(p -> new Object[]{p.contextParentId(), l.documentId(), l.documentVersion(), l.processingRevision(), p.sectionId(), p.ordinal(), p.startOffset(), p.endOffset()}).toList();
         var chunks=parsed.chunks().stream().map(c -> new Object[]{c.chunkId(), l.documentId(), l.documentVersion(), l.processingRevision(), c.sectionId(), c.contextParentId(), c.chunkIndexInSection(), c.chunkIndexInParent(), c.startOffset(), c.endOffset(), c.rawText(), c.embeddingText(), c.chunkHash(), c.blockType(), c.blockId(), c.partIndex(), encode(c.sourceMap()), c.tokenCount(), c.countSource()}).toList();
         var expected=parsed.chunks().stream().map(c -> Map.entry(c.chunkId(),c.chunkHash())).collect(java.util.stream.Collectors.toSet());
-        sql.write(() -> savePreparedStructure(l,parsed,sections,parents,chunks,expected));
+        var sectionBatches=structureBatches(sections);var parentBatches=structureBatches(parents);var chunkBatches=structureBatches(chunks);
+        sql.writeIngestionStructure(() -> savePreparedStructure(l,parsed,sectionBatches,parentBatches,chunkBatches,expected));
     }
 
-    private void savePreparedStructure(IngestionLease l, ParsedDocument parsed, List<Object[]> sections,
-                                      List<Object[]> parents,List<Object[]> chunks,Set<Map.Entry<String,String>> expected) {
+    private void savePreparedStructure(IngestionLease l, ParsedDocument parsed, List<List<Object[]>> sections,
+                                      List<List<Object[]>> parents,List<List<Object[]>> chunks,Set<Map.Entry<String,String>> expected) {
         valid(l);
         String existing = sql.scalar(mapper.saveStructureDocumentIngestionsSelect(new Object[]{l.ingestionId()}), String.class);
         if (existing != null) {
@@ -86,16 +88,33 @@ public class IngestionRepository implements DocumentIngestionStorePort {
         mapper.saveStructureContextParentsWrite(new Object[]{l.documentId(), l.documentVersion(), l.processingRevision()});
         mapper.saveStructureDocumentSectionsWrite(new Object[]{l.documentId(), l.documentVersion(), l.processingRevision()});
         // 编码已完成；同一短事务批量保存，完整标记与结构一起提交，失败整体回滚。
-        structureBatches(sections, mapper::saveStructureDocumentSectionsWrite2);
-        structureBatches(parents, mapper::saveStructureContextParentsWrite2);
-        structureBatches(chunks, mapper::saveStructureChunksWrite2);
+        writeStructureBatches(sections, mapper::saveStructureDocumentSectionsWrite2);
+        writeStructureBatches(parents, mapper::saveStructureContextParentsWrite2);
+        writeStructureBatches(chunks, mapper::saveStructureChunksWrite2);
         // 处理事实由已保存的新映射产生；旧批次不回填假解析版本。
         mapper.saveStructureDocumentIngestionsWrite(new Object[]{parsed.chunks().size(), parsed.configHash(), parsed.parserVersion(), parsed.splitPolicyVersion(), parsed.mappingVersion(), parsed.tokenizerRef(), parsed.countSource(), l.ingestionId()});
     }
 
-    private void structureBatches(List<Object[]> rows, java.util.function.ToIntFunction<List<Object[]>> write) {
-        for (int from = 0; from < rows.size(); from += STRUCTURE_BATCH_SIZE) {
-            var batch = rows.subList(from, Math.min(rows.size(), from + STRUCTURE_BATCH_SIZE));
+    private List<List<Object[]>> structureBatches(List<Object[]> rows) {
+        var batches=new ArrayList<List<Object[]>>();
+        for (int from = 0; from < rows.size();) {
+            int to = from;long bytes = 0;
+            while (to < rows.size() && to - from < STRUCTURE_BATCH_SIZE) {
+                long rowBytes = 0;
+                for (Object value : rows.get(to)) rowBytes += value instanceof String text
+                        ? 2L * text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length + 16 : 32;
+                // 保守计入字符串转义；单行仍独立发送，不改变原有字段可接受范围。
+                if (to > from && bytes + rowBytes > STRUCTURE_BATCH_BYTES) break;
+                bytes += rowBytes;to++;
+            }
+            batches.add(rows.subList(from, to));
+            from = to;
+        }
+        return List.copyOf(batches);
+    }
+
+    private void writeStructureBatches(List<List<Object[]>> batches, java.util.function.ToIntFunction<List<Object[]>> write) {
+        for (var batch : batches) {
             if (write.applyAsInt(batch) != batch.size())
                 throw new LabException("INGESTION_PLAN_CONFLICT", "结构批次未完整保存");
         }

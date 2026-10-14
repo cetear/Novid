@@ -5,6 +5,9 @@
         <Property name="maxFileSize">${spring:logging.log4j2.max-file-size:-20MB}</Property>
         <Property name="historyDays">${spring:logging.log4j2.max-history-days:-30}</Property>
         <Property name="archiveSize">${spring:logging.log4j2.max-archive-size:-1GB}</Property>
+        <Property name="slowSqlFileSize">${spring:logging.log4j2.slow-sql-max-file-size:-20MB}</Property>
+        <Property name="slowSqlHistoryDays">${spring:logging.log4j2.slow-sql-max-history-days:-7}</Property>
+        <Property name="slowSqlArchiveSize">${spring:logging.log4j2.slow-sql-max-archive-size:-256MB}</Property>
         <Property name="pattern">%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}{UTC} %-5level [%t] %c{1} requestId=%X{requestId} operationId=%X{operationId} actorId=%X{actorId} resourceId=%X{resource_id} baseId=%X{resource_baseId} version=%X{resource_version} sessionId=%X{sessionId} documentId=%X{documentId} taskId=%X{taskId} ingestionId=%X{ingestionId} traceId=%X{traceId} %msg%n%throwable</Property>
     </Properties>
     <Appenders>
@@ -39,8 +42,29 @@
             </Policies>
             <DefaultRolloverStrategy max="100"/>
         </RollingFile>
+        <RollingFile name="SlowSql" fileName="${logPath}/novid-slow-sql.log"
+                     filePattern="${logPath}/slow-sql-archive/novid-slow-sql-%d{yyyy-MM-dd}-%i.log.gz">
+            <PatternLayout pattern="${pattern}" charset="UTF-8"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="${slowSqlFileSize}"/>
+            </Policies>
+            <DefaultRolloverStrategy max="100">
+                <Delete basePath="${logPath}/slow-sql-archive" maxDepth="1">
+                    <IfFileName glob="novid-slow-sql-*.log.gz">
+                        <IfAny>
+                            <IfLastModified age="${slowSqlHistoryDays}d"/>
+                            <IfAccumulatedFileSize exceeds="${slowSqlArchiveSize}"/>
+                        </IfAny>
+                    </IfFileName>
+                </Delete>
+            </DefaultRolloverStrategy>
+        </RollingFile>
     </Appenders>
     <Loggers>
+        <Logger name="com.example.ailab.sql.slow" level="WARN" additivity="false">
+            <AppenderRef ref="SlowSql"/>
+        </Logger>
         <!-- SDK详细HTTP日志可能包含请求正文或认证头，保持关闭。 -->
         <Logger name="dev.langchain4j" level="OFF"/>
         <Logger name="org.apache.hc.client5.http.wire" level="OFF"/>

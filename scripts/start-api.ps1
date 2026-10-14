@@ -5,6 +5,7 @@ $allowed = @('DB_URL','DB_USERNAME','DB_PASSWORD','BOOTSTRAP_ENABLED','BOOTSTRAP
 # .env 只作为文本读取，不执行其中任何 PowerShell 语句。
 $allowed += @('DB_POOL_MAX_SIZE','DB_CONNECTION_TIMEOUT_MS','DB_LEAK_DETECTION_MS','DB_POOL_DIAGNOSTICS_MS','DB_CONTENT_CONCURRENCY','DB_ADMISSION_WAIT_MS','TRACE_PROGRESS_INTERVAL_MS','TASK_RENEWAL_ATTEMPTS','TASK_RENEWAL_BACKOFF_MS','TASK_RENEWAL_WINDOW_MS')
 $envPath = Join-Path $workspace $EnvFile
+$allowed += @('SLOW_SQL_ENABLED','SLOW_SQL_THRESHOLD_MS','SLOW_SQL_MAX_SQL_LENGTH','SLOW_SQL_MAX_FILE_SIZE','SLOW_SQL_MAX_HISTORY_DAYS','SLOW_SQL_MAX_ARCHIVE_SIZE')
 if (Test-Path -LiteralPath $envPath) {
     foreach ($line in Get-Content -LiteralPath $envPath -Encoding utf8) {
         if ($line.Trim() -eq '' -or $line.Trim().StartsWith('#')) { continue }
