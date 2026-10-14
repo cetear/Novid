@@ -16,6 +16,7 @@
  <insert id="bind">INSERT INTO task_content_runs(task_id,source_hash,source_json) VALUES(#{args[0]},#{args[1]},#{args[2]})</insert>
  <select id="node" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_nodes WHERE task_id=#{args[0]} AND node_id=#{args[1]}</select>
  <select id="nodes" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_nodes WHERE task_id=#{args[0]} ORDER BY node_id</select>
+ <select id="completedNodeSummary" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT node_id FROM task_content_nodes WHERE task_id=#{args[0]} AND status='COMPLETED'</select>
  <select id="nodesByIds" resultType="com.example.ailab.data.persistence.po.SqlRow">
   SELECT * FROM task_content_nodes WHERE task_id=#{taskId} AND node_id IN
   <foreach collection="nodeIds" item="nodeId" open="(" separator="," close=")">#{nodeId}</foreach>

@@ -32,6 +32,9 @@ public final class DocumentDrivenWorkflow {
     private final ToolExecutionService tools;
     private final KnowledgeCapabilityPort knowledge;
     private final ModelGateway model;
+    private TaskLeaseRenewal renewal;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void renewal(TaskLeaseRenewal value) { this.renewal=value; }
     private PresentationPort presentation;
     private CompilationStorePort compilations;
     @org.springframework.beans.factory.annotation.Autowired
@@ -41,6 +44,7 @@ public final class DocumentDrivenWorkflow {
     public DocumentDrivenWorkflow(TaskStorePort tasks,ContentWorkflowStorePort store,WorkflowRunStorePort workflows,WorkflowRouter router,
                                   SkillCatalog skills,ToolExecutionService tools,KnowledgeCapabilityPort knowledge,ModelGateway model) {
         this.tasks=tasks;this.store=store;this.workflows=workflows;this.router=router;this.skills=skills;this.tools=tools;this.knowledge=knowledge;this.model=model;
+        this.renewal=new TaskLeaseRenewal(tasks);
     }
     public record PptResult(OutputPlan plan,List<Media.Unit> units,List<SourceDependency> sources) { }
     private record Indexed<T>(int index,T value) { }
@@ -128,7 +132,7 @@ public final class DocumentDrivenWorkflow {
             verifyNow();
         }
         synchronized void verifyNow() {
-            if(!tasks.renew(lease))throw new LabException("STALE_EXECUTION","资料工作流租约失效");
+            if(!renewal.renew(lease,budget.deadline()))throw new LabException("STALE_EXECUTION","资料工作流租约失效");
             knowledge.verifySources(lease.actor(),source.sources());
             knowledge.verifyReadingDocuments(lease.actor(),lease.request().scope(),reading.documents());
             verifiedAt=System.nanoTime();

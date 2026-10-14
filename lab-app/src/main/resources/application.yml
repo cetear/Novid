@@ -18,11 +18,13 @@ spring:
     # Hikari 数据库连接池配置。
     hikari:
       # 连接池最大连接数；请求、后台任务和观测写入共享数据库资源。
-      maximum-pool-size: 10
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:10}
       # 从连接池获取连接的最长等待时间，单位毫秒；不是 SQL 或模型调用超时。
-      connection-timeout: 5000
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:5000}
       # 单条连接的存活校验上限，单位毫秒；小于获取连接期限，为淘汰失效连接后取得其他连接留出时间。
       validation-timeout: 2000
+      # 诊断超长借出连接；0关闭，启用后仅告警，不自动回收连接。
+      leak-detection-threshold: ${DB_LEAK_DETECTION_MS:0}
   # 数据库版本迁移配置。
   flyway:
     # 启动时扫描数据库迁移脚本的位置。
@@ -109,6 +111,12 @@ management:
       show-details: never
 # 本项目业务配置。
 lab:
+  # 满池等待告警采样周期；不输出SQL、凭证或业务正文。
+  database:
+    pool-diagnostics-ms: ${DB_POOL_DIAGNOSTICS_MS:10000}
+    # 资料仓库同时至多4个事务；实际值不超过池容量减2，不改变模型并行数。
+    content-concurrency: ${DB_CONTENT_CONCURRENCY:4}
+    admission-wait-ms: ${DB_ADMISSION_WAIT_MS:5000}
   # 两类资料工作流的实际调用正文独立归档；每块至多1MiB原文。
   model-call-archive:
     enabled: ${MODEL_CALL_ARCHIVE_ENABLED:true}
@@ -198,6 +206,8 @@ lab:
         output-rate: 27.00
   # 运行图追踪、异步存储与可选外部导出配置。
   observability:
+    # 运行图变更合并写入；终态不等待此周期，范围100～10000ms。
+    progress-interval-ms: ${TRACE_PROGRESS_INTERVAL_MS:1000}
     # 单次运行最多记录的追踪节点数；范围 1～2000，超过后标记追踪不完整。
     max-nodes: 2000
     # 异步追踪写入队列容量，单位为队列项数；范围 1～128。
@@ -258,6 +268,11 @@ lab:
     worker-enabled: ${INGESTION_WORKER_ENABLED:true}
   # 持久任务后台执行配置。
   task:
+    # 仅重试续租事务开始时的临时连接获取失败，不重放模型。
+    renewal-attempts: ${TASK_RENEWAL_ATTEMPTS:3}
+    renewal-backoff-ms: ${TASK_RENEWAL_BACKOFF_MS:250}
+    # 控制后续重试派发的窗口；每次获取连接仍受connection-timeout限制。
+    renewal-window-ms: ${TASK_RENEWAL_WINDOW_MS:20000}
     # 局部失败后已启动的并发节点最多收尾60秒，仍受原任务剩余期限约束。
     parallel-drain-seconds: 60
     # 是否启用任务后台消费；关闭时已登记任务等待执行者。

@@ -106,7 +106,7 @@ public class TaskApplicationService {
         return content.result(policy.current(actor), id);
     }
     public Optional<ContentWorkflow.Snapshot> contentPlan(UserContext actor,long id) {
-        actor=policy.current(actor);tasks.read(actor,id);
+        actor=policy.current(actor);
         return content.readPlan(actor,id);
     }
     public Optional<ContentReading.Snapshot> readingPlan(UserContext actor,long id) {

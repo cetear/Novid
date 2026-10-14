@@ -25,6 +25,12 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
     private volatile boolean running = true;
     private volatile boolean writing;
     private final java.util.concurrent.atomic.AtomicInteger pending = new java.util.concurrent.atomic.AtomicInteger();
+    private volatile long progressIntervalMillis=1000;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void progressInterval(@Value("${lab.observability.progress-interval-ms:1000}") long millis) {
+        if(millis<100||millis>10000)throw new IllegalArgumentException("观测合并周期配置无效");
+        progressIntervalMillis=millis;
+    }
 
     private record Batch(TraceSnapshot run, List<TraceNode> nodes, TraceContext context) {
     }
@@ -32,6 +38,7 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
         final TraceSnapshot run;
         final TraceContext context;
         volatile long writtenRevision;
+        long nextWriteNanos;
         LiveRun(TraceSnapshot run, TraceContext context) { this.run = run; this.context = context; }
     }
 
@@ -129,7 +136,6 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
      * 独立串行写入，最多一次重试；导出先脱敏，外部失效只影响观测完整性。
      */
     private void drain() {
-        long nextProgress = 0;
         while (running || !queue.isEmpty()) {
             try {
                 var batch = queue.poll(100, TimeUnit.MILLISECONDS);
@@ -138,13 +144,13 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
                     try { write(batch, true); }
                     finally { pending.decrementAndGet(); }
                 }
-                if (running && System.nanoTime() >= nextProgress) {
-                    nextProgress = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(100);
+                if (running) {
                     for (var active : live.values()) {
-                        if (active.context.revision() == active.writtenRevision) continue;
+                        if (active.context.revision() == active.writtenRevision || System.nanoTime()<active.nextWriteNanos) continue;
                         writing = true;
                         var snapshot = active.context.snapshot();
                         if (!snapshot.finished()) {
+                            active.nextWriteNanos=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(progressIntervalMillis);
                             write(new Batch(snapshotRun(active.run, snapshot.nodes(), false, snapshot.incomplete()), snapshot.nodes(), active.context), false);
                             active.writtenRevision = snapshot.revision();
                         }

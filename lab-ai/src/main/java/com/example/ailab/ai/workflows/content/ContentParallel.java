@@ -10,7 +10,7 @@ import java.util.function.Function;
 final class ContentParallel {
     private record Indexed<T>(int index,T value) { }
     private static final Set<String> STOP_NOW=Set.of("REQUEST_CANCELLED","STALE_EXECUTION","BUDGET_EXCEEDED",
-            "CONTEXT_VERSION_CONFLICT","FORBIDDEN","ACCESS_DENIED");
+            "CONTEXT_VERSION_CONFLICT","FORBIDDEN","ACCESS_DENIED","DATABASE_TEMPORARILY_UNAVAILABLE");
     static <A,B>List<B> run(ExecutorService pool,List<A> input,int parallelism,Instant deadline,Duration drain,Function<A,B> execute) {
         return run(pool,input,parallelism,deadline,drain,execute,()->{});
     }

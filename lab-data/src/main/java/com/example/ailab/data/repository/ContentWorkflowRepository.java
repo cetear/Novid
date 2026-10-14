@@ -240,13 +240,23 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         var source=source(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict);
         tasks.publish(lease,new TaskCheckpoint("result",markdown,source.sources(),false));
     }
+    @Transactional(readOnly=true)
     public Optional<Snapshot> readPlan(UserContext actor,long id) {
-        tasks.read(actor,id);var rows=mapper.run(new Object[]{id});
+        var task=tasks.read(actor,id);var rows=mapper.run(new Object[]{id});
         if(rows.isEmpty()||rows.get(0).get("plan_hash")==null)return Optional.empty();
         var row=rows.get(0);var source=decode(row.string("source_json"),row.string("source_hash"),SourcePlan.class);
-        verify(documents,actor,null,source);
-        var plan=contentPlan(row,tasks.read(actor,id).taskType());
-        var nodes=mapper.nodes(new Object[]{id}).stream().filter(n->n.string("status").equals("COMPLETED")).peek(ContentWorkflowRepository::output).map(n->n.string("node_id")).collect(Collectors.toSet());
+        // 进度只核验当前来源权限与代次；正文／输出哈希在恢复、验收和发布路径完整验证。
+        var scope=new AuthorizedKnowledgeScope(actor,actor.role()==UserContext.Role.ADMIN?ScopeRequest.Mode.ALL:ScopeRequest.Mode.SELF,List.of(),null,Instant.now());
+        documents.verifySources(scope,source.sources());
+        var checked=new HashSet<Long>();
+        for(var slice:source.slices())if(checked.add(slice.documentId())) {
+            if(!source.sources().contains(new SourceDependency(slice.knowledgeBaseId(),slice.documentId(),slice.documentVersion())))throw conflict();
+            var d=documents.metadata(slice.documentId());
+            if(d.knowledgeBaseId()!=slice.knowledgeBaseId()||d.documentVersion()!=slice.documentVersion()
+                    ||!Objects.equals(d.activeProcessingRevision(),slice.processingRevision()))throw conflict();
+        }
+        var plan=contentPlan(row,task.taskType());
+        var nodes=mapper.completedNodeSummary(new Object[]{id}).stream().map(n->n.string("node_id")).collect(Collectors.toSet());
         int chapters=plan instanceof LearningContent.Plan learning?learning.counts().chapters():0;
         return Optional.of(new Snapshot(plan,row.string("plan_hash"),(int)plan.requiredNodes().stream().filter(nodes::contains).count(),true,(int)nodes.stream().filter(n->n.startsWith("chapter_accepted_")).count(),chapters));
     }

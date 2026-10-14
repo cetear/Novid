@@ -11,6 +11,7 @@ import java.util.stream.Collectors;
 
 /** 父租约下的有界工作包调度、逐项验收、恢复和局部返工。 */
 final class LearningExecutor {
+    private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(LearningExecutor.class);
     private static final Set<String> PRESENTATION_ISSUES=Set.of("BAD_ORGANIZATION","DUPLICATE","STYLE","FORMAT","FORMATTING","WORDING","ORDER","REDUNDANCY");
     private final LearningRuntime r;private final Plan plan;private int inspectionRemaining;private boolean directReviewed;
     private record CachedSummary(String outputHash,UnitSummary summary) { }
@@ -76,9 +77,19 @@ final class LearningExecutor {
                 // 已通过单元的职责保持原样，只拆未验收职责。
                 try {
                     var split=LearningPackages.split(r,plan,status);r.store().splitPackage(r.lease(),work.id(),split.parts(),split.children());return;
-                }catch(LabException terminal){r.store().failPackage(r.lease(),work.id(),terminal.code());throw terminal;}
+                }catch(LabException terminal){recordFailure(work.id(),terminal);throw terminal;}
             }
-            r.store().failPackage(r.lease(),work.id(),Thread.currentThread().isInterrupted()||failure.code().equals("REQUEST_CANCELLED")?"WORKFLOW_INTERRUPTED":failure.code());throw failure;
+            recordFailure(work.id(),failure);throw failure;
+        }
+    }
+    private void recordFailure(String id,LabException failure) {
+        // 资源故障没有产生新的业务终态，保留原工作包供租约恢复读取。
+        if(TaskLeaseRenewal.UNAVAILABLE.equals(failure.code()))return;
+        String code=Thread.currentThread().isInterrupted()||failure.code().equals("REQUEST_CANCELLED")?"WORKFLOW_INTERRUPTED":failure.code();
+        try { r.store().failPackage(r.lease(),id,code); }
+        catch(RuntimeException unavailable) {
+            LOG.warn("event=content.package_failure_write_failed taskId={} packageId={} originalCode={}",r.lease().task().taskId(),id,code,
+                    com.example.ailab.contract.error.DiagnosticFailure.sanitized(unavailable));
         }
     }
     private Map<String,PartReceipt> drafts(PackageStatus status,List<Part> active) {

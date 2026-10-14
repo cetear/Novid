@@ -19,6 +19,9 @@ import java.util.*;
 public class PrivateResourceRepository implements MemoryStorePort, TraceRecordPort {
     private final PrivateResourceMapper mapper;
     private final SqlSupport sql;
+    private TraceGraphTransactions graphTransactions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void graphTransactions(TraceGraphTransactions value) { this.graphTransactions=value; }
     private DocumentSqlRepository documents;
     private final com.fasterxml.jackson.databind.ObjectMapper traceJson = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
 
@@ -27,6 +30,8 @@ public class PrivateResourceRepository implements MemoryStorePort, TraceRecordPo
      */
     public PrivateResourceRepository(SqlSupport sql) {
         this.sql = sql; this.mapper = sql.mapper(PrivateResourceMapper.class);
+        // 手动构造用于独立仓库测试；正式装配注入具有事务代理的写入组件。
+        this.graphTransactions=new TraceGraphTransactions(sql);
     }
 
     /** 内容快照沿用资料当前权限和版本复核；无装配时拒绝返回正文。 */
@@ -91,12 +96,8 @@ public class PrivateResourceRepository implements MemoryStorePort, TraceRecordPo
     }
 
     /** 单运行至多2000节点，原子提交终态与图；观测事务不包含远程调用或预算消费。 */
-    @Transactional
     public void recordGraph(TraceSnapshot run,List<TraceNode> nodes) {
         if(nodes.size()>2000 || nodes.size()!=run.nodeCount()) throw LabException.invalid("观测节点数量不匹配");
-        record(run);
-        // record持有运行行写锁；终态已提交后拒绝整个迟到增量，包含尚未插入的节点。
-        if (!mapper.graphRunAccepts(new Object[]{run.traceId(),run.actorUserId(),run.endedAt()==null?null:Timestamp.from(run.endedAt())})) return;
         var rows=new ArrayList<com.example.ailab.data.persistence.po.TraceSpanRow>();
         for(var node:nodes) {
             try {
@@ -106,7 +107,7 @@ public class PrivateResourceRepository implements MemoryStorePort, TraceRecordPo
             } catch(com.fasterxml.jackson.core.JsonProcessingException invalid) { throw new IllegalStateException("观测编码失败"); }
         }
         // 批量发送有界排错记录，减少SQL往返；终态与节点仍在同一短事务。
-        if (!rows.isEmpty()) mapper.recordGraphAiSpansWrite(rows);
+        graphTransactions.commit(run,rows);
     }
 
     /** 先核验运行所有者再取节点；管理员私人资源没有旁路。 */
