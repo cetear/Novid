@@ -9,6 +9,7 @@ import java.util.*;
 public final class StructuredReadPlanner {
     private static final com.fasterxml.jackson.databind.ObjectMapper JSON=new com.fasterxml.jackson.databind.ObjectMapper();
     private static final int PACK_OVERHEAD=TextWindow.count("{\"protocol\":\"structure-read-v1\",\"fragments\":[]}");
+    private static final int COMPACT_FRAGMENT_BYTES=2400;
     private StructuredReadPlanner() { }
     private record Block(String id,String type,int start,int end) { }
     public record Input(DocumentContent content,List<SectionSnapshot> sections,List<TextMapping> mappings) { }
@@ -16,7 +17,14 @@ public final class StructuredReadPlanner {
         return build(inputs,policy,false);
     }
     public static Plan build(List<Input> inputs,ContentWorkflow.Policy policy,boolean compact) {
-        int extra=compact?ContentReading.COMPACT_PROTOCOL.length()-ContentReading.PROTOCOL.length():0;int overhead=PACK_OVERHEAD+extra;
+        return build(inputs,policy,compact?ContentReading.COMPACT_PROTOCOL:ContentReading.PROTOCOL);
+    }
+    public static Plan progressive(List<Input> inputs,ContentWorkflow.Policy policy) {
+        return build(inputs,policy,ContentReading.PROGRESS_PROTOCOL);
+    }
+    private static Plan build(List<Input> inputs,ContentWorkflow.Policy policy,String protocol) {
+        boolean compact=ContentReading.compact(protocol);
+        int extra=protocol.length()-ContentReading.PROTOCOL.length();int overhead=PACK_OVERHEAD+extra;
         var documents=new ArrayList<Document>();var fragments=new ArrayList<Fragment>();var packs=new ArrayList<Pack>();
         var sources=new LinkedHashSet<SourceDependency>();
         int totalBytes=0;
@@ -66,10 +74,10 @@ public final class StructuredReadPlanner {
                 int cursor=ownStart;
                 for(var b:blocks) {
                     int start=Math.max(ownStart,b.start()),end=Math.min(ownEnd,b.end());if(start>=end)continue;
-                    if(cursor<start)add(text,d,section,cursor,start,"GAP","TEXT",policy.pageBytes()-extra,fragments,documentFragments);
-                    add(text,d,section,start,end,b.id(),b.type(),policy.pageBytes()-extra,fragments,documentFragments);cursor=end;
+                    if(cursor<start)add(text,d,section,cursor,start,"GAP","TEXT",policy.pageBytes()-extra,compact,fragments,documentFragments);
+                    add(text,d,section,start,end,b.id(),b.type(),policy.pageBytes()-extra,compact,fragments,documentFragments);cursor=end;
                 }
-                if(cursor<ownEnd)add(text,d,section,cursor,ownEnd,"TEXT_"+cursor,"TEXT",policy.pageBytes()-extra,fragments,documentFragments);
+                if(cursor<ownEnd)add(text,d,section,cursor,ownEnd,"TEXT_"+cursor,"TEXT",policy.pageBytes()-extra,compact,fragments,documentFragments);
             }
             if(compact){var merged=merge(text,documentFragments,policy.pageBytes(),overhead);fragments.subList(fragments.size()-documentFragments.size(),fragments.size()).clear();documentFragments=new ArrayList<>();
                 for(var f:merged){var old=f.source();var slice=new Learning.SourceSlice(String.format(Locale.ROOT,"p%05d",fragments.size()+1),old.knowledgeBaseId(),old.documentId(),old.documentVersion(),old.processingRevision(),old.title(),old.startOffset(),old.endOffset(),old.textHash());
@@ -86,7 +94,7 @@ public final class StructuredReadPlanner {
             }
             if(!group.isEmpty())packs.add(new Pack(String.format(Locale.ROOT,"rp%05d",packs.size()+1),d.id(),group,bytes));
         }
-        var plan=new Plan(compact?ContentReading.COMPACT_PROTOCOL:ContentReading.PROTOCOL,documents,fragments,packs,List.copyOf(sources));plan.validate(policy.readingPackBytes());
+        var plan=new Plan(protocol,documents,fragments,packs,List.copyOf(sources));plan.validate(policy.readingPackBytes());
         if(packs.size()>policy.turns())throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","固定阅读包数量超过父任务调用额度");
         return plan;
     }
@@ -99,7 +107,7 @@ public final class StructuredReadPlanner {
                 var previous=out.get(out.size()-1);var a=previous.source();var b=next.source();
                 if(previous.sectionId().equals(next.sectionId())&&a.endOffset()==b.startOffset()&&previous.contexts().isEmpty()&&next.contexts().isEmpty()
                         &&Set.of("PARAGRAPH","TEXT","LIST","WHITESPACE").contains(previous.blockType())&&Set.of("PARAGRAPH","TEXT","LIST","WHITESPACE").contains(next.blockType())
-                        &&TextWindow.count(text.substring(a.startOffset(),b.endOffset()))<=2400&&payloadBytes(text,a.id(),previous.headingPath(),"TEXT",a.startOffset(),b.endOffset(),List.of())+overhead<=pageBudget) {
+                        &&TextWindow.count(text.substring(a.startOffset(),b.endOffset()))<=COMPACT_FRAGMENT_BYTES&&payloadBytes(text,a.id(),previous.headingPath(),"TEXT",a.startOffset(),b.endOffset(),List.of())+overhead<=pageBudget) {
                     var ranges=new ArrayList<>(previous.naturalBlocks());ranges.addAll(next.naturalBlocks());
                     var slice=new Learning.SourceSlice(a.id(),a.knowledgeBaseId(),a.documentId(),a.documentVersion(),a.processingRevision(),a.title(),a.startOffset(),b.endOffset(),Learning.digest(text.substring(a.startOffset(),b.endOffset())));
                     out.set(out.size()-1,new Fragment(slice,previous.naturalId(),previous.sectionId(),previous.headingPath(),"TEXT",0,List.of(),"SEMANTIC_BLOCK",ranges));continue;
@@ -108,7 +116,7 @@ public final class StructuredReadPlanner {
             out.add(next);
         }return out;
     }
-    private static void add(String text,DocumentSnapshot doc,SectionSnapshot section,int start,int end,String natural,String type,int budget,
+    private static void add(String text,DocumentSnapshot doc,SectionSnapshot section,int start,int end,String natural,String type,int budget,boolean compact,
                             List<Fragment> all,List<Fragment> document) {
         int headerEnd=start;
         if("TABLE".equals(type)) {
@@ -120,11 +128,15 @@ public final class StructuredReadPlanner {
         else if("CODE".equals(type)||"LIST".equals(type)) {
             int line=text.indexOf('\n',start);if(line>=start&&line<end&&TextWindow.count(text.substring(start,line+1))<=budget/4)headerEnd=line+1;
         }
+        int headerBytes=TextWindow.count(text.substring(start,headerEnd));
         int cursor=start,part=0;
         while(cursor<end) {
             var contexts=cursor>=headerEnd&&headerEnd>start?List.of(new Context(start,headerEnd,"TABLE".equals(type)?"TABLE_HEADER":"BLOCK_OPENING")):List.<Context>of();
             int background=contexts.isEmpty()?0:TextWindow.count(text.substring(start,headerEnd));
-            int next=cut(text,cursor,end,budget-96-background,"CODE".equals(type)||"TABLE".equals(type)||"LIST".equals(type));
+            int bodyBudget=budget-96-background;
+            // 正文目标独立于路径／必要背景容量；表头完整性仍按原服务器容量检查。
+            if(compact)bodyBudget=Math.min(bodyBudget,Math.max(COMPACT_FRAGMENT_BYTES,cursor==start&&"TABLE".equals(type)?headerBytes:0));
+            int next=cut(text,cursor,end,bodyBudget,"CODE".equals(type)||"TABLE".equals(type)||"LIST".equals(type));
             String id=String.format(Locale.ROOT,"p%05d",all.size()+1);
             int maximum=TextWindow.count(text.substring(cursor,next));
             while(PACK_OVERHEAD+payloadBytes(text,id,section.headingPath(),type,cursor,next,contexts)>budget) {

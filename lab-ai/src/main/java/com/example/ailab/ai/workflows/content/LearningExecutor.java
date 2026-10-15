@@ -191,8 +191,10 @@ final class LearningExecutor {
             String outputHash=ContentJson.hash(entry.getValue());var cached=summaryCache.get(entry.getKey());
             if(cached!=null&&cached.outputHash().equals(outputHash))return cached.summary();
             var encoded=ContentJson.encode(entry.getValue());var chunks=new ArrayList<ContentWorkflow.Summary>();int from=0,index=0;
-            while(from<encoded.length()){int end=TextWindow.end(encoded,from,encoded.length(),r.policy().unitInputBytes()-1500);String text=encoded.substring(from,end);chunks.add(r.call("summary_"+round+"_"+entry.getKey()+"_"+index++,"review","index",Map.of("unitId",entry.getKey(),"actualOutput",text),ContentSchemas.summary(ContentLimits.current())));from=end;}
-            ContentWorkflow.Summary summary=chunks.get(0);if(chunks.size()>1)summary=r.call("summary_"+round+"_"+entry.getKey()+"_merged","review","index",Map.of("unitId",entry.getKey(),"parts",chunks),ContentSchemas.summary(ContentLimits.current()));
+            var summarySchema=plan.quiz()!=null?ContentSchemas.outputSummary(ContentLimits.current(),encoded)
+                    :ContentSchemas.summary(ContentLimits.current(),r.evidence(ownedFacts(plan.compilation().sections().stream().filter(s->s.id().equals(entry.getKey())).findFirst().orElseThrow())));
+            while(from<encoded.length()){int end=TextWindow.end(encoded,from,encoded.length(),r.policy().unitInputBytes()-1500);String text=encoded.substring(from,end);chunks.add(r.call("summary_"+round+"_"+entry.getKey()+"_"+index++,"review","index",Map.of("unitId",entry.getKey(),"actualOutput",text),summarySchema));from=end;}
+            ContentWorkflow.Summary summary=chunks.get(0);if(chunks.size()>1)summary=r.call("summary_"+round+"_"+entry.getKey()+"_merged","review","index",Map.of("unitId",entry.getKey(),"parts",chunks),summarySchema);
             UnitSummary result;
             if(plan.quiz()!=null){var slot=plan.quiz().slots().stream().filter(s->s.id().equals(entry.getKey())).findFirst().orElseThrow();result=new UnitSummary(slot.id(),slot.primaryChapterId(),slot.cognition(),summary.title(),summary.summary(),slot.itemIds());}
             else {var section=plan.compilation().sections().stream().filter(s->s.id().equals(entry.getKey())).findFirst().orElseThrow();result=new UnitSummary(section.id(),section.chapterId(),"",section.title(),summary.summary(),ownedFacts(section));}

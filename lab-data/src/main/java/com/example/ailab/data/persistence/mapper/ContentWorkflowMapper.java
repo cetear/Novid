@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Param;
 import java.util.List;
 public interface ContentWorkflowMapper {
     List<SqlRow> reading(@Param("args") Object[] args);
+    List<SqlRow> readingIdentity(@Param("args") Object[] args);
     int saveReading(@Param("args") Object[] args);
     int markReading(@Param("args") Object[] args);
     List<SqlRow> policy(@Param("args") Object[] args);
@@ -12,12 +13,14 @@ public interface ContentWorkflowMapper {
     List<SqlRow> run(@Param("args") Object[] args);
     List<SqlRow> boundResultBytes(@Param("args") Object[] args);
     int completeReadingNodes(@Param("rows") List<SqlParameters> rows);
+    int completeGeneration(@Param("rows") List<SqlParameters> rows);
     int bind(@Param("args") Object[] args);
     List<SqlRow> node(@Param("args") Object[] args);
     List<SqlRow> nodes(@Param("args") Object[] args);
     List<SqlRow> nodeProof(@Param("args") Object[] args);
     List<SqlRow> planProof(@Param("args") Object[] args);
     List<SqlRow> completedNodeSummary(@Param("args") Object[] args);
+    List<SqlRow> completedReadingNodes(@Param("args") Object[] args);
     List<SqlRow> nodesByIds(@Param("taskId") long taskId,@Param("nodeIds") List<String> nodeIds);
     List<SqlRow> completedNodeIds(@Param("taskId") long taskId,@Param("nodeIds") List<String> nodeIds);
     int begin(@Param("args") Object[] args);

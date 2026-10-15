@@ -16,7 +16,7 @@ final class CompactReading {
         return new RecordSchema<>(Batch.class,"按输入顺序完整阅读每个语义块，输出fragments与status=COMPLETE/OVERFLOW。"
                 +"只从ownedText提取事实，quote为连续原文；每块最多32条。topics按知识归纳简短主题和全部条件，itemIndices使用本块事实1起序号，每条事实恰好属于一个主题。"
                 +"不输出来源、事实编号、关键词、实体、角色和依赖等可由程序管理的重复字段。保留数字、否定、例外及相互冲突的条件。",
-                List.of(items("fragments",fragments.size()),items("fragments[].items",32),utf8("fragments[].items[].category",limits.factCategory()),utf8("fragments[].items[].content",limits.factContent()),utf8("fragments[].items[].quote",limits.factQuote()),utf8("fragments[].topics[].title",160),utf8("fragments[].topics[].summary",600),items("fragments[].topics[].conditions",12)),v->{
+                List.of(items("fragments",fragments.size()),items("fragments[].items",32),utf8("fragments[].items[].category",limits.factCategory()),utf8("fragments[].items[].content",limits.factContent()),utf8("fragments[].items[].quote",limits.factQuote()),utf8("fragments[].topics[].title",160),targetUtf8("fragments[].topics[].summary",420,600),items("fragments[].topics[].conditions",12)),v->{
             var full=assemble(v);ReadingSchemas.batch(fragments,raw,limits).relaxed().validate(ContentJson.encode(full),Set.of());
         });
     }

@@ -113,10 +113,11 @@ final class LearningBusinessSchemas {
     }
     static RecordSchema<Objectives> objectives(List<Learning.Item> facts,Set<String> types,Set<String> chapters) {
         var ids=facts.stream().map(Learning.Item::id).collect(Collectors.toSet());
-        return new RecordSchema<>(Objectives.class,"提取不同可命题目标；认知目的为RECALL/UNDERSTAND/APPLY/COMPARE。每个目标有具体考点、连续原文事实依据、可用题型、1至3的重要性及理由。不能只换题干增加容量；目录/引用/无效正文列入unexaminedItemIds并说明原因。相关章节只作为支持，主归属由程序固定。",
+        return new RecordSchema<>(Objectives.class,"提取不同可命题目标；认知目的为RECALL/UNDERSTAND/APPLY/COMPARE。每个目标有具体考点、连续原文事实依据、可用题型、1至3的重要性及理由。同一事实编号集合（忽略顺序）与同一cognition只需一个候选；程序会合并重复候选，不能只换题干增加容量。目录/引用/无效正文列入unexaminedItemIds并说明原因。相关章节只作为支持，主归属由程序固定。",
                 List.of(items("objectives",128),utf8("objectives[].title",200),utf8("objectives[].reason",500),choices("objectives[].cognition",Set.of("RECALL","UNDERSTAND","APPLY","COMPARE")),optionalUtf8("reason",600)),v->{
-            var covered=new HashSet<String>();var unique=new HashSet<String>();for(var o:v.objectives()) {require(!o.itemIds().isEmpty()&&ids.containsAll(o.itemIds())&&types.containsAll(o.questionTypes())&&!o.questionTypes().isEmpty()&&o.priority()>=1&&o.priority()<=3&&chapters.containsAll(o.relatedChapterIds()),CONTENT_CONSTRAINT);
-                require(unique.add(new TreeSet<>(o.itemIds())+"|"+o.cognition()),CONTENT_CONSTRAINT);covered.addAll(o.itemIds());}
+            var covered=new HashSet<String>();for(var o:v.objectives()) {require(!o.itemIds().isEmpty()&&ids.containsAll(o.itemIds())&&types.containsAll(o.questionTypes())&&!o.questionTypes().isEmpty()&&o.priority()>=1&&o.priority()<=3&&chapters.containsAll(o.relatedChapterIds()),CONTENT_CONSTRAINT);
+                // 候选重复由规划器确定性合并；此处仍核验事实、题型、章节与完整覆盖。
+                covered.addAll(o.itemIds());}
             require(ids.containsAll(v.unexaminedItemIds())&&Collections.disjoint(covered,v.unexaminedItemIds()),CONTENT_CONSTRAINT);covered.addAll(v.unexaminedItemIds());require(covered.equals(ids)&& (v.unexaminedItemIds().isEmpty()||!v.reason().isBlank()),CONTENT_CONSTRAINT);
         });
     }

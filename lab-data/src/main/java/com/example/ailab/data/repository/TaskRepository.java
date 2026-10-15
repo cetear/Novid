@@ -106,7 +106,8 @@ public class TaskRepository implements TaskStorePort, ArtifactStorePort {
             if(chunks.isEmpty()||chunks.size()>5000)throw new LabException("INDEX_NOT_READY","资料缺少完整解析块");
             input.add(new StructuredReadPlanner.Input(content,sections,chunks.stream().flatMap(c->c.sourceMap().stream()).toList()));
         }
-        return StructuredReadPlanner.build(input,policy,"KNOWLEDGE_COMPILATION".equals(request.taskType()));
+        return Set.of("KNOWLEDGE_COMPILATION","QUIZ_GENERATION").contains(request.taskType())
+                ?StructuredReadPlanner.progressive(input,policy):StructuredReadPlanner.build(input,policy);
     }
 
     /**

@@ -167,6 +167,11 @@ public final class TraceCollector implements TraceTelemetryPort, AutoCloseable {
 
     /** 运行中只持久化，外部导出仅发送一次终态；故障只影响观测完整性。 */
     private void write(Batch batch, boolean terminal) {
+        // 轻量终态与大图分开重试：同步终态写入暂时失败时，不必等待整图重写才纠正RUNNING。
+        if(terminal) {
+            try {store.record(mark(batch.run(),true,batch.context().incomplete(),0));}
+            catch(RuntimeException unavailable){LOG.warn("event=trace.terminal_write_failed traceId={}",batch.run().traceId());}
+        }
         boolean saved = false;
         for (int attempt = 0; attempt < 2 && !saved; attempt++) {
             try {

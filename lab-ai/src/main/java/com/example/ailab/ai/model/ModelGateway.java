@@ -305,18 +305,28 @@ public class ModelGateway {
                 context.stage(), "local-summary-compression", context.businessNodeId(), patchSchema.schemaId(), "1",
                 Learning.digest(context.contractHash() + "\n" + patchSchema.instruction(Set.of()) + "\n" + prompt), context.sources());
         Turn compressed;
-        LocalSummaryCompression.Replacements replacements;
+        String assembled;
+        boolean fallback=false;
         try {
             compressed = generate(task, selection, ModelInput.withOptions(compressionInput,input.options()), budget, patchSchema, "", attempts, original.modelId(), List.of());
-            try { replacements = validateStructured(patchSchema, compressed, budget); }
+            try { assembled=plan.assemble(validateStructured(patchSchema, compressed, budget)); }
             catch (LabException invalid) {
                 if (invalid.code().equals("MODEL_STRUCTURED_INVALID")) { markInvalid(attempts);budget.invalidStructure(); }
-                throw invalid;
+                // 只为替换值的长度／事实失败做本地兜底；未知路径、来源变化、传输故障不能被降级掩盖。
+                if(!invalid.code().equals("MODEL_STRUCTURED_INVALID")||invalid.validationIssues().isEmpty()
+                        ||invalid.validationIssues().stream().anyMatch(i->!i.path().matches("replacements\\[[0-9]+\\]\\.value")
+                        ||!Set.of("CONTENT_CONSTRAINT","REQUIRED_FACT_MISSING","FACT_VALUE").contains(i.rule())))throw invalid;
+                var safe=plan.fallback();
+                if(safe.isEmpty())throw new LabException("WORKFLOW_TEXT_UNREPRESENTABLE","无法在字段容量内完整保留必要事实，请调整资料范围",invalid.validationIssues());
+                assembled=safe.get();fallback=true;
+                var route=compressed.route();
+                if(route!=null)compressed=new Turn(compressed.text(),compressed.modelId(),compressed.inputTokens(),compressed.outputTokens(),compressed.mock(),compressed.finishReason(),compressed.rawMessage(),
+                        new ModelRoute(route.policyVersion(),route.qualityVersion(),route.profile(),route.routingMode(),route.selectedModelId(),route.selectionReason(),route.fallbackCandidates(),attempts),compressed.evidence());
             }
         } finally { execution.attemptContext = context; }
-        String assembled = plan.assemble(replacements);
         // 合成校验属于本地后处理，不伪造提供方响应或归档，也不产生第二次付费纠正。
-        try (var span = budget.trace().span("VALIDATION", "assembled_summary")) {
+        budget.check();
+        try (var span = budget.trace().span("VALIDATION", fallback?"source_fact_fallback":"assembled_summary")) {
             var checked = schema.validateObserved(assembled, referenceIds(original.evidence()), "ASSEMBLED_RESULT");
             // 本地组合没有归档载荷的到期引用，只留规则和位置，避免正文摘录成为永久副本。
             if (checked.diagnostic() != null) {
@@ -327,7 +337,8 @@ public class ModelGateway {
                         diagnostic.collectionTruncated(), diagnostic.stoppedEarly()));
             }
             if (checked.failure() != null) { span.fail(checked.failure());throw checked.failure(); }
-            span.output("局部摘要替换后的完整结果已通过原业务校验");
+            span.output(fallback?"完整绑定事实及原文模板已通过原业务校验":"局部摘要替换后的完整结果已通过原业务校验");
+            LOG.info("event=content.summary_result strategy={} bytes={}",fallback?"SOURCE_FACT_TEMPLATE":"MODEL_COMPRESSION",bytes(assembled));
             return new StructuredTurn<>(checked.value(), compressed);
         }
     }

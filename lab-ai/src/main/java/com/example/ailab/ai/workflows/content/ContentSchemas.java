@@ -16,7 +16,8 @@ public final class ContentSchemas {
     }
     public static RecordSchema<Facts> facts(String prefix,String sourceId,String raw,int maximum,boolean merged,ContentLimits limits) {
         return new RecordSchema<>(Facts.class,"输出items及status。status为COMPLETE或OVERFLOW；全部事实超过"+maximum+"项时返回OVERFLOW，程序会继续分批。"
-                +"id使用"+prefix+"_i1起连续编号，sourceId="+sourceId+"。category按内容归纳；复杂知识拆为相关条目；quote必须是连续原文。",
+                +"id使用"+prefix+"_i1起连续编号，sourceId="+sourceId+"。category按内容归纳；复杂知识拆为相关条目；quote必须是连续原文。"
+                +"content中的阿拉伯数字须在本条quote中有依据，保留原数值、正负号、单位和日期形式，不自行推算新值。",
                 List.of(items("items",maximum),choices("status",Set.of("COMPLETE","OVERFLOW")),utf8("items[].category",limits.factCategory()),
                         utf8("items[].content",limits.factContent()),utf8("items[].quote",limits.factQuote())),value->{
             require(Set.of("COMPLETE","OVERFLOW").contains(value.status()),FACT_STATUS,"status","COMPLETE/OVERFLOW");
@@ -27,14 +28,26 @@ public final class ContentSchemas {
                 require(ids.add(item.id()),FACT_ID,path+".id","本批唯一事实编号");
                 require(item.sourceId().equals(sourceId),FACT_SOURCE,path+".sourceId",sourceId);
                 require(!item.quote().isBlank()&&raw.contains(item.quote()),FACT_QUOTE,path+".quote","本批输入中的连续原文，保留空格和换行");
+                require(ContentTextRules.supportedNumbers(item.content(),item.quote()),FACT_VALUE,path+".content","事实中的阿拉伯数字须由本条原文引用支持，不得引入未引用的计算值");
                 if(!merged)require(item.id().equals(prefix+"_i"+index),FACT_ID,path+".id",prefix+"_i"+index);
             }
         });
     }
     public static RecordSchema<Summary> summary(){return summary(ContentLimits.current());}
     public static RecordSchema<Summary> summary(ContentLimits limits) {
-        return new RecordSchema<>(Summary.class,"输出title和summary。保留主题、条件、例外、重复和冲突；明细由程序保留。",
-                List.of(utf8("title",limits.summaryTitle()),utf8("summary",limits.summary())),v->{}).withSummaryCompression("summary");
+        return new RecordSchema<>(Summary.class,"输出title和summary。summary尽量控制在target内，并遵守maximum。保留主题、条件、例外和冲突；明细由程序保留。",
+                List.of(utf8("title",limits.summaryTitle()),targetUtf8("summary",Math.min(1300,limits.summary()),limits.summary())),v->{}).withSummaryCompression("summary");
+    }
+    public static RecordSchema<Summary> summary(ContentLimits limits,List<Learning.Item> facts) {
+        String evidence=String.join("\n",facts.stream().map(f->f.content()+"\n"+f.quote()).toList());
+        var schema=summary(limits).withSummaryFacts(facts.stream().map(f->new SummaryFact(f.id(),f.content(),f.quote())).toList());
+        return facts.isEmpty()?schema:schema.withChecks(v->require(ContentTextRules.supportedNumbers(v.summary(),evidence),
+                FACT_VALUE,"summary","摘要数字须由绑定事实及原文支持"));
+    }
+    /** 自测复核摘要以已验收题目为依据，不能拿原文数字集合否定推算答案或干扰项。 */
+    public static RecordSchema<Summary> outputSummary(ContentLimits limits,String acceptedOutput) {
+        return summary(limits).withChecks(v->require(ContentTextRules.supportedNumbers(v.summary(),acceptedOutput),
+                FACT_VALUE,"summary","复核摘要数字须由本单元已验收结果支持"));
     }
     public static RecordSchema<Intent> intent(int maximumThemes){return intent(maximumThemes,ContentLimits.current());}
     public static RecordSchema<Intent> intent(int maximumThemes,ContentLimits limits) {

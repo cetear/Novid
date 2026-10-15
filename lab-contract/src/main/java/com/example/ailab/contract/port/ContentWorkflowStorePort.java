@@ -16,10 +16,17 @@ public interface ContentWorkflowStorePort {
     /** 会话级恢复快照；完成节点不可覆盖，输入哈希仍由执行器逐项核对。 */
     Map<String,ReadingCheckpoint> completedReadingNodes(TaskLease lease);
     record ReadingWrite(String nodeId,String inputHash,String output) { }
-    /** 仅保存冻结阅读片段的确定性派生节点，同一短事务内验证并提交。 */
+    /** 保存冻结片段的已验证阅读结果与派生节点，同一短事务内核验并提交。 */
     void completeReadingNodes(TaskLease lease,List<ReadingWrite> nodes);
+    /** 复用会话冻结计划；适配器必须核验其摘要后提交，默认保留既有适配器行为。 */
+    default void completeReadingNodes(TaskLease lease,ContentReading.Plan plan,List<ReadingWrite> nodes){completeReadingNodes(lease,nodes);}
     void begin(TaskLease lease, String nodeId, String stage, String inputHash);
     void complete(TaskLease lease, String nodeId, String inputHash, String output);
+    /** 同一成功调用的结果和模型回执一起提交；持久适配器须原子实现。 */
+    default void completeGeneration(TaskLease lease,String stage,ReadingWrite result,ReadingWrite receipt) {
+        begin(lease,receipt.nodeId(),stage,receipt.inputHash());complete(lease,receipt.nodeId(),receipt.inputHash(),receipt.output());
+        complete(lease,result.nodeId(),result.inputHash(),result.output());
+    }
     void accept(TaskLease lease, ContentWorkflow.OutputPlan plan);
     void accept(TaskLease lease, LearningContent.Plan plan);
     Optional<LearningContent.Plan> acceptedLearningPlan(TaskLease lease);

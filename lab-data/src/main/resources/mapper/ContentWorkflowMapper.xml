@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.example.ailab.data.persistence.mapper.ContentWorkflowMapper">
+ <select id="readingIdentity" resultType="com.example.ailab.data.persistence.po.SqlRow">
+  SELECT t.reading_protocol,p.plan_hash FROM ai_tasks t JOIN task_content_read_plans p ON p.task_id=t.id WHERE t.id=#{args[0]}
+ </select>
  <select id="reading" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT t.reading_protocol,p.plan_hash,p.plan_json FROM ai_tasks t LEFT JOIN task_content_read_plans p ON p.task_id=t.id WHERE t.id=#{args[0]}</select>
  <insert id="saveReading">INSERT INTO task_content_read_plans(task_id,plan_hash,plan_json) VALUES(#{args[0]},#{args[1]},#{args[2]})</insert>
  <update id="markReading">UPDATE ai_tasks SET reading_protocol=#{args[1]} WHERE id=#{args[0]} AND reading_protocol IS NULL</update>
@@ -14,11 +17,23 @@
   ON DUPLICATE KEY UPDATE output_hash=VALUES(output_hash),output_json=VALUES(output_json),status='COMPLETED',completed_at=COALESCE(completed_at,VALUES(completed_at))
  </insert>
  <insert id="bind">INSERT INTO task_content_runs(task_id,source_hash,source_json) VALUES(#{args[0]},#{args[1]},#{args[2]})</insert>
+ <insert id="completeGeneration">
+  INSERT INTO task_content_nodes(task_id,node_id,stage,input_hash,output_hash,output_json,status,completed_at) VALUES
+  <foreach collection="rows" item="row" separator=",">(#{row.taskId},#{row.nodeId},#{row.stage},#{row.inputHash},#{row.outputHash},#{row.outputJson},'COMPLETED',CURRENT_TIMESTAMP(6))</foreach>
+  ON DUPLICATE KEY UPDATE output_hash=VALUES(output_hash),output_json=VALUES(output_json),status='COMPLETED',completed_at=COALESCE(completed_at,VALUES(completed_at))
+ </insert>
  <select id="node" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_nodes WHERE task_id=#{args[0]} AND node_id=#{args[1]}</select>
  <select id="nodes" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT * FROM task_content_nodes WHERE task_id=#{args[0]} ORDER BY node_id</select>
  <select id="nodeProof" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT node_id,status,output_hash FROM task_content_nodes WHERE task_id=#{args[0]} ORDER BY node_id</select>
  <select id="planProof" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT r.source_hash,r.plan_hash,p.plan_hash AS reading_hash FROM task_content_runs r JOIN task_content_read_plans p ON p.task_id=r.task_id WHERE r.task_id=#{args[0]}</select>
  <select id="completedNodeSummary" resultType="com.example.ailab.data.persistence.po.SqlRow">SELECT node_id FROM task_content_nodes WHERE task_id=#{args[0]} AND status='COMPLETED'</select>
+ <select id="completedReadingNodes" resultType="com.example.ailab.data.persistence.po.SqlRow">
+  SELECT node_id,input_hash,output_hash,output_json,status FROM task_content_nodes
+  WHERE task_id=#{args[0]} AND status='COMPLETED' AND
+  (node_id LIKE 'read!_%' ESCAPE '!' OR node_id LIKE 'topics!_%' ESCAPE '!'
+   OR node_id LIKE 'evidence!_%' ESCAPE '!' OR node_id LIKE 'readpack!_%' ESCAPE '!'
+   OR node_id LIKE 'readobs!_%' ESCAPE '!')
+ </select>
  <select id="nodesByIds" resultType="com.example.ailab.data.persistence.po.SqlRow">
   SELECT * FROM task_content_nodes WHERE task_id=#{taskId} AND node_id IN
   <foreach collection="nodeIds" item="nodeId" open="(" separator="," close=")">#{nodeId}</foreach>

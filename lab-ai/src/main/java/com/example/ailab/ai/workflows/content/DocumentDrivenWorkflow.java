@@ -81,6 +81,7 @@ public final class DocumentDrivenWorkflow {
         private final ExecutionBudget budget;
         private final ContentExecutionLimits executionLimits;
         private final ExecutorService pool;
+        private final ExecutorService readingPool;
         private final Map<String,String> raw=new LinkedHashMap<>();
         private final Map<String,Learning.Item> items=new LinkedHashMap<>();
         private final Map<String,GenerationReceipt> origins=new ConcurrentHashMap<>();
@@ -125,6 +126,7 @@ public final class DocumentDrivenWorkflow {
             verifyNow();restoredReading=store.completedReadingNodes(lease);
             var checkpointIds=new HashSet<String>();reading.fragments().forEach(f->{for(String prefix:List.of("read_","topics_","evidence_"))checkpointIds.add(prefix+f.source().id());});readingCheckpointIds=Set.copyOf(checkpointIds);
             pool=Executors.newFixedThreadPool(policy.parallelism());
+            readingPool=Executors.newFixedThreadPool(policy.parallelism());
         }
         synchronized void verify() {
             // 会话内共享30秒来源检查；阶段提交、发布强制刷新，持久写入独立校验执行权。
@@ -176,7 +178,12 @@ public final class DocumentDrivenWorkflow {
             return system;
         }
         private ModelInput.Options callOptions(String role,int estimate){
-            if(!compact())return new ModelInput.Options(null,0);
+            if(batchQuiz()) {
+                if(Set.of("index","planning-advice","quiz-intent").contains(role))return new ModelInput.Options("none",8192);
+                if(role.equals("objectives"))return new ModelInput.Options("low",Math.min(65536,Math.max(16384,estimate+8192)));
+                if(Set.of("normalize","objective-evidence","assign","learning-units").contains(role))return new ModelInput.Options("low",16384);
+            }
+            if(!compact())return new ModelInput.Options(Set.of("read","extract").contains(role)?"low":null,0);
             boolean review=role.contains("review");String effort=review?"high":Set.of("assign","index","planning-advice").contains(role)?"none":"low";
             int output=Set.of("read","joint-plan","normalize").contains(role)?65536:review||role.equals("sections")?32768:Math.min(65536,Math.max(8192,estimate+8192));
             return new ModelInput.Options(effort,output);
@@ -197,6 +204,9 @@ public final class DocumentDrivenWorkflow {
             return schema.validate(json,Set.of());
         }
         <T>T node(String id,String phase,Object input,StructuredSchema<T> originalSchema,Function<TraceContext.Span,T> execute,boolean modelValidated) {
+            return node(id,phase,input,originalSchema,execute,modelValidated,null);
+        }
+        <T>T node(String id,String phase,Object input,StructuredSchema<T> originalSchema,Function<TraceContext.Span,T> execute,boolean modelValidated,Consumer<ContentWorkflowStorePort.ReadingWrite> commit) {
             var schema=workflowSchema(originalSchema);
             budget.check();String hash=ContentJson.hash(Map.of("source",sourceHash,"node",id,"input",input));
             boolean readingCheckpoint=readingCheckpointIds.contains(id);
@@ -222,6 +232,21 @@ public final class DocumentDrivenWorkflow {
                 }
                 throw failure;
             }
+            // 派生片段证据仍逐项校验并持久化；成功只展示包级节点，避免耗尽运行图额度。
+            if(readingCheckpoint&&observedWorkflow()) {
+                ValidationDiagnostic diagnostic=null;
+                try {
+                    T value=execute.apply(null);String json=ContentJson.encode(value);
+                    if(schema instanceof RecordSchema<T> record) {
+                        var checked=record.validateObserved(json,Set.of(),"ASSEMBLED");diagnostic=checked.diagnostic();
+                        if(checked.failure()!=null)throw checked.failure();value=checked.value();
+                    } else value=schema.validate(json,Set.of());
+                    readingWrites.add(new ContentWorkflowStorePort.ReadingWrite(id,hash,json));readingWriteBytes+=TextWindow.count(json);
+                    if(readingWrites.size()>=96||readingWriteBytes>=1000000)flushReading();return value;
+                } catch(RuntimeException failure) {
+                    try(var span=budget.trace().span("AGENT",id)){span.input("片段证明失败；阶段："+phase);span.diagnostic(diagnostic);span.fail(failure);}throw failure;
+                }
+            }
             try(var span=budget.trace().span("AGENT",id);var activation=budget.activate(span.context())) {
                 if(observedWorkflow())span.input("阶段："+phase+"；业务节点："+id+"；模型尝试可展开查看");
                 else com.example.ailab.ai.runtime.TracePayloadCapture.input(span,input);
@@ -230,15 +255,15 @@ public final class DocumentDrivenWorkflow {
                         T value=execute.apply(span);String json=ContentJson.encode(value);if(!modelValidated||!observedWorkflow())value=localValidation(schema,json,span,"ASSEMBLED");
                         readingWrites.add(new ContentWorkflowStorePort.ReadingWrite(id,hash,json));readingWriteBytes+=TextWindow.count(json);
                         if(readingWrites.size()>=96||readingWriteBytes>=1000000)flushReading();
-                        if(observedWorkflow())span.output("结果已保存，长度："+json.length()+"字符");else com.example.ailab.ai.runtime.TracePayloadCapture.output(span,json);return value;
+                        if(observedWorkflow())span.output("结果已保存，长度："+TextWindow.count(json)+" UTF-8字节");else com.example.ailab.ai.runtime.TracePayloadCapture.output(span,json);return value;
                     }
                     store.begin(lease,id,phase,hash);T value=execute.apply(span);String json=ContentJson.encode(value);if(!modelValidated||!observedWorkflow())value=localValidation(schema,json,span,"ASSEMBLED");
-                    budget.check();store.complete(lease,id,hash,json);if(observedWorkflow())span.output("结果已保存，长度："+json.length()+"字符");else com.example.ailab.ai.runtime.TracePayloadCapture.output(span,json);return value;
+                    budget.check();if(commit==null)store.complete(lease,id,hash,json);else commit.accept(new ContentWorkflowStorePort.ReadingWrite(id,hash,json));if(observedWorkflow())span.output("结果已保存，长度："+TextWindow.count(json)+" UTF-8字节");else com.example.ailab.ai.runtime.TracePayloadCapture.output(span,json);return value;
                 } catch(RuntimeException failure) {span.fail(failure);if(Thread.currentThread().isInterrupted()||failure instanceof LabException lab&&lab.code().equals("REQUEST_CANCELLED"))span.status("INTERRUPTED");throw failure;}
             }
         }
         void flushReading() {
-            if(readingWrites.isEmpty())return;verify();store.completeReadingNodes(lease,List.copyOf(readingWrites));readingWrites.clear();readingWriteBytes=0;
+            if(readingWrites.isEmpty())return;verify();store.completeReadingNodes(lease,reading,List.copyOf(readingWrites));readingWrites.clear();readingWriteBytes=0;
         }
         <T>T generate(String id,String phase,String action,Object input,StructuredSchema<T> schema) {
             return generate(id,phase,action,input,schema,null);
@@ -251,6 +276,7 @@ public final class DocumentDrivenWorkflow {
                 RecordSchema.require(!v.modelId().isBlank()&&v.corrections()>=0&&v.corrections()<=1,RecordSchema.Reason.CONTENT_CONSTRAINT);
             }).relaxed();
             var saved=store.completed(lease,receiptId,receiptHash).map(v->receiptSchema.validate(v,Set.of()));
+            var completedReceipt=new java.util.concurrent.atomic.AtomicReference<GenerationReceipt>(saved.orElse(null));
             saved.ifPresent(v->origins.put(id,v));
             T result=node(id,phase,input,schema,span->{
                 if(saved.isPresent())return localValidation(schema,saved.get().json(),span,"RESTORED");
@@ -280,9 +306,10 @@ public final class DocumentDrivenWorkflow {
                         :model.structuredPinned(action.contains("review")?"WORKFLOW_REVIEW":"WORKFLOW_REPORT",ModelRegistry.Selection.auto(),capacity,budget,schema,original.modelId());
                 boolean corrected=original!=null||turn.turn().route()!=null&&turn.turn().route().attempts().stream().anyMatch(a->a.outcome().equals("MODEL_STRUCTURED_INVALID"));
                 var receipt=new GenerationReceipt(turn.turn().modelId(),corrected?1:0,ContentJson.encode(turn.value()));
-                budget.check();store.begin(lease,receiptId,phase,receiptHash);store.complete(lease,receiptId,receiptHash,ContentJson.encode(receipt));
+                budget.check();completedReceipt.set(receipt);
+                if(!batchQuiz()){store.begin(lease,receiptId,phase,receiptHash);store.complete(lease,receiptId,receiptHash,ContentJson.encode(receipt));}
                 origins.put(id,receipt);return turn.value();
-            },true);
+            },true,batchQuiz()?write->store.completeGeneration(lease,phase,write,new ContentWorkflowStorePort.ReadingWrite(receiptId,receiptHash,ContentJson.encode(completedReceipt.get()))):null);
             if(!origins.containsKey(id))throw new LabException("WORKFLOW_STATE_CONFLICT","生成节点缺少模型回执");
             return result;
         }
@@ -306,7 +333,9 @@ public final class DocumentDrivenWorkflow {
         void extractStructured() {
             long phaseStarted=System.nanoTime();
             var fragments=reading.fragments().stream().collect(Collectors.toMap(f->f.source().id(),Function.identity()));
-            var packages=parallel(reading.packs(),pack->{
+            var ordered=new ArrayList<>(reading.packs());
+            ordered.sort(Comparator.comparingInt(ContentReading.Pack::inputBytes).reversed().thenComparing(ContentReading.Pack::packId));
+            var results=parallel(ordered,pack->{
                 var group=pack.fragmentIds().stream().map(fragments::get).toList();
                 return node("readpack_"+pack.packId(),"extract",Map.of("protocol",reading.protocol(),"pack",pack,"fragments",group),
                         new RecordSchema<>(ContentReading.Batch.class,"程序合并的完整阅读结果",v->{
@@ -317,6 +346,8 @@ public final class DocumentDrivenWorkflow {
                             }
                         }),()->readPack(pack.packId(),group));
             });
+            var byId=new HashMap<String,ContentReading.Batch>();for(int i=0;i<ordered.size();i++)byId.put(ordered.get(i).packId(),results.get(i));
+            var packages=reading.packs().stream().map(pack->byId.get(pack.packId())).toList();
             LOG.info("event=content.read_phase phase=MODEL_READING fragments={} packs={} durationMs={}",fragments.size(),packages.size(),TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-phaseStarted));
             phaseStarted=System.nanoTime();
             var readFacts=new ArrayList<Facts>();var readCards=new ArrayList<ContentReading.TopicCard>();
@@ -352,33 +383,137 @@ public final class DocumentDrivenWorkflow {
             LOG.info("event=content.read_phase phase=READING_PROOF fragments={} durationMs={}",fragments.size(),TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-phaseStarted));
         }
         ContentReading.Batch readPack(String id,List<ContentReading.Fragment> group) {
+            try(var jobs=new ReadingTasks(readingPool,budget.deadline(),budget::check)) {
+                return jobs.await(readPackAsync(jobs,budget.trace(),id,group));
+            }
+        }
+        private record ReadAttempt(List<ContentReading.Observation> complete,List<ContentReading.Fragment> pending) { }
+        private CompletableFuture<ContentReading.Batch> readPackAsync(ReadingTasks jobs,TraceContext trace,String id,List<ContentReading.Fragment> group) {
+            return jobs.submit(()->{
+                try(var ignored=budget.activate(trace)){
+                    if(ContentReading.PROGRESS_PROTOCOL.equals(reading.protocol()))return readProgress(id,group);
+                    var batch=readPackAttempt(id,group);
+                    return batch==null?new ReadAttempt(List.of(),group):new ReadAttempt(batch.fragments(),List.of());
+                }
+            }).thenCompose(attempt->{
+                var pending=attempt.pending();
+                if(pending.isEmpty())return CompletableFuture.completedFuture(mergeReading(group,attempt.complete(),List.of()));
+                CompletableFuture<ContentReading.Batch> retry;
+                if(pending.size()>1) {
+                    int mid=pending.size()/2;
+                    retry=ReadingTasks.both(readPackAsync(jobs,trace,id+"_a",pending.subList(0,mid)),readPackAsync(jobs,trace,id+"_b",pending.subList(mid,pending.size())),(first,second)->mergeReading(pending,first.fragments(),second.fragments()));
+                }else retry=readSingleAsync(jobs,trace,pending.get(0));
+                return retry.thenApply(batch->mergeReading(group,attempt.complete(),batch.fragments()));
+            });
+        }
+        private ContentReading.Batch mergeReading(List<ContentReading.Fragment> group,List<ContentReading.Observation> first,List<ContentReading.Observation> second) {
+            var merged=new HashMap<String,ContentReading.Observation>();
+            for(var observations:List.of(first,second))for(var observation:observations)
+                if(merged.putIfAbsent(observation.fragmentId(),observation)!=null)throw changed();
+            if(merged.size()!=group.size()||group.stream().anyMatch(f->!merged.containsKey(f.source().id())))throw changed();
+            return new ContentReading.Batch(group.stream().map(f->merged.get(f.source().id())).toList(),"COMPLETE");
+        }
+        private ContentReading.Observation saveObservation(ContentReading.Fragment fragment,ContentReading.Observation observation) {
+            if(observation!=null){saveObservations(List.of(fragment),List.of(observation));return observation;}
+            return node("readobs_"+fragment.source().id(),"extract",Map.of("protocol",reading.protocol(),"fragment",fragment),
+                    ReadingSchemas.observation(fragment,raw.get(fragment.source().id()),source.policy().maximumItems(),limits()),()->observation);
+        }
+        private void saveObservations(List<ContentReading.Fragment> fragments,List<ContentReading.Observation> observations) {
+            if(observations.isEmpty())return;
+            try(var span=budget.trace().span("AGENT","readobs_batch_"+ContentJson.hash(fragments.stream().map(f->f.source().id()).toList()).substring(0,24))) {
+                try {
+                    var writes=new ArrayList<ContentWorkflowStorePort.ReadingWrite>();int bytes=0;
+                    for(int i=0;i<fragments.size();i++) {
+                        var fragment=fragments.get(i);String id="readobs_"+fragment.source().id();
+                        var schema=workflowSchema(ReadingSchemas.observation(fragment,raw.get(fragment.source().id()),source.policy().maximumItems(),limits()));
+                        var value=localValidation(schema,ContentJson.encode(observations.get(i)),span,"ASSEMBLED");String json=ContentJson.encode(value);int size=TextWindow.count(json);
+                        if(!writes.isEmpty()&&(writes.size()>=96||bytes+size>1000000)){budget.check();store.completeReadingNodes(lease,reading,List.copyOf(writes));writes.clear();bytes=0;}
+                        var input=Map.of("protocol",reading.protocol(),"fragment",fragment);
+                        writes.add(new ContentWorkflowStorePort.ReadingWrite(id,ContentJson.hash(Map.of("source",sourceHash,"node",id,"input",input)),json));bytes+=size;
+                    }
+                    budget.check();store.completeReadingNodes(lease,reading,List.copyOf(writes));span.output("完整阅读片段已保存："+observations.size());
+                }catch(RuntimeException failure){span.fail(failure);throw failure;}
+            }
+        }
+        private ReadAttempt readProgress(String id,List<ContentReading.Fragment> group) {
+            var complete=new ArrayList<ContentReading.Observation>();var pending=new ArrayList<ContentReading.Fragment>();
+            for(var fragment:group) {
+                if(restoredReading.containsKey("readobs_"+fragment.source().id()))complete.add(saveObservation(fragment,null));
+                else pending.add(fragment);
+            }
+            if(pending.isEmpty())return new ReadAttempt(complete,List.of());
+            ProgressReading.ReadingBatch batch;
             try {
-                var input=group.stream().map(f->{
-                    var s=f.source();String full=documentsRaw.get(s.documentId());
-                    return Map.of("fragmentId",s.id(),"headingPath",f.headingPath(),"blockType",f.blockType(),"ownedText",raw.get(s.id()),
-                            "background",f.contexts().stream().map(c->Map.of("role",c.role(),"text",full.substring(c.startOffset(),c.endOffset()))).toList());
-                }).toList();
-                var request=Map.of("protocol",reading.protocol(),"fragments",input);
-                var batch=compact()?CompactReading.assemble(generate("reading_"+id,"extract","read",request,CompactReading.schema(group,raw,limits())))
+                String identity=ContentJson.hash(pending.stream().map(f->f.source().id()).toList()).substring(0,12);
+                batch=generate("reading_"+id+"_"+identity,"extract","read",readingRequest(pending),ProgressReading.schema(pending,raw,limits()));
+            }catch(LabException failure) {
+                var reason=RecordSchema.reason(failure).orElse(null);
+                if(!capacityFailure(failure)&&reason!=RecordSchema.Reason.FACT_QUOTE&&reason!=RecordSchema.Reason.JSON_SYNTAX)throw failure;
+                LOG.info("event=content.read_fallback reason={} fragments={} action=SPLIT",reason==null?failure.code():reason.name(),pending.size());
+                return new ReadAttempt(complete,pending);
+            }
+            var overflow=new ArrayList<ContentReading.Fragment>();var readyFragments=new ArrayList<ContentReading.Fragment>();var ready=new ArrayList<ContentReading.Observation>();
+            for(int i=0;i<pending.size();i++) {
+                var block=batch.fragments().get(i);var fragment=pending.get(i);
+                if("COMPLETE".equals(block.status())){readyFragments.add(fragment);ready.add(ProgressReading.observation(block));}
+                else overflow.add(fragment);
+            }
+            saveObservations(readyFragments,ready);complete.addAll(ready);
+            if(!overflow.isEmpty())LOG.info("event=content.read_fallback reason=OVERFLOW fragments={} completed={} action=PARTIAL_RETRY",overflow.size(),complete.size());
+            return new ReadAttempt(complete,overflow);
+        }
+        private Map<String,Object> readingRequest(List<ContentReading.Fragment> group) {
+            var input=group.stream().map(f->{
+                var s=f.source();String full=documentsRaw.get(s.documentId());
+                return Map.of("fragmentId",s.id(),"headingPath",f.headingPath(),"blockType",f.blockType(),"ownedText",raw.get(s.id()),
+                        "background",f.contexts().stream().map(c->Map.of("role",c.role(),"text",full.substring(c.startOffset(),c.endOffset()))).toList());
+            }).toList();
+            return Map.of("protocol",reading.protocol(),"fragments",input);
+        }
+        private ContentReading.Batch readPackAttempt(String id,List<ContentReading.Fragment> group) {
+            String fallbackReason="OVERFLOW";
+            try {
+                var request=readingRequest(group);
+                var batch=compactReading()?CompactReading.assemble(generate("reading_"+id,"extract","read",request,CompactReading.schema(group,raw,limits())))
                         :generate("reading_"+id,"extract","read",request,ReadingSchemas.batch(group,raw,limits()));
                 if("COMPLETE".equals(batch.status()))return batch;
             } catch(LabException failure) {
-                if(!capacityFailure(failure)&&RecordSchema.reason(failure).orElse(null)!=RecordSchema.Reason.FACT_QUOTE)throw failure;
+                var reason=RecordSchema.reason(failure).orElse(null);
+                if(!capacityFailure(failure)&&reason!=RecordSchema.Reason.FACT_QUOTE&&reason!=RecordSchema.Reason.JSON_SYNTAX)throw failure;
+                fallbackReason=reason==null?failure.code():reason.name();
             }
-            if(group.size()>1) {
-                int mid=group.size()/2;var first=readPack(id+"_a",group.subList(0,mid));var second=readPack(id+"_b",group.subList(mid,group.size()));
-                var merged=new ArrayList<>(first.fragments());merged.addAll(second.fragments());return new ContentReading.Batch(merged,"COMPLETE");
-            }
-            var fragment=group.get(0);var slice=fragment.source();var facts=extractPart(slice,raw.get(slice.id()),0);
-            var topics=new ArrayList<ContentReading.TopicDraft>();int index=0;
-            for(var portion:partition(facts.items(),source.policy().indexBytes(),ContentJson::encode)) {
-                String prefix=slice.id()+"_g"+(index++);
-                var result=generate("topicdraft_"+prefix,"extract","read",Map.of("headingPath",fragment.headingPath(),"items",portion),ReadingSchemas.topics(prefix,portion));
-                topics.addAll(result.topics());
-            }
-            return new ContentReading.Batch(List.of(new ContentReading.Observation(slice.id(),facts.items(),topics)),"COMPLETE");
+            LOG.info("event=content.read_fallback reason={} fragments={} action={}",fallbackReason,group.size(),group.size()>1?"SPLIT":"FACT_EXTRACTION");
+            return null;
         }
-        Facts extractPart(Learning.SourceSlice slice,String text,int offset) {
+        private CompletableFuture<ContentReading.Batch> readSingleAsync(ReadingTasks jobs,TraceContext trace,ContentReading.Fragment fragment) {
+            var slice=fragment.source();
+            return extractPartAsync(jobs,trace,slice,raw.get(slice.id()),0).thenCompose(facts->{
+                var topics=new ArrayList<CompletableFuture<ContentReading.Topics>>();int index=0;
+                for(var portion:partition(facts.items(),source.policy().indexBytes(),ContentJson::encode)) {
+                    String prefix=slice.id()+"_g"+(index++);
+                    topics.add(jobs.submit(()->{try(var ignored=budget.activate(trace)){
+                        return generate("topicdraft_"+prefix,"extract","read",Map.of("headingPath",fragment.headingPath(),"items",portion),ReadingSchemas.topics(prefix,portion));
+                    }}));
+                }
+                return ReadingTasks.collect(topics).thenCompose(values->jobs.submit(()->{
+                    try(var ignored=budget.activate(trace)){
+                        var observation=new ContentReading.Observation(slice.id(),facts.items(),values.stream().flatMap(v->v.topics().stream()).toList());
+                        if(ContentReading.PROGRESS_PROTOCOL.equals(reading.protocol()))observation=saveObservation(fragment,observation);
+                        return new ContentReading.Batch(List.of(observation),"COMPLETE");
+                    }
+                }));
+            });
+        }
+        private CompletableFuture<Facts> extractPartAsync(ReadingTasks jobs,TraceContext trace,Learning.SourceSlice slice,String text,int offset) {
+            return jobs.submit(()->{try(var ignored=budget.activate(trace)){return extractPartAttempt(slice,text,offset);}}).thenCompose(result->{
+                if(result!=null)return CompletableFuture.completedFuture(result);
+                int split=TextWindow.end(text,0,text.length(),Math.max(1,TextWindow.count(text)/2));if(split<=0||split>=text.length())throw changed();
+                return ReadingTasks.both(extractPartAsync(jobs,trace,slice,text.substring(0,split),offset),extractPartAsync(jobs,trace,slice,text.substring(split),offset+split),(first,second)->{
+                    var merged=new ArrayList<>(first.items());merged.addAll(second.items());return new Facts(merged,"COMPLETE");
+                });
+            });
+        }
+        private Facts extractPartAttempt(Learning.SourceSlice slice,String text,int offset) {
             String prefix=slice.id()+"_"+offset;
             LabException quoteFailure=null;
             try {
@@ -393,9 +528,7 @@ public final class DocumentDrivenWorkflow {
                 throw new LabException("WORKFLOW_EXTRACTION_CAPACITY_EXCEEDED","高密度资料最小分片仍超出事实协议容量");
             }
             LOG.info("event=content.extract_split sourceId={} offset={} bytes={} reason={}",slice.id(),offset,TextWindow.count(text),quoteFailure==null?"CAPACITY":"FACT_QUOTE");
-            int split=TextWindow.end(text,0,text.length(),Math.max(1,TextWindow.count(text)/2));if(split<=0||split>=text.length())throw changed();
-            var first=extractPart(slice,text.substring(0,split),offset);var second=extractPart(slice,text.substring(split),offset+split);
-            var merged=new ArrayList<>(first.items());merged.addAll(second.items());return new Facts(merged,"COMPLETE");
+            return null;
         }
         record IndexNode(String id,Summary summary,List<String> itemIds) { }
         OutputPlan planPpt() {
@@ -572,7 +705,7 @@ public final class DocumentDrivenWorkflow {
             for(var c:completed.coverage())coverage.append("- ").append(c.kind()).append(" ").append(c.id()).append(": ").append(c.selected()).append("/").append(c.available()).append("；").append(c.reason()).append("\n");
             store.publish(lease,json,LearningRenderer.render(value)+coverage);
         }
-        public void close(){pool.shutdownNow();try{pool.awaitTermination(5,TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}}
+        public void close(){readingPool.shutdownNow();pool.shutdownNow();try{readingPool.awaitTermination(5,TimeUnit.SECONDS);pool.awaitTermination(5,TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}}
     }
     private static <T>List<List<T>> partition(List<T> input,int maximum,Function<T,String> encode) {
         var output=new ArrayList<List<T>>();var current=new ArrayList<T>();int bytes=2;

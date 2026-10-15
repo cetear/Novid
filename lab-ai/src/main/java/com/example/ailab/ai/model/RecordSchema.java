@@ -18,7 +18,7 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
 
     public enum Reason {
         JSON_SIZE, JSON_SYNTAX, JSON_FIELDS, JSON_TYPE, CONTENT_CONSTRAINT,
-        FACT_STATUS, FACT_COUNT, FACT_ID, FACT_SOURCE, FACT_QUOTE, FACT_TEXT_SIZE,
+        FACT_STATUS, FACT_COUNT, FACT_ID, FACT_SOURCE, FACT_QUOTE, FACT_TEXT_SIZE, FACT_VALUE, REQUIRED_FACT_MISSING,
         UNKNOWN_REFERENCE, DUPLICATE_ID, MISSING_COVERAGE, ID_ORDER_MISMATCH, NON_EMPTY, RELATION_CONSTRAINT
     }
 
@@ -39,10 +39,16 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
         }
     }
 
-    public record FieldRule(String path, int maximum, String unit, boolean nonBlank, List<String> allowed) {
+    public record FieldRule(String path, int maximum, String unit, boolean nonBlank, List<String> allowed,
+                            int target) {
+        public FieldRule(String path, int maximum, String unit, boolean nonBlank, List<String> allowed) {
+            this(path, maximum, unit, nonBlank, allowed, maximum);
+        }
         public FieldRule {
             if (path == null || !path.matches("\\$|[a-zA-Z][a-zA-Z0-9]*(\\[\\])?(\\.[a-zA-Z][a-zA-Z0-9]*(\\[\\])?)*") || maximum < 0)
                 throw new IllegalArgumentException("字段限制路径无效");
+            if (target < 0 || target > maximum)
+                throw new IllegalArgumentException("字段生成目标无效");
             allowed = List.copyOf(allowed);
         }
 
@@ -52,6 +58,11 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
 
         public static FieldRule optionalUtf8(String path, int maximum) {
             return new FieldRule(path, maximum, "UTF-8_BYTES", false, List.of());
+        }
+
+        /** 目标供模型留余量；基础上限及工作流原有50%验收容差保持独立。 */
+        public static FieldRule targetUtf8(String path, int target, int maximum) {
+            return new FieldRule(path, maximum, "UTF-8_BYTES", true, List.of(), target);
         }
 
         public static FieldRule items(String path, int maximum) {
@@ -88,6 +99,8 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
     private final String contract;
     private final boolean relaxed;
     private final Set<String> compressionPaths;
+    public record SummaryFact(String id, String content, String quote) { }
+    private final List<SummaryFact> summaryFacts;
 
     public RecordSchema(Class<T> type, String instruction, Consumer<T> validate) {
         this(type, instruction, List.of(), validate);
@@ -102,6 +115,11 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
     }
 
     private RecordSchema(Class<T> type, String instruction, List<FieldRule> rules, Consumer<T> validate, boolean relaxed, Set<String> compressionPaths) {
+        this(type, instruction, rules, validate, relaxed, compressionPaths, List.of());
+    }
+
+    private RecordSchema(Class<T> type, String instruction, List<FieldRule> rules, Consumer<T> validate, boolean relaxed,
+                         Set<String> compressionPaths, List<SummaryFact> summaryFacts) {
         this.type = type;
         this.instruction = instruction;
         this.rules = List.copyOf(rules);
@@ -109,15 +127,16 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
         this.contract = contract(type).toString();
         this.relaxed = relaxed;
         this.compressionPaths = Set.copyOf(compressionPaths);
+        this.summaryFacts = List.copyOf(summaryFacts);
     }
 
     public RecordSchema<T> withChecks(Consumer<T> checks) {
-        return new RecordSchema<>(type, instruction, rules, validate.andThen(checks), relaxed, compressionPaths);
+        return new RecordSchema<>(type, instruction, rules, validate.andThen(checks), relaxed, compressionPaths, summaryFacts);
     }
 
     /** 资料工作流容忍展示格式和轻微文案超长；身份、来源、覆盖和整体容量仍按业务规则验证。 */
     public RecordSchema<T> relaxed() {
-        return relaxed ? this : new RecordSchema<>(type, instruction, rules, validate, true, compressionPaths);
+        return relaxed ? this : new RecordSchema<>(type, instruction, rules, validate, true, compressionPaths, summaryFacts);
     }
 
     /** 第一阶段只开放可改写摘要；引用、正文和题目字段不能隐式进入压缩。 */
@@ -128,7 +147,12 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
                     r.path().equals(path) && r.unit().equals("UTF-8_BYTES") && r.maximum() > 0))
                 throw new IllegalArgumentException("局部压缩必须绑定已有摘要字节规则");
         }
-        return new RecordSchema<>(type, instruction, rules, validate, relaxed, selected);
+        return new RecordSchema<>(type, instruction, rules, validate, relaxed, selected, summaryFacts);
+    }
+
+    /** 事实由工作流绑定；不接受压缩模型自行声明的覆盖编号作为完整性证明。 */
+    public RecordSchema<T> withSummaryFacts(List<SummaryFact> facts) {
+        return new RecordSchema<>(type, instruction, rules, validate, relaxed, compressionPaths, facts);
     }
 
     Optional<LocalSummaryCompression.Plan> compressionPlan(String text, Set<String> references) {
@@ -136,7 +160,7 @@ public final class RecordSchema<T> implements StructuredSchema<T> {
         try {
             if (text == null || text.length() > (relaxed ? 524288 : 200000)) return Optional.empty();
             var tree = JSON.readTree(normalize(text));
-            return LocalSummaryCompression.plan(this, tree, compressionPaths, relaxed, references);
+            return LocalSummaryCompression.plan(this, tree, compressionPaths, relaxed, references, summaryFacts);
         } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
             return Optional.empty();
         }

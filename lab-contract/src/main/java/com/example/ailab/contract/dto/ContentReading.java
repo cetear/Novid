@@ -3,12 +3,14 @@ package com.example.ailab.contract.dto;
 import java.util.*;
 import com.example.ailab.contract.error.LabException;
 
-/** 结构阅读v1；自然正文拥有区间与调用打包独立，背景不计入覆盖。 */
+/** 版本化结构阅读；自然正文拥有区间与调用打包独立，背景不计入覆盖。 */
 public final class ContentReading {
     private ContentReading() { }
     public static final String PROTOCOL = "structure-read-v1";
     public static final String COMPACT_PROTOCOL = "structure-read-v2-compact";
-    public static boolean supported(String protocol){return PROTOCOL.equals(protocol)||COMPACT_PROTOCOL.equals(protocol);}
+    public static final String PROGRESS_PROTOCOL = "structure-read-v3-progress";
+    public static boolean compact(String protocol){return COMPACT_PROTOCOL.equals(protocol)||PROGRESS_PROTOCOL.equals(protocol);}
+    public static boolean supported(String protocol){return PROTOCOL.equals(protocol)||compact(protocol);}
     public static final int MAX_PACK_FRAGMENTS = 64;
     public record Document(long knowledgeBaseId, long documentId, int documentVersion, long processingRevision,
                            String title, String format, String textHash, int textLength, List<SectionSnapshot> sections) {
@@ -55,7 +57,7 @@ public final class ContentReading {
                 if(section==null||!section.headingPath().equals(fragment.headingPath())||s.startOffset()<section.startOffset()
                         ||s.endOffset()>sectionEnds.get(d.documentId()).get(fragment.sectionId()))throw invalid();
                 for(var c:fragment.contexts()) if(c.startOffset()<0||c.endOffset()<=c.startOffset()||c.endOffset()>d.textLength())throw invalid();
-                if(COMPACT_PROTOCOL.equals(protocol)) {
+                if(compact(protocol)) {
                     int cursor=s.startOffset();for(var block:fragment.naturalBlocks()){if(block.startOffset()!=cursor||block.endOffset()<=cursor||block.endOffset()>s.endOffset())throw invalid();cursor=block.endOffset();}
                     if(cursor!=s.endOffset())throw invalid();
                 }

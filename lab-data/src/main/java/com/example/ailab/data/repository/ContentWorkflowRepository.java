@@ -100,16 +100,27 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         return row.string("status").equals("COMPLETED") ? Optional.of(output(row)) : Optional.empty();
     }
     public Map<String,ReadingCheckpoint> completedReadingNodes(TaskLease lease) {
-        valid(lease);var p=reading(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict);
+        valid(lease);
         var result=new HashMap<String,ReadingCheckpoint>();
-        for(var row:readingNodes(lease.task().taskId(),p).values())if("COMPLETED".equals(row.string("status")))
+        // 只恢复已有成功结果；逐节点仍核对冻结来源与输入哈希，不重读整份计划或查询数千个不存在的编号。
+        for(var row:mapper.completedReadingNodes(new Object[]{lease.task().taskId()}))if("COMPLETED".equals(row.string("status")))
             result.put(row.string("node_id"),new ReadingCheckpoint(row.string("input_hash"),output(row)));
         return Map.copyOf(result);
     }
     public void completeReadingNodes(TaskLease lease,List<ReadingWrite> nodes) {
         valid(lease);if(nodes.isEmpty()||nodes.size()>96)throw conflict();
-        var plan=reading(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict);var allowed=new HashSet<String>();
-        plan.fragments().forEach(f->{for(String prefix:List.of("read_","topics_","evidence_"))allowed.add(prefix+f.source().id());});
+        writeReadingNodes(lease,reading(lease.task().taskId()).orElseThrow(ContentWorkflowRepository::conflict),nodes);
+    }
+    public void completeReadingNodes(TaskLease lease,ContentReading.Plan plan,List<ReadingWrite> nodes) {
+        valid(lease);if(plan==null||nodes.isEmpty()||nodes.size()>96)throw conflict();
+        var identity=mapper.readingIdentity(new Object[]{lease.task().taskId()});
+        if(identity.size()!=1||!plan.protocol().equals(identity.get(0).string("reading_protocol"))||!hash(plan).equals(identity.get(0).string("plan_hash")))throw conflict();
+        writeReadingNodes(lease,plan,nodes);
+    }
+    private void writeReadingNodes(TaskLease lease,ContentReading.Plan plan,List<ReadingWrite> nodes) {
+        var allowed=new HashSet<String>();
+        var prefixes=ContentReading.PROGRESS_PROTOCOL.equals(plan.protocol())?List.of("read_","topics_","evidence_","readobs_"):List.of("read_","topics_","evidence_");
+        plan.fragments().forEach(f->{for(String prefix:prefixes)allowed.add(prefix+f.source().id());});
         int maximum=resultBytes(lease.task().taskId());var ids=new HashSet<String>();var pending=new ArrayList<Object[]>();
         for(var node:nodes) {
             identity(node.nodeId(),node.inputHash());if(!allowed.contains(node.nodeId())||!ids.add(node.nodeId()))throw conflict();
@@ -150,6 +161,28 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         if(rows.get(0).string("status").equals("COMPLETED")){if(!output(rows.get(0)).equals(value))throw conflict();return;}
         if(mapper.complete(new Object[]{SqlSupport.hash(value),value,lease.task().taskId(),id,inputHash})!=1)throw conflict();
         mapper.progress(new Object[]{lease.task().taskId()});
+    }
+    public void completeGeneration(TaskLease lease,String stage,ReadingWrite result,ReadingWrite receipt) {
+        valid(lease);
+        if(!TaskProgress.stepIds(lease.request().taskType()).contains(stage)||result==null||receipt==null
+                ||!receipt.nodeId().equals("origin_"+hash(result.nodeId()).substring(0,32)))throw conflict();
+        int maximum=resultBytes(lease.task().taskId());
+        var existing=mapper.nodesByIds(lease.task().taskId(),List.of(result.nodeId(),receipt.nodeId())).stream().collect(Collectors.toMap(r->r.string("node_id"),r->r));
+        if(!existing.containsKey(result.nodeId()))throw conflict();
+        var writes=new ArrayList<SqlParameters>();
+        for(var value:List.of(result,receipt)) {
+            identity(value.nodeId(),value.inputHash());String json=canonical(value.output());if(TextWindow.count(json)>maximum)throw conflict();
+            var old=existing.get(value.nodeId());
+            if(old!=null) {
+                if(!stage.equals(old.string("stage"))||!value.inputHash().equals(old.string("input_hash")))throw conflict();
+                if("COMPLETED".equals(old.string("status"))){if(!json.equals(output(old)))throw conflict();continue;}
+                if(!"PENDING".equals(old.string("status")))throw conflict();
+            }
+            writes.add(new SqlParameters().addValue("taskId",lease.task().taskId()).addValue("nodeId",value.nodeId()).addValue("stage",stage)
+                    .addValue("inputHash",value.inputHash()).addValue("outputHash",SqlSupport.hash(json)).addValue("outputJson",json));
+        }
+        if(writes.isEmpty())return;
+        if(mapper.completeGeneration(writes)<writes.size())throw conflict();mapper.progress(new Object[]{lease.task().taskId()});
     }
     private int resultBytes(long taskId) {
         // 冻结来源在绑定和会话初始化时完整验证；逐节点只投影需要的固定容量。

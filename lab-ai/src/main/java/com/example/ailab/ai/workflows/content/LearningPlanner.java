@@ -165,10 +165,19 @@ final class LearningPlanner {
     }
     private Blueprint quiz() {
         var chapters=chapters();var chapterIds=chapters.stream().map(Chapter::id).collect(Collectors.toSet());
+        if(chapters.size()>LearningPlanRules.MAX_CHAPTERS)
+            throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","有效学习章节超过"+LearningPlanRules.MAX_CHAPTERS+"个，请缩小资料范围或整理章节层级");
         var intent=r.call("quiz_intent","organize","quiz-intent",Map.of("remarks",r.lease().request().instructions(),"options",r.lease().request().quizOptions(),"chapters",index(chapters.stream().map(c->Map.of("id",c.id(),"title",c.title(),"facts",c.itemIds().size())).toList())),LearningBusinessSchemas.quizIntent(chapterIds));
         if(!intent.coveragePolicy().equals("EVERY_CHAPTER")&&r.lease().request().instructions().isBlank())throw new LabException("WORKFLOW_REQUIREMENTS_UNSATISFIED","默认自测须覆盖每个有效章节，抽样需要明确备注");
         var objectives=new ArrayList<Objective>();var uncovered=new ArrayList<Uncovered>();int nextObjectiveId=1;
-        for(var chapter:chapters) {int group=0;
+        if(r.batchQuiz()) {
+            var owners=new HashMap<String,String>();QuizPlanning.packages(r,chapters).forEach(w->w.groups().forEach(g->owners.put(g.groupId(),g.chapter().get("id"))));
+            for(var group:QuizPlanning.execute(r,chapters)) {
+                String chapter=owners.get(group.groupId());var candidates=group.result();
+                for(var o:candidates.objectives())objectives.add(new Objective(String.format(Locale.ROOT,"o%05d",nextObjectiveId++),chapter,o.title(),o.cognition(),o.questionTypes(),o.itemIds(),o.priority(),o.reason(),o.relatedChapterIds()));
+                for(String id:candidates.unexaminedItemIds())uncovered.add(new Uncovered("FACT",id,candidates.reason()));
+            }
+        } else for(var chapter:chapters) {int group=0;
             for(var facts:partition(r.evidence(chapter.itemIds()),r.policy().unitInputBytes()-1000,ContentJson::encode)) {
                 var candidates=r.call("objectives_"+chapter.id()+"_"+group++,"organize","objectives",Map.of("chapter",Map.of("id",chapter.id(),"title",chapter.title()),"facts",facts,"difficulty",r.lease().request().quizOptions().difficulty(),"allowedTypes",r.lease().request().quizOptions().questionTypes()),LearningBusinessSchemas.objectives(facts,new HashSet<>(r.lease().request().quizOptions().questionTypes()),chapterIds));
                 for(var o:candidates.objectives())objectives.add(new Objective(String.format(Locale.ROOT,"o%05d",nextObjectiveId++),chapter.id(),o.title(),o.cognition(),o.questionTypes(),o.itemIds(),o.priority(),o.reason(),o.relatedChapterIds()));
@@ -231,12 +240,25 @@ final class LearningPlanner {
         return new Blueprint(intent,r.lease().request().quizOptions().difficulty(),chapters,objectives,finalQuotas,slots,uncovered);
     }
     private List<Objective> distinctObjectives(List<Objective> candidates) {
+        if(r.batchQuiz()) {
+            var chapters=candidates.stream().collect(Collectors.groupingBy(Objective::primaryChapterId,LinkedHashMap::new,Collectors.toList()));
+            var groups=new ArrayList<>(chapters.values());var result=new ArrayList<Objective>();
+            // 章内归并依赖前序结果，章间独立；只并行不同章，编号保留初始分配值。
+            for(int from=0;from<groups.size();from+=4)
+                r.parallel(groups.subList(from,Math.min(from+4,groups.size())),this::distinctChapterObjectives).forEach(result::addAll);
+            return result;
+        }
+        return distinctChapterObjectives(candidates);
+    }
+    private List<Objective> distinctChapterObjectives(List<Objective> candidates) {
         var result=new ArrayList<Objective>();
         for(var candidate:candidates) {
+            Objective merge=result.stream().filter(o->o.primaryChapterId().equals(candidate.primaryChapterId())&&o.cognition().equals(candidate.cognition())
+                    &&new HashSet<>(o.itemIds()).equals(new HashSet<>(candidate.itemIds()))).findFirst().orElse(null);
             var near=result.stream().filter(o->o.primaryChapterId().equals(candidate.primaryChapterId())&&o.cognition().equals(candidate.cognition()))
                     .filter(o->o.title().equals(candidate.title())||o.itemIds().stream().anyMatch(a->candidate.itemIds().stream().anyMatch(b->r.facts().get(a).category().equals(r.facts().get(b).category()))))
-                    .limit(8).toList();Objective merge=null;
-            for(var old:near){if(new HashSet<>(old.itemIds()).equals(new HashSet<>(candidate.itemIds()))){merge=old;break;}var input=Map.of("existingObjective",old,"candidateObjective",candidate,"evidence",r.evidence(java.util.stream.Stream.concat(old.itemIds().stream(),candidate.itemIds().stream()).distinct().toList()),"rule","只有知识与条件相同且认知目的相同才SAME，改写考点名称不形成新容量");r.bounded(input);
+                    .limit(8).toList();
+            if(merge==null)for(var old:near){var input=Map.of("existingObjective",old,"candidateObjective",candidate,"evidence",r.evidence(java.util.stream.Stream.concat(old.itemIds().stream(),candidate.itemIds().stream()).distinct().toList()),"rule","只有知识与条件相同且认知目的相同才SAME，改写考点名称不形成新容量");r.bounded(input);
                 if(r.call("objective_relation_"+old.id()+"_"+candidate.id(),"organize","normalize",input,LearningBusinessSchemas.relation()).decision().equals("SAME")){merge=old;break;}}
             if(merge==null)result.add(candidate);else{var evidence=new LinkedHashSet<>(merge.itemIds());evidence.addAll(candidate.itemIds());var types=new LinkedHashSet<>(merge.questionTypes());types.addAll(candidate.questionTypes());var related=new LinkedHashSet<>(merge.relatedChapterIds());related.addAll(candidate.relatedChapterIds());
                 result.set(result.indexOf(merge),new Objective(merge.id(),merge.primaryChapterId(),merge.title(),merge.cognition(),List.copyOf(types),List.copyOf(evidence),Math.max(merge.priority(),candidate.priority()),"相同知识和认知目的合并，保留全部证据",List.copyOf(related)));}
@@ -329,6 +351,10 @@ final class LearningPlanner {
     private List<ContentWorkflow.Summary> indexSummaries(String id,List<?> children) {
         try {
             var schema=r.compact()?new com.example.ailab.ai.model.RecordSchema<>(ContentWorkflow.Summary.class,"将children归纳为后续规划的导航。保留主题、条件、例外及冲突；明细与身份由程序保存。尽量精简，但不要为短字节目标删掉必要条件。",v->com.example.ailab.ai.model.RecordSchema.require(!v.title().isBlank()&&!v.summary().isBlank(),com.example.ailab.ai.model.RecordSchema.Reason.CONTENT_CONSTRAINT)):ContentSchemas.summary(ContentLimits.current());
+            var factIds=new LinkedHashSet<String>();
+            for(Object child:children)if(child instanceof ContentReading.TopicCard card)factIds.addAll(card.topic().itemIds());
+            if(!r.compact()&&!factIds.isEmpty())schema=schema.withSummaryFacts(r.evidence(factIds).stream()
+                    .map(f->new com.example.ailab.ai.model.RecordSchema.SummaryFact(f.id(),f.content(),f.quote())).toList());
             return List.of(r.call(id,"organize","index",Map.of("children",children),schema));
         } catch(LabException failure) {
             if(children.size()<2||!Set.of("MODEL_TRUNCATED","MODEL_CONTEXT_INSUFFICIENT").contains(failure.code()))throw failure;
