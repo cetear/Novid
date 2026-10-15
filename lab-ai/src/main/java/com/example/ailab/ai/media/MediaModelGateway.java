@@ -21,21 +21,13 @@ public class MediaModelGateway implements MediaProviderPort {
     private final MediaProperties config;
     private final Environment environment;
     private final HttpClient http;
-    private VideoApiRegistry videos;
-
-    /**
-     * 注册执行器统一接管视频差异；图片协议仍沿自身能力。
-     */
-    @org.springframework.beans.factory.annotation.Autowired
-    public void videoRegistry(VideoApiRegistry registry) {
-        this.videos = registry;
-    }
+    private final VideoApiRegistry videos;
 
     /**
      * 公开候选没有密钥或端点。
      */
     public List<VideoApi.Capability> videoCapabilities() {
-        return videos == null ? List.of() : videos.capabilities();
+        return videos.capabilities();
     }
 
     /**
@@ -78,7 +70,7 @@ public class MediaModelGateway implements MediaProviderPort {
      * 视频统一使用登记协议与共同截止，图片仍调用原真实生成接口。
      */
     public Media.ProviderResult submit(Media.Submission s, java.time.Instant deadline) {
-        if (!s.capability().equals("VIDEO_GENERATION")) return submitFixed(s, deadline);
+        if (!s.capability().equals("VIDEO_GENERATION")) return submitImage(s, deadline);
         if (!config.enabled() || !config.externalDataAllowed()) throw unavailable();
         String prompt = s.prompt();
         for (var c : s.catalogs())
@@ -127,22 +119,19 @@ public class MediaModelGateway implements MediaProviderPort {
      * 客户端禁止重定向，认证头只发到已注册智谱地址；测试可显式注入本机协议客户端。
      */
     @org.springframework.beans.factory.annotation.Autowired
-    public MediaModelGateway(MediaProperties config, Environment environment) {
-        this(config, environment, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build());
+    public MediaModelGateway(MediaProperties config, Environment environment, VideoApiRegistry videos) {
+        this(config, environment, videos, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build());
         endpoint(config.imageSubmitUrl());
-        endpoint(config.videoSubmitUrl());
-        endpoint(config.videoQueryUrl().replace("{id}", "validation"));
-        if (!config.videoQueryUrl().endsWith("/{id}"))
-            throw new IllegalArgumentException("媒体查询必须为独立完整URL模板");
     }
 
     /**
      * 显式构造只供协议测试，不将本机替身当真实提供方。
      */
-    public MediaModelGateway(MediaProperties config, Environment environment, HttpClient http) {
+    public MediaModelGateway(MediaProperties config, Environment environment, VideoApiRegistry videos, HttpClient http) {
         this.config = config;
         this.environment = environment;
         this.http = http;
+        this.videos = videos;
     }
 
     /**
@@ -217,74 +206,28 @@ public class MediaModelGateway implements MediaProviderPort {
     }
 
     /**
-     * 2026-10-04官方Schema：viduq1-text仅5秒，不能用prompt伪造更长视频。
+     * 时长档位只来自已登记且可用的视频API。
      */
     public List<Integer> videoDurationTiers() {
-        if (videos != null)
-            return videoCapabilities().stream().flatMap(c -> c.durations().stream()).distinct().sorted().toList();
-        return switch (config.videoModel()) {
-            case "viduq1-text" -> List.of(5);
-            case "cogvideox-3" -> List.of(5, 10);
-            default -> List.of();
-        };
-    }
-
-    /**
-     * 一次发送批准参数；请求键仅本地关联，不能据此声称提供方提交幂等。
-     */
-    public Media.ProviderResult submit(Media.Submission submission) {
-        return submitFixed(submission, java.time.Instant.now().plusSeconds(submission.capability().equals("IMAGE_GENERATION") ? imageTimeoutSeconds() : 30));
+        return videoCapabilities().stream().flatMap(c -> c.durations().stream()).distinct().sorted().toList();
     }
 
     /**
      * 同步图像等待上限是后端有界配置，仍取整任务剩余期限的较小值；超时不会自动重购。
      */
-    private Media.ProviderResult submitFixed(Media.Submission submission, java.time.Instant deadline) {
+    private Media.ProviderResult submitImage(Media.Submission submission, java.time.Instant deadline) {
         if (!config.enabled() || !config.externalDataAllowed()) throw unavailable();
-        if (!Set.of("IMAGE_GENERATION", "VIDEO_GENERATION").contains(submission.capability())) throw unavailable();
-        boolean image = submission.capability().equals("IMAGE_GENERATION");
-        if (image) verifyImage();
+        if (!submission.capability().equals("IMAGE_GENERATION")) throw unavailable();
+        verifyImage();
         var body = new LinkedHashMap<String, Object>();
-        body.put("model", modelId(submission.capability()));
-        String prompt = submission.prompt();
-        if (!image) {
-            if (!config.videoSelectionVerified())
-                throw new LabException("MEDIA_SELECTION_UNSUPPORTED", "目录支持未核验");
-            for (var c : submission.catalogs())
-                if (!c.kind().equals("VOICE")) prompt += "\n" + c.kind() + "：" + c.mappingValue();
-            if (!videoDurationTiers().contains(submission.seconds()))
-                throw new LabException("MEDIA_DURATION_MISMATCH", "视频时长不是当前模型支持档位");
-            if (prompt.codePointCount(0, prompt.length()) > 512)
-                throw new LabException("MEDIA_PARAMETERS_REJECTED", "镜头提示及目录描述超过提供方512字符上限");
-            body.put("duration", submission.seconds());
-            if (config.videoModel().equals("viduq1-text")) body.put("aspect_ratio", "16:9");
-        }
-        body.put("prompt", prompt);
-        if (image) {
-            body.put("size", config.imageSize());
-            body.put("watermark_enabled", true);
-        }
-        long remaining = Math.min((image ? imageTimeoutSeconds() : 30) * 1000L, Duration.between(java.time.Instant.now(), deadline).toMillis());
+        body.put("model", config.imageModel());
+        body.put("prompt", submission.prompt());
+        body.put("size", config.imageSize());
+        body.put("watermark_enabled", true);
+        long remaining = Math.min(imageTimeoutSeconds() * 1000L, Duration.between(java.time.Instant.now(), deadline).toMillis());
         if (remaining <= 0) throw new LabException("BUDGET_EXCEEDED", "媒体请求共同期限耗尽");
-        var root = request("POST", image ? config.imageSubmitUrl() : config.videoSubmitUrl(), body, Duration.ofMillis(remaining));
-        return image ? (asyncImage() ? parseAsyncImage(root, null, true) : parseImage(root)) : parseVideo(root, null, true);
-    }
-
-    /**
-     * 路径仅来自持久操作，UTF-8百分号编码为单路径段；没有POST或生成请求体。
-     */
-    public Media.ProviderResult query(String providerJobId) {
-        if (!config.enabled() || !config.queryFreeVerified()) throw unavailable();
-        if (providerJobId == null || providerJobId.isBlank() || providerJobId.length() > 256) throw protocol();
-        String segment = URLEncoder.encode(providerJobId, StandardCharsets.UTF_8).replace("+", "%20");
-        return parseVideo(request("GET", config.videoQueryUrl().replace("{id}", segment), null), providerJobId, false);
-    }
-
-    /**
-     * 有界响应、30秒总请求，错误仅保留稳定分类；不输出提供方正文或认证头。
-     */
-    private JsonNode request(String method, String url, Object body) {
-        return request(method, url, body, Duration.ofSeconds(30));
+        var root = request("POST", config.imageSubmitUrl(), body, Duration.ofMillis(remaining));
+        return asyncImage() ? parseAsyncImage(root, null, true) : parseImage(root);
     }
 
     /**
@@ -341,17 +284,6 @@ public class MediaModelGateway implements MediaProviderPort {
      */
     public static Media.ProviderResult parseAsyncImage(JsonNode root, String originalId, boolean submission) {
         if (!root.isObject()) throw protocol();
-        var envelope = ((com.fasterxml.jackson.databind.node.ObjectNode) root).deepCopy();
-        envelope.set("video_result", root.path("image_result"));
-        var result = parseVideo(envelope, originalId, submission);
-        if (result.urls().size() > 1) throw protocol();
-        return result;
-    }
-
-    /**
-     * HTTP200不代表成功；id不匹配、未知状态或空结果保留协议异常，不能发布。
-     */
-    public static Media.ProviderResult parseVideo(JsonNode root, String originalId, boolean submission) {
         String id = field(root, "id"), status = field(root, "task_status");
         if (submission && (id == null || id.isBlank() || id.length() > 256)) throw protocol();
         if (originalId != null && id != null && !originalId.equals(id)) throw protocol();
@@ -362,14 +294,14 @@ public class MediaModelGateway implements MediaProviderPort {
                 return new Media.ProviderResult(id, field(root, "request_id"), field(root, "model"), "PROTOCOL_INVALID", List.of(), List.of(), null, "MEDIA_PROTOCOL_INVALID");
             throw protocol();
         }
-        var urls = urls(root.path("video_result"), "url");
-        var covers = urls(root.path("video_result"), "cover_image_url");
+        var urls = urls(root.path("image_result"), "url");
+        if (urls.size() > 1) throw protocol();
         if (status.equals("SUCCESS") && urls.isEmpty()) {
             if (submission)
                 return new Media.ProviderResult(id, field(root, "request_id"), field(root, "model"), "PROTOCOL_INVALID", List.of(), List.of(), null, "MEDIA_PROTOCOL_INVALID");
             throw protocol();
         }
-        return new Media.ProviderResult(id, field(root, "request_id"), field(root, "model"), status, urls, covers, null,
+        return new Media.ProviderResult(id, field(root, "request_id"), field(root, "model"), status, urls, List.of(), null,
                 status.equals("FAIL") || root.has("error") ? "MEDIA_PROVIDER_FAILED" : null);
     }
 

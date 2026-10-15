@@ -36,6 +36,10 @@ Workflow、ReAct、Plan-and-Execute、Multi-Agent 使用独立执行器，通过
 
 ## 新工作流接入架构路由
 
+工具目录在注册时一次编译参数 Schema 并构建 SDK 声明；请求仍按当前身份、能力和 Skill 白名单筛选，只复用不可变声明，不缓存授权结果。预算预留与 PPT 字体／版式检查是端口必需方法，测试应显式提供替身，不在生产接口提供默认跳过检查。
+
+视频提交与查询统一经过 `VideoApiRegistry`，调用方必须传入批准路由及原任务截止时间。旧固定视频提交／查询入口和固定时长回退已移除；`MediaProperties` 中的历史视频字段继续保留原配置摘要及元数据兼容，不再用于视频协议执行或旧端点格式检查。图片异步处理独立解析 `image_result`，保留原提供方 ID 和未知结果保护。
+
 1. 新增 Spring `WorkflowModule`，以 `Map<String, WorkflowExecutionBinding>` 声明任务类型、工作流 ID／版本、架构与执行器版本。无需修改 `WorkflowRouter`。重复类型、重复工作流身份、重复执行器版本或不存在的执行器导致启动失败。
 2. 业务入口登记任务类型并定义授权、参数、资源策略、队列及产物协议。创建任务经 `WorkflowRoutingPort` 选择服务端绑定，在同一个数据库事务写入任务及绑定。客户端和模型不能选择或切换架构。
 3. Worker 构造对应的 `FixedWorkflowProgram<R>`、`ReActProgram`、`PlanExecuteProgram<P,R>` 或 `MultiAgentProgram<N,R>`，调用 `router.execute(lease, workflowStore, budget, program)`。传入同一个任务预算；并行程序复用业务拥有的有界线程池。

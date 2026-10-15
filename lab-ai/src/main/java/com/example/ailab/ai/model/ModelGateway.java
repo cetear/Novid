@@ -813,15 +813,6 @@ public class ModelGateway {
     }
 
     /**
-     * 两种协议一致取目标超时、全局 30 秒上限和剩余期限的最小值。
-     */
-    private Duration timeout(ModelProperties.Definition definition, ExecutionBudget budget) {
-        Duration remaining = budget.timeout();
-        Duration configured = Duration.ofSeconds(definition.timeoutSeconds());
-        return remaining.compareTo(configured) < 0 ? remaining : configured;
-    }
-
-    /**
      * 仅明确瞬时故障允许切换，认证、限流和参数失败不重试。
      */
     private String classify(RuntimeException e) {

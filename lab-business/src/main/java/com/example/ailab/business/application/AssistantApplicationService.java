@@ -27,12 +27,10 @@ public class AssistantApplicationService {
     }
 
     /**
-     * 身份独立于请求文本。
+     * 身份独立于请求文本；最终交付复核由响应发送端调用。
      */
     public AiResult answer(UserContext actor, AiRequest request) {
-        var result = ai.answer(actor, request);
-        verifyDelivery(actor, request, result);
-        return result;
+        return ai.answer(actor, request);
     }
 
     /**
@@ -44,12 +42,11 @@ public class AssistantApplicationService {
     }
 
     /**
-     * 异步推送沿用同一业务入口及发布复核，取消不是用户或模型授权。
+     * 异步生成检查取消；发送端取得交付锁后再执行最终复核。
      */
     public AiResult answer(UserContext actor, AiRequest request, RequestCancellation cancellation) {
         var result = ai.answer(actor, request, cancellation);
         cancellation.check();
-        verifyDelivery(actor, request, result);
         return result;
     }
 
@@ -80,8 +77,8 @@ public class AssistantApplicationService {
         } else {
             knowledge.authorize(actor, request.scope());
             for (var citation : result.citations()) {
-                var document = knowledge.document(actor, request.scope(), citation.document().id());
-                if (document.document().documentVersion() != citation.document().documentVersion())
+                var document = knowledge.documentMetadata(actor, request.scope(), citation.document().id());
+                if (document.documentVersion() != citation.document().documentVersion())
                     throw com.example.ailab.contract.error.LabException.denied();
             }
         }

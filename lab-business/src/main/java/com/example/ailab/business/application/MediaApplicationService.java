@@ -20,25 +20,19 @@ public class MediaApplicationService {
     private final MediaProviderPort provider;
     private final MediaFilePort files;
     private final TaskStorePort tasks;
-    private PresentationPort presentation;
-
-    /**
-     * 正式PPT部署在购买前核对字体；旧独立业务测试构造保持兼容。
-     */
-    @org.springframework.beans.factory.annotation.Autowired
-    public void presentation(PresentationPort exporter) {
-        this.presentation = exporter;
-    }
+    private final PresentationPort presentation;
 
     /**
      * 业务只依赖窄端口，不访问SDK、SQL、ffmpeg或文件路径。
      */
-    public MediaApplicationService(KnowledgeAccessPolicy policy, MediaStorePort store, MediaProviderPort provider, MediaFilePort files, TaskStorePort tasks) {
+    public MediaApplicationService(KnowledgeAccessPolicy policy, MediaStorePort store, MediaProviderPort provider, MediaFilePort files, TaskStorePort tasks,
+                                   PresentationPort presentation) {
         this.policy = policy;
         this.store = store;
         this.provider = provider;
         this.files = files;
         this.tasks = tasks;
+        this.presentation = presentation;
     }
 
     /**
@@ -51,10 +45,10 @@ public class MediaApplicationService {
         BigDecimal limit;
         if (r.taskType().equals("NOTES_PPT")) {
             var p = r.presentationOptions();
-            if (p == null || r.videoOptions() != null || (p.pageCount() != 0 && (p.pageCount() < 2 || p.pageCount() > 512)) || !"default".equals(p.themeId()) || !Set.of("MIXED", "CONCEPT", "FACTUAL").contains(p.imagePolicy()))
+            if (r.videoOptions() != null || (p.pageCount() != 0 && (p.pageCount() < 2 || p.pageCount() > 512)) || !"default".equals(p.themeId()) || !Set.of("MIXED", "CONCEPT", "FACTUAL").contains(p.imagePolicy()))
                 throw LabException.invalid("PPT页数0表示自动，显式总页数须2～512页，主题／配图策略须合法");
             limit = p.maximumAmount();
-            if (presentation != null) presentation.validateConfiguration();
+            presentation.validateConfiguration();
         } else {
             var v = r.videoOptions();
             if (v == null || r.presentationOptions() != null || v.shotCount() < 1 || v.shotCount() > 6 || v.seconds() < 1 || v.seconds() > 90)
@@ -198,7 +192,7 @@ public class MediaApplicationService {
             var preview = store.preview(actor, taskId).orElseThrow(LabException::denied);
             if (preview.units().stream().anyMatch(u -> u.imageMode().equals("GENERATED"))) provider.verifyImage();
         }
-        if (approved && t.taskType().equals("NOTES_PPT") && presentation != null) {
+        if (approved && t.taskType().equals("NOTES_PPT")) {
             presentation.validateConfiguration();
             var preview = store.preview(actor, taskId).orElseThrow(LabException::denied);
             var issues = presentation.validateLayout(preview.units());

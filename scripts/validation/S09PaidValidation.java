@@ -46,7 +46,7 @@ public final class S09PaidValidation {
         var env=new StandardEnvironment();env.getPropertySources().addFirst(new MapPropertySource("private-local",defaults));
         var registry=new VideoApiRegistry(new VideoApiProperties(List.of(profile(true,workspace),profile(false,workspace))),env);
         var catalogs=catalogs();var config=new MediaProperties(true,false,true,"s09-paid-approved-v1",stage.equals("image_retry")?"https://open.bigmodel.cn/api/paas/v4/async/images/generations":null,null,null,null,null,null,null,false,true,price("glm-image","PER_IMAGE","0.1"),null,catalogs);
-        var provider=new MediaModelGateway(config,env);provider.videoRegistry(registry);
+        var provider=new MediaModelGateway(config,env,registry);
         String hash=provider.configurationHash(stage.startsWith("image")?"IMAGE_GENERATION":"VIDEO_GENERATION");
         var app=new SpringApplication(LabApplication.class);app.setDefaultProperties(defaults);
         try(var context=app.run("--server.port=0","--server.address=127.0.0.1","--lab.bootstrap.enabled=false","--lab.task.worker-enabled=false","--lab.media.worker-enabled=false","--lab.ingestion.worker-enabled=false","--lab.governance.cleanup-enabled=false","--lab.observability.export-enabled=false","--lab.model.mode=mock","--lab.search.enabled=false","--spring.main.banner-mode=off","--logging.level.root=OFF")){

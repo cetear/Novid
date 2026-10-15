@@ -75,9 +75,9 @@ public interface TaskStorePort {
     int remainingModelAttempts(TaskLease lease);
 
     /** 工具预算与修复额度独立于可丢追踪，正式存储持久单调消费。 */
-    default void reserveToolCall(TaskLease lease) { }
+    void reserveToolCall(TaskLease lease);
     /** 结构修复与所有模型调用共享原任务预算。 */
-    default void reserveModelRepair(TaskLease lease) { }
+    void reserveModelRepair(TaskLease lease);
     /**
      * 执行完毕原子创建私人产物并进入 SUCCEEDED/PARTIAL。
      */

@@ -57,7 +57,7 @@ public final class BoundedToolLoop {
         tools.verifyContracts(contracts);
         if (maximumRounds < 1) throw LabException.invalid("工具循环至少需要一轮");
         int rounds = 1;
-        var specs = tools.definitions(actor, toolTask).stream().filter(d -> allowedTools == null || allowedTools.contains(d.name())).map(ToolRegistry::specification).toList();
+        var specs = tools.specifications(actor, toolTask, allowedTools);
         if (specs.isEmpty()) throw new LabException("SEARCH_UNAVAILABLE", "此媒体研究角色没有已配置的受控工具");
         var sent = new java.util.concurrent.atomic.AtomicReference<ModelInput.Prepared>();
         ModelInput first = target -> {

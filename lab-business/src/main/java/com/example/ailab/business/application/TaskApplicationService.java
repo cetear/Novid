@@ -18,24 +18,18 @@ public class TaskApplicationService {
     private final KnowledgeCapabilityPort knowledge;
     private final TaskStorePort tasks;
     private final ArtifactStorePort artifacts;
-    private MediaApplicationService media;
-
-    /**
-     * 正式媒体用例显式装配；旧测试构造没有媒体能力，不伪造已实现。
-     */
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    public void media(MediaApplicationService media) {
-        this.media = media;
-    }
+    private final MediaApplicationService media;
 
     /**
      * 用例不依赖 AI Worker 或数据实现。
      */
-    public TaskApplicationService(KnowledgeAccessPolicy p, KnowledgeCapabilityPort k, TaskStorePort t, ArtifactStorePort a) {
+    public TaskApplicationService(KnowledgeAccessPolicy p, KnowledgeCapabilityPort k, TaskStorePort t, ArtifactStorePort a,
+                                  MediaApplicationService media) {
         policy = p;
         knowledge = k;
         tasks = t;
         artifacts = a;
+        this.media = media;
     }
 
     /**
@@ -46,7 +40,7 @@ public class TaskApplicationService {
         if (TaskRequest.retired(r.taskType())) throw new LabException("WORKFLOW_RETIRED", "旧FAQ与研究报告已移除，请使用学习自测或资料整编");
         boolean mediaType = Set.of("NOTES_PPT", "NOTES_VIDEO").contains(r.taskType());
         if (!TaskRequest.supported(r.taskType()) || !r.documentDriven() && (r.topic() == null || r.topic().isBlank())
-                || r.topic() != null && r.topic().length() > 1000 || r.documentIds().isEmpty() || r.documentIds().size() > 6 || r.documentIds().stream().anyMatch(id -> id == null || id <= 0))
+                || r.topic() != null && r.topic().length() > 1000 || r.documentIds().isEmpty() || r.documentIds().size() > 6 || r.documentIds().stream().anyMatch(id -> id <= 0))
             throw LabException.invalid("支持PPT、视频、自测和资料整编，指定1～6份资料和有限主题");
         if (r.documentDriven() && r.topic() != null || !r.documentDriven() && r.remarks() != null
                 || r.remarks() != null && r.remarks().length() > 1000)
@@ -68,7 +62,6 @@ public class TaskApplicationService {
                 throw new LabException("INDEX_NOT_READY", "自测文档须先完成结构入库");
         }
         if (mediaType) {
-            if (media == null) throw new LabException("MEDIA_CAPABILITY_UNAVAILABLE", "媒体未装配");
             media.validate(actor, r);
         } else if (r.presentationOptions() != null || r.videoOptions() != null)
             throw LabException.invalid("学习任务不能携带媒体选项");

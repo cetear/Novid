@@ -12,10 +12,12 @@ import java.util.*;
 public final class ToolRegistry {
     private final Map<String, RegisteredTool> tools;
     private final Map<String, com.networknt.schema.JsonSchema> schemas;
+    private final Map<String, ToolSpecification> specifications;
 
     public ToolRegistry(Collection<RegisteredTool> values) {
         var registered = new LinkedHashMap<String, RegisteredTool>();
         var validators = new LinkedHashMap<String, com.networknt.schema.JsonSchema>();
+        var declarations = new LinkedHashMap<String, ToolSpecification>();
         for (var tool : values) {
             if (tool == null) throw new IllegalArgumentException("工具不能为空");
             var d = tool.definition();
@@ -24,23 +26,11 @@ public final class ToolRegistry {
                     || d.timeoutSeconds() < 1 || d.timeoutSeconds() > 1800 || registered.putIfAbsent(d.name(), tool) != null)
                 throw new IllegalArgumentException("工具注册定义、名称或执行器不合法");
             validators.put(d.name(), ToolSchema.compile(d.parameters()));
-            specification(d);
+            declarations.put(d.name(), ToolSchema.specification(d));
         }
         tools = Collections.unmodifiableMap(registered);
         schemas = Map.copyOf(validators);
-    }
-
-    /**
-     * 仅保留旧注册契约测试入口；此构造不能作为生产执行绑定。
-     */
-    public ToolRegistry(List<ToolDefinition> values, Set<String> executors) {
-        this(values.stream().map(d -> {
-            if (d == null || !executors.contains(d.name())) throw new IllegalArgumentException("工具缺少执行器");
-            return new RegisteredTool(d, "legacy-definition", ToolPolicy.TASKS, () -> false,
-                    (context, args) -> {
-                        throw new LabException("TOOL_DISABLED", "仅定义目录不可执行");
-                    });
-        }).toList());
+        specifications = Map.copyOf(declarations);
     }
 
     public List<ToolDefinition> all() {
@@ -75,7 +65,8 @@ public final class ToolRegistry {
         return Map.copyOf(values);
     }
 
-    public static ToolSpecification specification(ToolDefinition d) {
-        return ToolSchema.specification(d);
+    public ToolSpecification specification(String name) {
+        binding(name);
+        return specifications.get(name);
     }
 }

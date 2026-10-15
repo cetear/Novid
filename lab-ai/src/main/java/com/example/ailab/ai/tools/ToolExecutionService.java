@@ -89,6 +89,12 @@ public class ToolExecutionService implements AutoCloseable {
         return registry.contracts();
     }
 
+    /** 当前授权和Skill白名单决定暴露范围，声明复用注册时已验证的不可变结果。 */
+    public List<dev.langchain4j.agent.tool.ToolSpecification> specifications(UserContext actor, String task, Set<String> allowedTools) {
+        return definitions(actor, task).stream().filter(d -> allowedTools == null || allowedTools.contains(d.name()))
+                .map(d -> registry.specification(d.name())).toList();
+    }
+
     /**
      * 已绑定任务只可调用原契约；目录升级不能按同名替换执行目标。
      */

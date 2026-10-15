@@ -62,10 +62,9 @@ public final class ToolSchema {
     }
 
     /**
-     * 模型只获得原约束；raw子结构保留范围、枚举和嵌套对象，不静默丢约束。
+     * 注册表已校验参数结构；raw子结构保留范围、枚举和嵌套对象，不静默丢约束。
      */
-    public static ToolSpecification specification(ToolDefinition d) {
-        compile(d.parameters());
+    static ToolSpecification specification(ToolDefinition d) {
         try {
             var builder = JsonObjectSchema.builder();
             var root = JSON.valueToTree(d.parameters());

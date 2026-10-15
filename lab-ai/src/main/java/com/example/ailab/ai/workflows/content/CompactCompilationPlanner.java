@@ -40,7 +40,7 @@ final class CompactCompilationPlanner {
     static List<?> themeView(List<ContentReading.TopicCard> cards) {
         return cards.stream().map(c->Map.of("id",c.id(),"title",c.topic().title(),"summary",c.topic().summary(),"conditions",c.topic().conditions())).toList();
     }
-    private RecordSchema<Draft> schema(int maximum) {
+    RecordSchema<Draft> schema(int maximum) {
         return new RecordSchema<>(Draft.class,"一次制定目录、知识关系和小节职责。directory按全范围知识组织，不能按技术批次分章。"
                 +"sections列出所属chapterId、标题、职责、主要itemIds、可选contextItemIds和500至12000的outputBytes。每条输入事实恰好属于一个主要小节，互补内容独立保留。"
                 +"merges只返回至少两条知识相同且条件一致的SAME组，或同主题相互冲突的CONFLICT组；不能把职责不同的事实合并。"
@@ -48,13 +48,13 @@ final class CompactCompilationPlanner {
                 +"只引用输入事实编号，条件字典由topicId查询。sections顺序即输出顺序，目录章节编号c1起连续；仅确实需要另一章实际写作结果才声明resultDependencies。",
                 List.of(items("sections",r.policy().maximumUnits()),items("merges",r.facts().size()),utf8("sections[].title",200),utf8("sections[].purpose",600),utf8("merges[].summary",500)),v->{
             nested("directory",()->LearningBusinessSchemas.directory(maximum).relaxed().validate(ContentJson.encode(v.directory()),Set.of()));
-            assemble(v);
+            validate(v);
         });
     }
     private static void check(boolean condition,Reason reason,String path,String expected){
         RecordSchema.require(condition,reason,path,expected);if(!condition)throw new com.example.ailab.contract.error.LabException("MODEL_STRUCTURED_INVALID","联合规划未满足事实职责约束");
     }
-    CompilationPlan assemble(Draft draft) {
+    private void validate(Draft draft) {
         var chapters=draft.directory().chapters().stream().map(DirectoryChapter::id).collect(Collectors.toSet());
         var owner=new LinkedHashMap<String,Integer>();int index=0;
         for(var section:draft.sections()) {
@@ -72,6 +72,11 @@ final class CompactCompilationPlanner {
             Integer first=owner.get(group.itemIds().get(0));
             for(String id:group.itemIds()){check(r.facts().containsKey(id),Reason.UNKNOWN_REFERENCE,"merges.itemIds","输入事实编号");check(groupByFact.putIfAbsent(id,group)==null,Reason.DUPLICATE_ID,"merges.itemIds","事实只属于一个知识组");check(Objects.equals(first,owner.get(id)),Reason.CONTENT_CONSTRAINT,"merges.itemIds","合并组同属一个主要小节");}
         }
+    }
+    /** 草稿已通过Schema及事实职责校验，只在这里构造最终业务计划。 */
+    CompilationPlan assemble(Draft draft) {
+        var groupByFact=new HashMap<String,Group>();
+        for(var group:draft.merges())for(String id:group.itemIds())groupByFact.put(id,group);
         var conditions=new HashMap<String,List<String>>();for(var card:r.cards())for(String id:card.topic().itemIds())conditions.put(id,card.topic().conditions());
         var knowledge=new ArrayList<Knowledge>();var knowledgeByFact=new LinkedHashMap<String,String>();var seen=new HashSet<Group>();
         for(var fact:r.facts().values()) {
