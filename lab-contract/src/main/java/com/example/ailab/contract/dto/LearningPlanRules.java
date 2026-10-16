@@ -8,13 +8,42 @@ import static com.example.ailab.contract.dto.LearningContent.*;
 /** 业务覆盖、整数配额与执行职责守恒；模型及数据仓库使用同一规则。 */
 public final class LearningPlanRules {
     private LearningPlanRules() { }
-    public static final int MAX_CHAPTERS=128,MAX_QUESTIONS=512,MAX_PACKAGES=1024,MAX_SPLIT_DEPTH=8;
+    public static final int MAX_SPLIT_DEPTH=8;
+    public static List<ReviewPair> reviewPairs(Blueprint quiz,int version) {
+        if(version!=3)return reviewPairs(quiz);
+        // 已接受的 v3 计划保持原候选集合与检查点身份。
+        var objectives=quiz.objectives().stream().collect(Collectors.toMap(Objective::id,o->o));var pairs=new LinkedHashMap<String,ReviewPair>();
+        for(var x:quiz.slots())for(var y:quiz.slots().stream().filter(y->!x.id().equals(y.id())&&x.cognition().equals(y.cognition()))
+                .map(y->Map.entry(y,reviewSimilarity(x,y,objectives))).filter(e->e.getValue()>0)
+                .sorted(Map.Entry.<Slot,Integer>comparingByValue().reversed().thenComparing(e->e.getKey().id())).limit(8).map(Map.Entry::getKey).toList()) {
+            var pair=x.id().compareTo(y.id())<0?new ReviewPair(x.id(),y.id()):new ReviewPair(y.id(),x.id());pairs.putIfAbsent(pair.key(),pair);
+        }
+        return List.copyOf(pairs.values());
+    }
     /** 题对身份和排序只依赖冻结蓝图，预算和两轮执行使用完全相同的候选。 */
     public static List<ReviewPair> reviewPairs(Blueprint quiz) {
         var objectives=quiz.objectives().stream().collect(Collectors.toMap(Objective::id,o->o));
+        var buckets=new HashMap<String,List<Slot>>();var keys=new HashMap<String,Set<String>>();
+        for(var slot:quiz.slots()) {
+            var values=new LinkedHashSet<String>();String prefix=slot.cognition()+"|";
+            values.add(prefix+"chapter:"+slot.primaryChapterId());
+            slot.itemIds().forEach(id->values.add(prefix+"fact:"+id));
+            String title=objectives.get(slot.objectiveId()).title();values.add(prefix+"title:"+title);
+            for(int i=0;i+1<title.length();i++)values.add(prefix+"text:"+title.substring(i,i+2));
+            keys.put(slot.id(),values);for(String key:values)buckets.computeIfAbsent(key,k->new ArrayList<>()).add(slot);
+        }
+        buckets.values().forEach(bucket->bucket.sort(Comparator.comparing(Slot::id)));
         var pairs=new LinkedHashMap<String,ReviewPair>();
         for(var x:quiz.slots()) {
-            var candidates=quiz.slots().stream().filter(y->!y.id().equals(x.id())&&y.cognition().equals(x.cognition()))
+            var nearby=new LinkedHashMap<String,Slot>();
+            for(String key:keys.get(x.id())) {
+                var bucket=buckets.get(key);
+                // 大量相同章节或常用词不再触发全题库扫描；保留首批与稳定邻域候选。
+                int at=Collections.binarySearch(bucket,x,Comparator.comparing(Slot::id));
+                for(int i=0;i<Math.min(16,bucket.size());i++)nearby.put(bucket.get(i).id(),bucket.get(i));
+                for(int i=Math.max(0,at-16);i<Math.min(bucket.size(),at+17);i++)nearby.put(bucket.get(i).id(),bucket.get(i));
+            }
+            var candidates=nearby.values().stream().filter(y->!y.id().equals(x.id()))
                     .map(y->Map.entry(y,reviewSimilarity(x,y,objectives))).filter(e->e.getValue()>0)
                     .sorted(Map.Entry.<Slot,Integer>comparingByValue().reversed().thenComparing(e->e.getKey().id())).limit(8).toList();
             for(var candidate:candidates) {
@@ -34,10 +63,10 @@ public final class LearningPlanRules {
         return score;
     }
     public static Map<String,Integer> allocate(List<Quota> quotas,int requested) {
-        int minimum=quotas.stream().mapToInt(Quota::minimum).sum(),maximum=quotas.stream().mapToInt(Quota::maximum).sum();
+        long minimum=quotas.stream().mapToLong(Quota::minimum).sum(),maximum=quotas.stream().mapToLong(Quota::maximum).sum();
         if(requested<minimum||requested>maximum)throw new LabException("WORKFLOW_REQUIREMENTS_UNSATISFIED","题数须介于章节最低配额与不同有效题位容量之间");
         var result=new LinkedHashMap<String,Integer>();for(var q:quotas){check(q.weight()>0&&q.minimum()>=0&&q.maximum()>=q.minimum()&&!result.containsKey(q.chapterId()));result.put(q.chapterId(),q.minimum());}
-        int remaining=requested-minimum;
+        int remaining=(int)(requested-minimum);
         while(remaining>0) {
             var active=quotas.stream().filter(q->result.get(q.chapterId())<q.maximum()).toList();long weight=active.stream().mapToLong(Quota::weight).sum();check(weight>0);
             int before=remaining;var fractions=new ArrayList<Map.Entry<Quota,Long>>();
@@ -50,11 +79,11 @@ public final class LearningPlanRules {
         return Collections.unmodifiableMap(result);
     }
     public static void validate(Plan p,TaskRequest request,Set<String> facts,ContentWorkflow.Policy policy) {
-        check(p.version()==VERSION&&p.taskType().equals(request.taskType())&&(p.compilation()!=null ^ p.quiz()!=null));
+        check((p.version()==3||p.version()==VERSION)&&p.taskType().equals(request.taskType())&&(p.compilation()!=null ^ p.quiz()!=null));
         var logical=new LinkedHashMap<String,Set<String>>();
         if(p.compilation()!=null) {
             check(request.taskType().equals("KNOWLEDGE_COMPILATION"));var c=p.compilation();var chapters=c.directory().chapters();
-            check(!chapters.isEmpty()&&chapters.size()<=MAX_CHAPTERS);dag(chapters.stream().collect(Collectors.toMap(DirectoryChapter::id,DirectoryChapter::resultDependencies)));
+            check(!chapters.isEmpty());dag(chapters.stream().collect(Collectors.toMap(DirectoryChapter::id,DirectoryChapter::resultDependencies)));
             var chapterIds=chapters.stream().map(DirectoryChapter::id).collect(Collectors.toSet());check(chapterIds.size()==chapters.size());
             for(var chapter:chapters)check(chapter.parentId().isEmpty()||chapterIds.contains(chapter.parentId()));
             dag(chapters.stream().collect(Collectors.toMap(DirectoryChapter::id,chapter->chapter.parentId().isEmpty()?List.of():List.of(chapter.parentId()))));
@@ -69,12 +98,12 @@ public final class LearningPlanRules {
                 var itemIds=s.ownedKnowledgeIds().stream().flatMap(id->knowledge.get(id).sourceItemIds().stream()).collect(Collectors.toSet());check(logical.putIfAbsent(s.id(),itemIds)==null);
             }
             var parents=chapters.stream().collect(Collectors.toMap(DirectoryChapter::id,DirectoryChapter::parentId));
-            check(owned.equals(knowledge.keySet())&&LearningHierarchy.ancestors(usedChapters,parents).equals(chapterIds)&&c.sections().size()<=policy.maximumUnits());
+            check(owned.equals(knowledge.keySet())&&LearningHierarchy.ancestors(usedChapters,parents).equals(chapterIds));
             for(var id:chapterIds)check(LearningHierarchy.depth(id,parents)<=4);
             check(p.counts().equals(new ContentWorkflow.Counts(0,chapters.size(),c.sections().size(),0,0,0)));
             if(request.compilationOptions().maximumChapters()>0&&chapters.size()>request.compilationOptions().maximumChapters())throw requirements();
         } else {
-            check(request.taskType().equals("QUIZ_GENERATION")&&request.documentIds().size()==1);var b=p.quiz();check(b.chapters().size()<=MAX_CHAPTERS&&b.slots().size()<=MAX_QUESTIONS&&!b.slots().isEmpty());
+            check(request.taskType().equals("QUIZ_GENERATION")&&request.documentIds().size()==1);var b=p.quiz();check(!b.slots().isEmpty());
             var chapters=b.chapters().stream().collect(Collectors.toMap(Chapter::id,Chapter::itemIds));var chapterFacts=new HashSet<String>();
             for(var chapter:b.chapters()){check(Set.of("PARSED","COMPILATION_MAPPING","INFERRED").contains(chapter.origin()));for(String id:chapter.itemIds())check(chapterFacts.add(id));}
             var parents=b.chapters().stream().collect(Collectors.toMap(Chapter::id,Chapter::parentId));
@@ -110,8 +139,8 @@ public final class LearningPlanRules {
             }else{var slot=p.quiz().slots().stream().filter(s->s.id().equals(part.logicalId())).findFirst().orElseThrow();check(part.kind().equals("QUESTION")&&part.chapterId().equals(slot.primaryChapterId())&&part.itemIds().equals(slot.itemIds())&&part.ownedKnowledgeIds().isEmpty()&&part.contextKnowledgeIds().isEmpty());}
         }
         check(p.estimatedTurns()>=p.execution().parts().size()*2&&p.estimatedAttempts()>=p.estimatedTurns()&&p.estimatedOutputBytes()>0);
-        check(p.execution().packages().size()<=MAX_PACKAGES&&p.estimatedOutputBytes()<=policy.resultBytes()
-                &&p.execution().maximumPackages()<=MAX_PACKAGES&&p.execution().maximumPackages()>=p.execution().packages().size()
+        check(p.estimatedOutputBytes()<=policy.resultBytes()
+                &&p.execution().maximumPackages()>=p.execution().packages().size()
                 &&p.execution().maximumSplitDepth()>0&&p.execution().maximumSplitDepth()<=MAX_SPLIT_DEPTH);
     }
     public static void execution(ExecutionPlan e,Map<String,Set<String>> logical) {

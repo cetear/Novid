@@ -350,6 +350,7 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         if(!plan.sourceHash().equals(hash(source))||plan.estimatedTurns()>tasks.remainingModelTurns(lease)||plan.estimatedAttempts()>tasks.remainingModelAttempts(lease))
             throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","业务计划与执行包超过剩余父任务预算");
         String planJson=encode(plan),planHash=SqlSupport.hash(planJson),sourceHash=hash(source),readingHash=hash(p);
+        if(TextWindow.count(planJson)>source.policy().resultBytes())throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","完整学习计划超过冻结的存储容量");
         var packages=plan.execution().packages().stream().map(pack->{
             var parts=plan.execution().parts().stream().filter(part->pack.partIds().contains(part.id())).toList();
             return new Object[]{lease.task().taskId(),pack.id(),pack.parentId(),hash(Map.of("package",pack,"parts",parts)),encode(pack),encode(parts)};

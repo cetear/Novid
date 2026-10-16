@@ -16,16 +16,19 @@ final class CompactCompilationPlanner {
     record Fallback(String reason) { }
     private final LearningRuntime r;
     CompactCompilationPlanner(LearningRuntime runtime){r=runtime;}
-    Optional<CompilationPlan> plan() {
+    Optional<CompilationPlan> plan() {return plan("",List.of());}
+    Optional<CompilationPlan> plan(String suffix,List<Learning.Issue> issues) {
         if(r.store().completedNode(r.lease(),"compact_plan_fallback").isPresent())return Optional.empty();
         var input=new LinkedHashMap<String,Object>();input.put("remarks",r.lease().request().instructions());input.put("options",r.lease().request().compilationOptions());input.putAll(knowledgeView(r));
-        int maximum=r.lease().request().compilationOptions().maximumChapters();if(maximum==0)maximum=LearningPlanRules.MAX_CHAPTERS;
-        var schema=schema(Math.min(maximum,LearningPlanRules.MAX_CHAPTERS));
+        input.put("organizationIssues",issues);
+        int maximum=r.lease().request().compilationOptions().maximumChapters();
+        var schema=schema(maximum);
         // 编号清单为主要返回量，独立知识正文由程序复用；预检包含实际Schema。
         int estimate=r.facts().keySet().stream().mapToInt(id->TextWindow.count(id)+4).sum()*2+12000;
         input.put("estimatedOutputBytes",estimate);
         if(TextWindow.count(ContentJson.encode(input))>r.policy().unitInputBytes()||!r.preflight("joint-plan",input,schema))return Optional.empty();
-        try{return Optional.of(assemble(r.call("compact_directory","organize","joint-plan",input,schema)));}
+        try{return Optional.of(assemble(suffix.isEmpty()?r.call("compact_directory","organize","joint-plan",input,schema)
+                :r.correct("compact_directory"+suffix,"organize","joint-plan",input,schema,"compact_directory")));}
         catch(com.example.ailab.contract.error.LabException error){if(Set.of("MODEL_TRUNCATED","MODEL_CONTEXT_INSUFFICIENT").contains(error.code())){
             if(error.code().equals("MODEL_TRUNCATED"))r.checkpoint("compact_plan_fallback","organize",Map.of("inputHash",ContentJson.hash(input)),new RecordSchema<>(Fallback.class,"已确认联合回包截断，后续沿用有界分批规划",v->{}),()->new Fallback(error.code()));
             return Optional.empty();
@@ -41,12 +44,12 @@ final class CompactCompilationPlanner {
         return cards.stream().map(c->Map.of("id",c.id(),"title",c.topic().title(),"summary",c.topic().summary(),"conditions",c.topic().conditions())).toList();
     }
     RecordSchema<Draft> schema(int maximum) {
-        return new RecordSchema<>(Draft.class,"一次制定目录、知识关系和小节职责。directory按全范围知识组织，不能按技术批次分章。"
+        return new RecordSchema<>(Draft.class,"一次制定目录、知识关系和小节职责。无目录或零散笔记先从全部事实归纳主题，明确每章负责的问题和排除的邻章职责，再归属事实。少量集中知识允许一章，孤立知识保留明确主题，不因难分类而省略。关键词仅作线索，不补造原文未提供的关系。organizationIssues存在时纠正组织并保留所有事实与条件。directory按全范围知识组织，不能按来源、固定条数、文本相邻或技术批次分章。"
                 +"sections列出所属chapterId、标题、职责、主要itemIds、可选contextItemIds和500至12000的outputBytes。每条输入事实恰好属于一个主要小节，互补内容独立保留。"
                 +"merges只返回至少两条知识相同且条件一致的SAME组，或同主题相互冲突的CONFLICT组；不能把职责不同的事实合并。"
                 +"未列入merges的事实由程序作为SINGLE保留，不要重写其摘要。合并组所有事实必须属于同一主要小节；summary精确概括共同职责，CONFLICT保留全部版本条件。"
                 +"只引用输入事实编号，条件字典由topicId查询。sections顺序即输出顺序，目录章节编号c1起连续；仅确实需要另一章实际写作结果才声明resultDependencies。",
-                List.of(items("sections",r.policy().maximumUnits()),items("merges",r.facts().size()),utf8("sections[].title",200),utf8("sections[].purpose",600),utf8("merges[].summary",500)),v->{
+                List.of(items("merges",r.facts().size()),utf8("sections[].title",200),utf8("sections[].purpose",600),utf8("merges[].summary",500)),v->{
             nested("directory",()->LearningBusinessSchemas.directory(maximum).relaxed().validate(ContentJson.encode(v.directory()),Set.of()));
             validate(v);
         });

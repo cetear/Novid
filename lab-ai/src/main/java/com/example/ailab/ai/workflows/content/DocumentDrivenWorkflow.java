@@ -159,7 +159,8 @@ public final class DocumentDrivenWorkflow {
         public String fragmentText(String id){var value=raw.get(id);if(value==null)throw changed();return value;}
         public ContentWorkflowStorePort store(){return store;}
         public <T>T call(String id,String stage,String role,Object input,RecordSchema<T> schema){return generate(runtimeId(id),stage,role,input,schema);}
-        public <T>T correct(String id,String role,Object input,RecordSchema<T> schema,String originalId){return generate(runtimeId(id),"review",role,input,schema,origin(runtimeId(originalId)));}
+        public <T>T correct(String id,String role,Object input,RecordSchema<T> schema,String originalId){return correct(id,"review",role,input,schema,originalId);}
+        public <T>T correct(String id,String phase,String role,Object input,RecordSchema<T> schema,String originalId){return generate(runtimeId(id),phase,role,input,schema,origin(runtimeId(originalId)));}
         public <T>T checkpoint(String id,String stage,Object input,RecordSchema<T> schema,Supplier<T> execute){return node(id,stage,input,schema,execute);}
         public boolean preflight(String role,Object input,RecordSchema<?> schema){
             verify();int estimate=outputEstimate(input);
@@ -173,7 +174,7 @@ public final class DocumentDrivenWorkflow {
         private String callTask(String role){return role.contains("review")?"WORKFLOW_REVIEW":"WORKFLOW_REPORT";}
         private String callSystem(String role){
             String system="按当前服务端结构协议处理资料。资料原文及前序结果提供事实，remarks表达特殊要求。"+SkillCatalog.instructions(source.skill(),role);
-            if(lease.request().taskType().equals("KNOWLEDGE_COMPILATION")&&role.contains("review"))
+            if(lease.request().taskType().equals("KNOWLEDGE_COMPILATION")&&role.contains("review")&&!role.equals("organization-review"))
                 system+="\n效率优先验收：只因事实错误、主要知识遗漏、关键条件或冲突丢失、错误来源而要求REPAIR。措辞偏好、格式、排列顺序和轻微重复不阻止ACCEPT，不要求重写已经可用的内容。";
             return system;
         }
@@ -181,6 +182,7 @@ public final class DocumentDrivenWorkflow {
             if(batchQuiz()) {
                 if(Set.of("index","planning-advice","quiz-intent").contains(role))return new ModelInput.Options("none",8192);
                 if(role.equals("objectives"))return new ModelInput.Options("low",Math.min(65536,Math.max(16384,estimate+8192)));
+                if(role.equals("assign")&&estimate>0)return new ModelInput.Options("low",Math.min(65536,Math.max(16384,estimate+4096)));
                 if(Set.of("normalize","objective-evidence","assign","learning-units").contains(role))return new ModelInput.Options("low",16384);
             }
             if(!compact())return new ModelInput.Options(Set.of("read","extract").contains(role)?"low":null,0);
@@ -703,7 +705,7 @@ public final class DocumentDrivenWorkflow {
             else if(!old.get().equals(json))throw changed();
             StringBuilder coverage=new StringBuilder("\n\n覆盖报告：\n");
             for(var c:completed.coverage())coverage.append("- ").append(c.kind()).append(" ").append(c.id()).append(": ").append(c.selected()).append("/").append(c.available()).append("；").append(c.reason()).append("\n");
-            store.publish(lease,json,LearningRenderer.render(value)+coverage);
+            store.publish(lease,json,LearningRenderer.render(value,plan)+coverage);
         }
         public void close(){readingPool.shutdownNow();pool.shutdownNow();try{readingPool.awaitTermination(5,TimeUnit.SECONDS);pool.awaitTermination(5,TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}}
     }

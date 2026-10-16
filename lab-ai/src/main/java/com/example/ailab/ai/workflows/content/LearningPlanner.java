@@ -11,20 +11,22 @@ import java.util.stream.Collectors;
 final class LearningPlanner {
     private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(LearningPlanner.class);
     private final LearningRuntime r;
-    private List<ContentReading.TopicCard> cards;private boolean inferDirectory;
+    private List<ContentReading.TopicCard> cards;private boolean jointCompilation;
     LearningPlanner(LearningRuntime runtime){r=runtime;cards=r.cards();}
     Plan plan() {
         var existing=r.store().acceptedLearningPlan(r.lease());if(existing.isPresent()){r.store().finish(r.lease(),"organize",List.of(existing.get().quiz()==null?"directory":"quiz_intent"));return existing.get();}
-        cards=r.cards();if(!r.compact())clarify();
+        cards=r.cards();if(!r.compact()&&(!r.lease().request().taskType().equals("QUIZ_GENERATION")||!DocumentQuizChapters.reliable(r)))clarify();
         CompilationPlan compilation=null;Blueprint quiz=null;
         if(r.lease().request().taskType().equals("KNOWLEDGE_COMPILATION"))compilation=compilation();else quiz=quiz();
         var execution=LearningPackages.build(r,compilation,quiz);
         var logical=compilation!=null?compilation.sections().stream().map(SectionDuty::id).toList():quiz.slots().stream().map(Slot::id).toList();
         int turns=estimatedTurns(compilation,quiz,execution);
-        if(turns>r.executionLimits().turns()||turns*2>r.executionLimits().attempts())throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","生成、复核及一次修复超过父任务执行额度");
+        if(turns>r.executionLimits().turns()||turns*2L>r.executionLimits().attempts())throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","生成、复核及一次修复预计需要"+turns+"轮／"+(turns*2L)+"次尝试，任务额度为"+r.executionLimits().turns()+"轮／"+r.executionLimits().attempts()+"次尝试");
         var counts=new ContentWorkflow.Counts(quiz==null?0:quiz.slots().size(),quiz==null?compilation.directory().chapters().size():quiz.chapters().size(),compilation==null?0:compilation.sections().size(),0,0,0);
         int output=estimatedOutputBytes(compilation,quiz,execution);
+        if(output>r.policy().resultBytes())throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","预计结果及引用需要"+output+"字节，任务结果容量为"+r.policy().resultBytes()+"字节");
         var result=new Plan(LearningContent.VERSION,r.lease().request().taskType(),ContentJson.hash(r.source()),compilation,quiz,execution,counts,logical.stream().map(id->"accepted_"+id).toList(),turns,turns*2,output);
+        if(TextWindow.count(ContentJson.encode(result))>r.policy().resultBytes())throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","完整学习计划超过任务存储容量；请增加容量或缩小明确范围");
         LearningPlanRules.validate(result,r.lease().request(),r.facts().keySet(),r.policy());r.store().accept(r.lease(),result);
         r.store().finish(r.lease(),"organize",List.of(compilation==null?"quiz_intent":"directory"));return result;
     }
@@ -32,29 +34,38 @@ final class LearningPlanner {
         int logical=compilation!=null?compilation.sections().size():quiz.slots().size();
         // 两轮题对复核分别对应初次检查和局部修复后的检查，候选来自不可变蓝图。
         int pairs=quiz==null?0:LearningPlanRules.reviewPairs(quiz).size();
-        return execution.packages().size()*2+execution.parts().size()*(compilation==null?4:2)+logical*2
-                +(quiz==null?0:quiz.chapters().size()*4)
-                +(compilation==null?0:(int)compilation.knowledge().stream().filter(k->k.relation().equals("CONFLICT")).count()*2)+pairs*2+32;
+        return (int)Math.min(Integer.MAX_VALUE,execution.packages().size()*2L+execution.parts().size()*(compilation==null?4L:2L)+logical*2L
+                +(quiz==null?0:(int)quiz.chapters().stream().filter(c->!c.itemIds().isEmpty()).count()*4)
+                +(compilation==null?0:compilation.knowledge().stream().filter(k->k.relation().equals("CONFLICT")).count()*2L)+pairs*2L+32);
     }
     private int estimatedOutputBytes(CompilationPlan compilation,Blueprint quiz,ExecutionPlan execution) {
-        if(compilation==null)return execution.parts().stream().mapToInt(Part::outputBytes).sum()+r.facts().size()*3500;
         var slices=r.source().slices().stream().collect(Collectors.toMap(Learning.SourceSlice::id,Function.identity()));
         var citations=r.facts().values().stream().map(item->{int start=r.quoteOffset(item);return new Learning.Citation(item.id(),slices.get(item.sourceId()),start,start+item.quote().length(),item.quote());}).toList();
-        int metadata=TextWindow.count(ContentJson.encode(Map.of("compilation",compilation,"execution",execution,"citations",citations)));
+        int metadata=TextWindow.count(ContentJson.encode(Map.of("plan",compilation==null?quiz:compilation,"execution",execution,"citations",citations)));
         // 基于真实元数据和计划正文留出重复职责、覆盖报告及JSON转义余量；实际产物仍受持久容量限制。
         long estimate=metadata*2L+execution.parts().stream().mapToLong(Part::outputBytes).sum()*2L+4096;
         return (int)Math.min(Integer.MAX_VALUE,estimate);
     }
     private CompilationPlan compilation() {
-        if(r.compact()){var joined=new CompactCompilationPlanner(r).plan();if(joined.isPresent()){var value=joined.get();r.checkpoint("directory","organize",Map.of("compact",ContentJson.hash(value)),LearningBusinessSchemas.directory(LearningPlanRules.MAX_CHAPTERS),value::directory);return value;}}
-        int maximum=r.lease().request().compilationOptions().maximumChapters();if(maximum==0)maximum=LearningPlanRules.MAX_CHAPTERS;else maximum=Math.min(maximum,LearningPlanRules.MAX_CHAPTERS);
-        var directory=r.call("directory","organize","directory",Map.of("remarks",r.lease().request().instructions(),"options",r.lease().request().compilationOptions(),"allThemes",index(cards)),LearningBusinessSchemas.directory(maximum));
-        var assignments=new LinkedHashMap<String,String>();var fixedDirectory=directory;
-        var cardGroups=partition(cards,r.policy().unitInputBytes()-TextWindow.count(ContentJson.encode(directory))-800,ContentJson::encode);
-        var routedCards=r.parallel(java.util.stream.IntStream.range(0,cardGroups.size()).boxed().toList(),i->r.call("assign_"+i,"organize","assign",Map.of("directory",fixedDirectory,"topicCards",cardGroups.get(i)),LearningBusinessSchemas.assignments(cardGroups.get(i),fixedDirectory)));
-        routedCards.forEach(batch->batch.assignments().forEach(a->assignments.put(a.cardId(),a.chapterId())));
+        var value=compilation("",List.of());
+        var issues=LearningOrganization.review(r,value.directory(),LearningOrganization.assignments(value),cards,"organization_review_v1");
+        if(!issues.isEmpty()) {
+            value=compilation("_organization_repair_v1",issues);
+            if(!LearningOrganization.review(r,value.directory(),LearningOrganization.assignments(value),cards,"organization_review_repaired_v1").isEmpty())
+                throw new LabException("WORKFLOW_REQUIREMENTS_UNSATISFIED","一次组织纠正后仍无法确定完整且合理的知识职责");
+        }
+        return value;
+    }
+    private CompilationPlan compilation(String suffix,List<Learning.Issue> issues) {
+        if(r.compact()&&(suffix.isEmpty()||jointCompilation)){var joined=new CompactCompilationPlanner(r).plan(suffix,issues);if(joined.isPresent()){jointCompilation=true;var value=joined.get();r.checkpoint("directory"+suffix,"organize",Map.of("compact",ContentJson.hash(value)),LearningBusinessSchemas.directory(r.lease().request().compilationOptions().maximumChapters()),value::directory);return value;}}
+        int maximum=r.lease().request().compilationOptions().maximumChapters();
+        var directoryInput=Map.of("remarks",r.lease().request().instructions(),"options",r.lease().request().compilationOptions(),"allThemes",index(LearningOrganization.facts(r,cards),"directory_facts_v1"),"organizationIssues",issues);
+        var directory=suffix.isEmpty()?r.call("directory","organize","directory",directoryInput,LearningBusinessSchemas.directory(maximum))
+                :r.correct("directory"+suffix,"organize","directory",directoryInput,LearningBusinessSchemas.directory(maximum),jointCompilation?"compact_directory":"directory");
+        var assignments=LearningOrganization.assign(r,directory,cards,"fact_assign_v1"+suffix);
         var factChapter=new LinkedHashMap<String,String>();var factCard=new HashMap<String,ContentReading.TopicCard>();
-        for(var card:cards)for(String id:card.topic().itemIds()){factChapter.put(id,assignments.get(card.id()));factCard.put(id,card);}
+        assignments.forEach(a->factChapter.put(a.itemId(),a.chapterId()));
+        for(var card:cards)for(String id:card.topic().itemIds())factCard.put(id,card);
         var canonical=new ArrayList<Knowledge>();var owner=new HashMap<String,String>();
         if(r.facts().size()>(r.policy().unitInputBytes()>=128000?32:64))normalizeBatches(factCard,factChapter,canonical,owner);
         else for(var fact:r.facts().values())normalizeOne(fact,factCard,factChapter,canonical,owner);
@@ -65,16 +76,36 @@ final class LearningPlanner {
         var sections=new ArrayList<SectionDuty>();
         for(var chapter:chapters) {
             var owned=canonical.stream().filter(k->owner.get(k.id()).equals(chapter.id())).toList();if(owned.isEmpty())continue;
-            var outline=r.call("section_outline_"+chapter.id(),"organize","sections",Map.of("chapter",chapter,"knowledgeIndex",index(owned,"section_index_"+chapter.id()),"terms",directory.terms()),LearningBusinessSchemas.sectionOutline());
+            var outline=sectionOutline(chapter,owned,directory.terms(),"section_outline_"+chapter.id()+suffix);
             var sectionAssignments=new LinkedHashMap<String,List<String>>();var contexts=new LinkedHashMap<String,List<String>>();outline.sections().forEach(s->{sectionAssignments.put(s.id(),new ArrayList<>());contexts.put(s.id(),new ArrayList<>());});int group=0;
             int overhead=TextWindow.count(ContentJson.encode(outline))+TextWindow.count(ContentJson.encode(chapter))+600;
             for(var batch:partition(owned,r.policy().unitInputBytes()-overhead,ContentJson::encode)) {
-                var routed=r.call("section_assign_"+chapter.id()+"_"+group++,"organize","assign",Map.of("chapter",chapter,"outline",outline,"knowledge",batch),LearningBusinessSchemas.knowledgeAssignments(batch,outline));
+                var routed=r.call("section_assign_"+chapter.id()+"_"+(group++)+suffix,"organize","assign",Map.of("chapter",chapter,"outline",outline,"knowledge",batch),LearningBusinessSchemas.knowledgeAssignments(batch,outline));
                 for(var a:routed.assignments()){sectionAssignments.get(a.sectionId()).add(a.knowledgeId());for(String support:a.contextSectionIds())contexts.get(support).add(a.knowledgeId());}
             }
             for(var s:outline.sections())if(!sectionAssignments.get(s.id()).isEmpty())sections.add(new SectionDuty(String.format(Locale.ROOT,"s%05d",sections.size()+1),chapter.id(),s.title(),s.purpose(),sectionAssignments.get(s.id()),contexts.get(s.id()).stream().distinct().filter(id->!sectionAssignments.get(s.id()).contains(id)).toList(),s.outputBytes()));
         }
         return new CompilationPlan(directory,canonical,sections);
+    }
+    private SectionOutline sectionOutline(DirectoryChapter chapter,List<Knowledge> knowledge,List<String> terms,String id) {
+        var input=Map.of("chapter",chapter,"knowledgeIndex",index(knowledge,id+"_index"),"terms",terms);
+        try {
+            if(!r.preflight("sections",input,LearningBusinessSchemas.sectionOutline()))throw new LabException("MODEL_CONTEXT_INSUFFICIENT","小节规划超过单次模型容量");
+            return r.call(id,"organize","sections",input,LearningBusinessSchemas.sectionOutline());
+        }catch(LabException failure) {
+            if(!Set.of("MODEL_TRUNCATED","MODEL_CONTEXT_INSUFFICIENT").contains(failure.code())||knowledge.size()<2)throw failure;
+            int mid=knowledge.size()/2;
+            var a=sectionOutline(chapter,knowledge.subList(0,mid),terms,id+"_a");
+            var b=sectionOutline(chapter,knowledge.subList(mid,knowledge.size()),terms,id+"_b");
+            var merged=new LinkedHashMap<String,SectionOutlineItem>();
+            for(var outline:List.of(a,b))for(var section:outline.sections()) {
+                String key=section.title()+"\u0000"+section.purpose();var old=merged.get(key);
+                merged.put(key,new SectionOutlineItem("s"+(old==null?merged.size()+1:Integer.parseInt(old.id().substring(1))),section.title(),section.purpose(),
+                        old==null?section.outputBytes():Math.min(ContentLimits.current().section(),old.outputBytes()+section.outputBytes())));
+            }
+            // 所有知识随后统一归属至合成的小节职责，技术分批不形成章节边界。
+            return new SectionOutline(List.copyOf(merged.values()));
+        }
     }
     private void normalizeOne(Learning.Item fact,Map<String,ContentReading.TopicCard> factCard,Map<String,String> factChapter,List<Knowledge> canonical,Map<String,String> owner) {
         var card=factCard.get(fact.id());var candidates=candidates(fact,factCard,canonical);
@@ -165,9 +196,14 @@ final class LearningPlanner {
     }
     private Blueprint quiz() {
         var chapters=chapters();var chapterIds=chapters.stream().map(Chapter::id).collect(Collectors.toSet());
-        if(chapters.size()>LearningPlanRules.MAX_CHAPTERS)
-            throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","有效学习章节超过"+LearningPlanRules.MAX_CHAPTERS+"个，请缩小资料范围或整理章节层级");
-        var intent=r.call("quiz_intent","organize","quiz-intent",Map.of("remarks",r.lease().request().instructions(),"options",r.lease().request().quizOptions(),"chapters",index(chapters.stream().map(c->Map.of("id",c.id(),"title",c.title(),"facts",c.itemIds().size())).toList())),LearningBusinessSchemas.quizIntent(chapterIds));
+        var intent=r.call("quiz_intent","organize","quiz-intent",Map.of("remarks",r.lease().request().instructions(),"options",r.lease().request().quizOptions(),"chapters",index(chapters.stream().map(c->Map.of("id",c.id(),"parentId",c.parentId(),"title",c.title(),"facts",c.itemIds().size())).toList())),LearningBusinessSchemas.quizIntent(chapterIds));
+        if(intent.coveragePolicy().equals("FOCUS")) {
+            chapters=DocumentQuizChapters.focus(r,chapters,intent.focusChapterIds());
+            var parents=chapters.stream().collect(Collectors.toMap(Chapter::id,Chapter::parentId));var selected=intent.focusChapterIds();
+            var expanded=chapters.stream().filter(c->!c.itemIds().isEmpty()&&!Collections.disjoint(LearningHierarchy.ancestors(Set.of(c.id()),parents),selected)).map(Chapter::id).toList();
+            intent=new QuizIntent(intent.title(),intent.requirements(),intent.reason(),intent.coveragePolicy(),intent.requestedQuestions(),expanded);
+        }
+        final var acceptedIntent=intent;
         if(!intent.coveragePolicy().equals("EVERY_CHAPTER")&&r.lease().request().instructions().isBlank())throw new LabException("WORKFLOW_REQUIREMENTS_UNSATISFIED","默认自测须覆盖每个有效章节，抽样需要明确备注");
         var objectives=new ArrayList<Objective>();var uncovered=new ArrayList<Uncovered>();int nextObjectiveId=1;
         if(r.batchQuiz()) {
@@ -178,7 +214,7 @@ final class LearningPlanner {
                 for(String id:candidates.unexaminedItemIds())uncovered.add(new Uncovered("FACT",id,candidates.reason()));
             }
         } else for(var chapter:chapters) {int group=0;
-            for(var facts:partition(r.evidence(chapter.itemIds()),r.policy().unitInputBytes()-1000,ContentJson::encode)) {
+            for(var facts:objectiveBatches(r.evidence(chapter.itemIds()),r.policy().unitInputBytes()-1000)) {
                 var candidates=r.call("objectives_"+chapter.id()+"_"+group++,"organize","objectives",Map.of("chapter",Map.of("id",chapter.id(),"title",chapter.title()),"facts",facts,"difficulty",r.lease().request().quizOptions().difficulty(),"allowedTypes",r.lease().request().quizOptions().questionTypes()),LearningBusinessSchemas.objectives(facts,new HashSet<>(r.lease().request().quizOptions().questionTypes()),chapterIds));
                 for(var o:candidates.objectives())objectives.add(new Objective(String.format(Locale.ROOT,"o%05d",nextObjectiveId++),chapter.id(),o.title(),o.cognition(),o.questionTypes(),o.itemIds(),o.priority(),o.reason(),o.relatedChapterIds()));
                 for(String id:candidates.unexaminedItemIds())uncovered.add(new Uncovered("FACT",id,candidates.reason()));
@@ -188,7 +224,7 @@ final class LearningPlanner {
         int explicit=r.lease().request().quizOptions().questionCount();
         if(explicit==0&&!intent.requestedQuestions().equals("AUTO"))explicit=Integer.parseInt(intent.requestedQuestions());
         final int target=explicit;
-        long capacity=objectives.stream().filter(o->!intent.coveragePolicy().equals("FOCUS")||intent.focusChapterIds().contains(o.primaryChapterId())).count();
+        long capacity=objectives.stream().filter(o->!acceptedIntent.coveragePolicy().equals("FOCUS")||acceptedIntent.focusChapterIds().contains(o.primaryChapterId())).count();
         // 最多一轮业务纠正；只允许新增有证据、认知目的不同的目标，不复制题位凑数。
         if(target>capacity) {
             for(var chapter:chapters) {
@@ -196,7 +232,7 @@ final class LearningPlanner {
                 int group=0;
                 var existingIndex=index(objectives.stream().filter(o->o.primaryChapterId().equals(chapter.id())).toList(),"objective_expand_index_"+chapter.id(),Math.min(2000,r.policy().indexBytes()));
                 int room=r.policy().unitInputBytes()-TextWindow.count(ContentJson.encode(existingIndex))-1200;
-                for(var facts:partition(r.evidence(chapter.itemIds()),room,ContentJson::encode)) {
+                for(var facts:objectiveBatches(r.evidence(chapter.itemIds()),room)) {
                     var input=Map.of("chapter",Map.of("id",chapter.id(),"title",chapter.title()),"facts",facts,"existingObjectives",existingIndex,"requestedQuestions",target,"difficulty",r.lease().request().quizOptions().difficulty(),"allowedTypes",r.lease().request().quizOptions().questionTypes(),"correction","补充确有依据的不同认知目的；无法增加时明确保留原目标，禁止名称改写或虚构知识");r.bounded(input);
                     var extra=r.call("objective_expand_"+chapter.id()+"_"+group++,"organize","objectives",input,LearningBusinessSchemas.objectives(facts,new HashSet<>(r.lease().request().quizOptions().questionTypes()),chapterIds));
                     for(var o:extra.objectives())objectives.add(new Objective(String.format(Locale.ROOT,"o%05d",nextObjectiveId++),chapter.id(),o.title(),o.cognition(),o.questionTypes(),o.itemIds(),o.priority(),o.reason(),o.relatedChapterIds()));
@@ -224,16 +260,16 @@ final class LearningPlanner {
             boolean effective=!os.isEmpty();boolean focus=intent.coveragePolicy().equals("FOCUS")&&intent.focusChapterIds().contains(chapter.id());
             int lower=effective&&(intent.coveragePolicy().equals("EVERY_CHAPTER")||focus)?1:0;
             int upper=intent.coveragePolicy().equals("FOCUS")&&!focus?0:os.size();
-            quotas.add(new Quota(chapter.id(),lower,upper,Math.max(1,os.stream().mapToInt(Objective::priority).sum()),0,effective?"按有效目标重要性分配，主章节计数一次":"无有效可命题目标"));
+            quotas.add(new Quota(chapter.id(),lower,upper,Math.max(1,os.stream().mapToInt(Objective::priority).sum()),0,effective?"按有效目标重要性分配，主章节计数一次":chapter.itemIds().isEmpty()?"目录节点仅用于定位或后代汇总，无独立配额":"无有效可命题目标"));
         }
         int requested=r.lease().request().quizOptions().questionCount();if(requested==0&&!intent.requestedQuestions().equals("AUTO"))requested=Integer.parseInt(intent.requestedQuestions());
         if(requested==0)requested=quotas.stream().mapToInt(q->Math.max(q.minimum(),Math.min(q.maximum(),(int)objectives.stream().filter(o->o.primaryChapterId().equals(q.chapterId())&&o.priority()>=2).count()))).sum();
-        requested=Math.max(1,requested);if(requested>LearningPlanRules.MAX_QUESTIONS)throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","题位超过服务器蓝图上限");
+        requested=Math.max(1,requested);
         var allocated=LearningPlanRules.allocate(quotas,requested);var slots=new ArrayList<Slot>();var types=r.lease().request().quizOptions().questionTypes();var typeCounts=new HashMap<String,Integer>();
         for(var chapter:chapters) {
             int count=allocated.get(chapter.id());var selected=objectives.stream().filter(o->o.primaryChapterId().equals(chapter.id())).sorted(Comparator.comparingInt(Objective::priority).reversed().thenComparing(Objective::id)).limit(count).toList();
             for(var o:selected){String type=o.questionTypes().stream().min(Comparator.comparingInt((String t)->typeCounts.getOrDefault(t,0)).thenComparingInt(types::indexOf)).orElseThrow();typeCounts.merge(type,1,Integer::sum);slots.add(new Slot(String.format(Locale.ROOT,"q%05d",slots.size()+1),chapter.id(),o.id(),o.cognition(),type,o.itemIds(),o.relatedChapterIds()));}
-            if(count==0)uncovered.add(new Uncovered("CHAPTER",chapter.id(),quotas.stream().filter(q->q.chapterId().equals(chapter.id())).findFirst().orElseThrow().maximum()==0?"无有效目标或明确重点范围之外":"用户代表性抽样配额为零"));
+            if(count==0&&!chapter.itemIds().isEmpty())uncovered.add(new Uncovered("CHAPTER",chapter.id(),quotas.stream().filter(q->q.chapterId().equals(chapter.id())).findFirst().orElseThrow().maximum()==0?"无有效目标或明确重点范围之外":"用户代表性抽样配额为零"));
         }
         var selected=slots.stream().map(Slot::objectiveId).collect(Collectors.toSet());for(var o:objectives)if(!selected.contains(o.id()))uncovered.add(new Uncovered("OBJECTIVE",o.id(),"固定数量下优先选择其他重要目标"));
         var finalQuotas=quotas.stream().map(q->new Quota(q.chapterId(),q.minimum(),q.maximum(),q.weight(),allocated.get(q.chapterId()),q.reason())).toList();
@@ -250,6 +286,11 @@ final class LearningPlanner {
         }
         return distinctChapterObjectives(candidates);
     }
+    private static List<List<Learning.Item>> objectiveBatches(List<Learning.Item> facts,int room) {
+        var result=new ArrayList<List<Learning.Item>>();
+        for(var batch:partition(facts,room,ContentJson::encode))for(int from=0;from<batch.size();from+=32)result.add(batch.subList(from,Math.min(from+32,batch.size())));
+        return result;
+    }
     private List<Objective> distinctChapterObjectives(List<Objective> candidates) {
         var result=new ArrayList<Objective>();
         for(var candidate:candidates) {
@@ -265,59 +306,36 @@ final class LearningPlanner {
         }return result;
     }
     List<Chapter> chapters() {
-        var doc=r.reading().documents().get(0);var origin=r.origin();var fragments=r.reading().fragments();
-        var descriptors=new ArrayList<Chapter>();
-        if(origin!=null&&origin.generatedVersion()==doc.documentVersion()&&origin.mappingValid()&&origin.bindingStatus().equals("BOUND")&&!origin.sections().isEmpty()
-                &&!origin.parsedBindings().isEmpty()&&origin.parsedBindings().stream().allMatch(b->b.processingRevision()==doc.processingRevision())) {
-            var grouped=origin.sections().stream().collect(Collectors.groupingBy(Compilation.SectionMapping::chapterId,LinkedHashMap::new,Collectors.toList()));
-            var identities=new LinkedHashMap<String,Compilation.ChapterIdentity>();origin.sections().forEach(m->m.chapterPath().forEach(c->{var old=identities.putIfAbsent(c.id(),c);LearningPlanRules.check(old==null||old.equals(c));}));
-            for(var identity:identities.values())descriptors.add(new Chapter(identity.id(),identity.parentId(),descriptors.size(),identity.title(),"COMPILATION_MAPPING",List.of(),List.of()));
-            for(var entry:grouped.entrySet()) {
-                var ranges=new ArrayList<Range>();for(var mapping:entry.getValue())for(var f:fragments){int a=Math.max(mapping.startOffset(),f.source().startOffset()),b=Math.min(mapping.endOffset(),f.source().endOffset());if(a<b)ranges.add(new Range(f.source().id(),f.sectionId(),a,b));}
-                var parsed=doc.sections().stream().filter(s->s.startOffset()<=entry.getValue().get(0).startOffset()&&s.endOffset()>entry.getValue().get(0).startOffset()).reduce((a,b)->b);
-                String title=parsed.map(s->doc.sections().stream().filter(parent->parent.sectionId().equals(s.parentSectionId())).findFirst().map(SectionSnapshot::headingPath).orElse(s.headingPath())).orElse(entry.getKey());
-                var identity=identities.get(entry.getKey());var existing=descriptors.stream().filter(c->c.id().equals(entry.getKey())).findFirst();
-                var chapter=new Chapter(entry.getKey(),identity==null?"":identity.parentId(),existing.map(Chapter::order).orElse(descriptors.size()),identity==null?title:identity.title(),"COMPILATION_MAPPING",ranges,List.of());
-                if(existing.isPresent())descriptors.set(descriptors.indexOf(existing.get()),chapter);else descriptors.add(chapter);
-            }
-        } else if(inferDirectory||doc.sections().size()==1||doc.sections().stream().map(s->s.headingPath()).distinct().count()!=doc.sections().size()) {
-            var units=r.call("learning_units","organize","learning-units",Map.of("topicIndex",index(cards,"learning_units_index"),"sourceTitle",doc.title()),LearningBusinessSchemas.learningDirectory());
-            var assignedCards=new LinkedHashMap<String,List<ContentReading.TopicCard>>();units.chapters().forEach(c->assignedCards.put(c.id(),new ArrayList<>()));int group=0;
-            for(var portion:partition(cards,r.policy().unitInputBytes()-TextWindow.count(ContentJson.encode(units))-800,ContentJson::encode)) {
-                var assignment=r.call("learning_unit_assign_"+group++,"organize","assign",Map.of("directory",units,"topicCards",portion),LearningBusinessSchemas.assignments(portion,units));
-                for(var a:assignment.assignments())assignedCards.get(a.chapterId()).add(portion.stream().filter(c->c.id().equals(a.cardId())).findFirst().orElseThrow());
-            }
-            for(var unit:units.chapters()) {
-                var cards=assignedCards.get(unit.id());var ids=cards.stream().flatMap(c->c.topic().itemIds().stream()).toList();
-                var ranges=cards.stream().map(c->fragments.stream().filter(f->f.source().id().equals(c.fragmentId())).findFirst().orElseThrow()).distinct().map(f->new Range(f.source().id(),f.sectionId(),f.source().startOffset(),f.source().endOffset())).toList();
-                descriptors.add(new Chapter(unit.id(),unit.parentId(),descriptors.size(),unit.title(),"INFERRED",ranges,ids));
-            }
-        } else for(var s:doc.sections()) {
-            var ranges=fragments.stream().filter(f->f.sectionId().equals(s.sectionId())).map(f->new Range(f.source().id(),f.sectionId(),f.source().startOffset(),f.source().endOffset())).toList();
-            descriptors.add(new Chapter(s.sectionId(),s.parentSectionId()==null?"":s.parentSectionId(),descriptors.size(),s.headingPath(),"PARSED",ranges,List.of()));
-        }
-        var assigned=new LinkedHashMap<String,List<String>>();descriptors.forEach(c->assigned.put(c.id(),new ArrayList<>()));var remainder=new ArrayList<String>();
-        for(var fact:r.facts().values()) {
-            var f=fragments.stream().filter(x->x.source().id().equals(fact.sourceId())).findFirst().orElseThrow();
-            int offset=f.source().startOffset()+factOffset(fact);
-            var match=descriptors.stream().filter(c->c.origin().equals("INFERRED")?c.itemIds().contains(fact.id()):c.ranges().stream().anyMatch(x->x.fragmentId().equals(fact.sourceId())&&x.startOffset()<=offset&&offset<x.endOffset())).findFirst();
-            if(match.isPresent())assigned.get(match.get().id()).add(fact.id());else remainder.add(fact.id());
-        }
-        if(!remainder.isEmpty()){var ranges=fragments.stream().filter(f->remainder.stream().anyMatch(id->r.facts().get(id).sourceId().equals(f.source().id()))).map(f->new Range(f.source().id(),f.sectionId(),f.source().startOffset(),f.source().endOffset())).toList();descriptors.add(new Chapter("body_context","",descriptors.size(),"正文导读与附注","PARSED",ranges,List.of()));assigned.put("body_context",remainder);}
-        var kept=LearningHierarchy.ancestors(assigned.entrySet().stream().filter(e->!e.getValue().isEmpty()).map(Map.Entry::getKey).collect(Collectors.toSet()),descriptors.stream().collect(Collectors.toMap(Chapter::id,Chapter::parentId)));
-        return descriptors.stream().filter(c->kept.contains(c.id())).map(c->new Chapter(c.id(),kept.contains(c.parentId())?c.parentId():"",c.order(),c.title(),c.origin(),c.ranges(),assigned.get(c.id()))).toList();
+        var doc=r.reading().documents().get(0);
+        return DocumentQuizChapters.reliable(r)?DocumentQuizChapters.build(r):inferredChapters(doc);
     }
-    private int factOffset(Learning.Item fact) {
-        // 证据坐标在抽取阶段已校验；读取固定正文，禁止回读祖先正文。
-        var source=r.reading().fragments().stream().filter(f->f.source().id().equals(fact.sourceId())).findFirst().orElseThrow().source();
-        // Topic evidence has an exact contiguous quote; runtime exposes its frozen position.
-        return r.quoteOffset(fact)-source.startOffset();
+    private List<Chapter> inferredChapters(ContentReading.Document doc) {
+        var global=index(LearningOrganization.facts(r,cards),"learning_facts_index_v1");
+        List<Learning.Issue> issues=List.of();
+        for(int attempt=0;attempt<2;attempt++) {
+            String suffix=attempt==0?"":"_repair";
+            var input=Map.of("topicIndex",global,"sourceTitle",doc.title(),"remarks",r.lease().request().instructions(),"organizationIssues",issues);r.bounded(input);
+            var units=attempt==0?r.call("semantic_units_v1","organize","learning-units",input,LearningBusinessSchemas.learningDirectory())
+                    :r.correct("semantic_units_v1"+suffix,"organize","learning-units",input,LearningBusinessSchemas.learningDirectory(),"semantic_units_v1");
+            var assignments=LearningOrganization.assign(r,units,cards,"semantic_assign_v1"+suffix);
+            issues=LearningOrganization.review(r,units,assignments,cards,"semantic_review_v1"+suffix);
+            if(!issues.isEmpty())continue;
+            var result=new ArrayList<Chapter>();
+            for(var unit:units.chapters()) {
+                var ids=assignments.stream().filter(a->a.chapterId().equals(unit.id())).map(LearningOrganization.FactAssignment::itemId).toList();
+                var sources=ids.stream().map(id->r.facts().get(id).sourceId()).collect(Collectors.toSet());
+                var ranges=r.reading().fragments().stream().filter(f->sources.contains(f.source().id())).map(f->new Range(f.source().id(),f.sectionId(),f.source().startOffset(),f.source().endOffset())).toList();
+                result.add(new Chapter(unit.id(),unit.parentId(),result.size(),unit.title(),"INFERRED",ranges,ids));
+            }
+            return List.copyOf(result);
+        }
+        throw new LabException("WORKFLOW_REQUIREMENTS_UNSATISFIED","一次组织纠正后仍无法合理划分零散知识的学习章节");
     }
     private void clarify() {
         for(int round=0;round<=2;round++) {
             int room=(r.policy().unitInputBytes()-TextWindow.count(r.lease().request().instructions())-500)/2;
             var input=Map.of("taskType",r.lease().request().taskType(),"remarks",r.lease().request().instructions(),"topicIndex",index(cards,"advice_topics_"+round,room),"sourceStructure",index(r.reading().documents().stream().flatMap(d->d.sections().stream()).toList(),"advice_structure_"+round,room));
-            r.bounded(input);var advice=r.call("planning_advice_"+round,"organize","planning-advice",input,LearningBusinessSchemas.planningAdvice());inferDirectory=advice.directoryPolicy().equals("INFER");
+            r.bounded(input);var advice=r.call("planning_advice_"+round,"organize","planning-advice",input,LearningBusinessSchemas.planningAdvice());
             if(advice.decision().equals("READY"))return;
             if(round==2)throw new LabException("WORKFLOW_REQUIREMENTS_UNSATISFIED","规划澄清达到两轮上限仍无法形成可信职责");
             var selected=new LinkedHashSet<ContentReading.TopicCard>();

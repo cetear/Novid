@@ -16,18 +16,18 @@ public final class Learning {
         public QuizOptions { questionTypes = List.copyOf(questionTypes); }
         public static QuizOptions defaults() { return new QuizOptions(0, List.of("SINGLE_CHOICE", "SHORT_ANSWER"), "MEDIUM"); }
         public void validate() {
-            if (questionCount < 0 || questionCount > 512 || questionTypes.isEmpty() || questionTypes.size() > 2
+            if (questionCount < 0 || questionTypes.isEmpty() || questionTypes.size() > 2
                     || new HashSet<>(questionTypes).size() != questionTypes.size()
                     || !Set.of("SINGLE_CHOICE", "SHORT_ANSWER").containsAll(questionTypes)
                     || difficulty == null || !Set.of("EASY", "MEDIUM", "HARD").contains(difficulty))
-                throw LabException.invalid("自测数量0表示自动，显式要求最多512题；题型及难度须合法");
+                throw LabException.invalid("自测数量0表示自动，显式题数须为非负整数；题型及难度须合法");
         }
     }
     public record CompilationOptions(String detailLevel, int maximumChapters) {
         public static CompilationOptions defaults() { return new CompilationOptions("DETAILED", 0); }
         public void validate() {
             if (detailLevel == null || !Set.of("CONCISE", "DETAILED").contains(detailLevel)
-                    || maximumChapters < 0 || maximumChapters > 512) throw LabException.invalid("整编详略或章节上限不合法");
+                    || maximumChapters < 0) throw LabException.invalid("整编详略或章节上限不合法");
         }
     }
     public record Limits(int turns, int attempts, int tools) {

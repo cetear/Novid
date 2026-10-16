@@ -16,7 +16,7 @@ import java.security.*;
  */
 @Component
 public class StructureParser {
-    public static final String PARSER_VERSION = "commonmark-0.24-v2";
+    public static final String PARSER_VERSION = "commonmark-0.24-v3";
     public static final String SPLIT_VERSION = "structure-chunk-v2";
     public static final String MAPPING_VERSION = "utf16-lines-blocks-v2";
     private final RagProperties config;
@@ -45,6 +45,16 @@ public class StructureParser {
         int[] lineStarts = java.util.stream.IntStream.range(0, text.length()).filter(i -> i == 0 || text.charAt(i - 1) == '\n').toArray();
         var headings = new ArrayList<HeadingAt>();
         var blocks = blocks(text, lease.format(), prefix, headings);
+        var recovered=NumberedOutline.find(text,at->blocks.stream().noneMatch(b->b.start()<=at&&at<b.end()&&Set.of("CODE","LIST","QUOTE","TABLE","HEADING").contains(b.type())));
+        if(!recovered.isEmpty()&&headings.size()<=1) {
+            // 无标题或仅有文档总标题时恢复编号分支；已有多层标题保持其原始边界。
+            int minimum=recovered.stream().mapToInt(NumberedOutline.Heading::level).min().orElseThrow();var existing=List.copyOf(headings);
+            for(var h:recovered) {
+                int parent=existing.stream().filter(v->v.start()<h.start()).reduce((a,b)->b).map(HeadingAt::level).orElse(0);
+                headings.add(new HeadingAt(h.start(),Math.min(6,parent==0?h.level():parent+1+h.level()-minimum),h.title()));
+            }
+            headings.sort(Comparator.comparingInt(HeadingAt::start));
+        }
         var boundaries = new TreeSet<Integer>();
         boundaries.add(0);
         boundaries.add(text.length());

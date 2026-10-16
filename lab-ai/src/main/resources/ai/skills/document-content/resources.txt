@@ -3,6 +3,9 @@ references/read.md
 references/extract.md
 references/index.md
 references/directory.md
+references/joint-plan.md
+references/learning-units.md
+references/organization-review.md
 references/assign.md
 references/normalize.md
 references/sections.md

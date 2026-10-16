@@ -39,7 +39,7 @@ public final class CompilationDocumentRenderer {
                 text.append("#".repeat(depth+2)).append(" ").append(escape(group.heading())).append("\n\n");
                 if ("CONFLICT".equals(group.relation())) text.append("**资料存在不同说法，需结合来源核对。**\n\n");
                 // 保存原Markdown，避免把代码中的尖括号改成HTML实体；展示端沿用原文的净化规则。
-                text.append(section.body()).append("\n\n");
+                text.append(DocumentMarkdown.below(section.body(),depth+2)).append("\n\n");
                 var evidence = section.itemIds().stream().map(id -> {
                     var citation = citations.get(id); if (citation == null) throw invalid();
                     var source = citation.source();

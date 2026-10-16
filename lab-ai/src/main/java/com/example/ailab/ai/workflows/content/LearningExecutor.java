@@ -260,7 +260,7 @@ final class LearningExecutor {
         issues.addAll(whole.issues());
         if(plan.quiz()!=null) {
             var byId=summaries.stream().collect(Collectors.toMap(UnitSummary::id,s->s));
-            for(var candidate:LearningPlanRules.reviewPairs(plan.quiz())) {
+            for(var candidate:LearningPlanRules.reviewPairs(plan.quiz(),plan.version())) {
                 var x=byId.get(candidate.leftId());var y=byId.get(candidate.rightId());
                 var pair=Map.of("candidates",List.of(x,y),"actualQuestions",List.of(outputs.get(x.id()),outputs.get(y.id())),"rule","同知识同认知目的不能仅改写题干；不同认知目的允许再次覆盖");r.bounded(pair);
                 var review=r.call("duplicate_"+round+"_"+candidate.key(),"review","global-review",pair,LearningBusinessSchemas.global(Set.of(x.id(),y.id())));
@@ -281,7 +281,7 @@ final class LearningExecutor {
     private List<String> unitsInChapter(String chapter,Set<String> all){var children=descendants(chapter);return plan.compilation()!=null?plan.compilation().sections().stream().filter(s->children.contains(s.chapterId())&&all.contains(s.id())).map(SectionDuty::id).toList():plan.quiz().slots().stream().filter(s->children.contains(s.primaryChapterId())&&all.contains(s.id())).map(Slot::id).toList();}
     private List<Learning.Issue> chapterAndConflictPass(Map<String,Object> outputs,List<UnitSummary> summaries,String round) {
         var issues=new ArrayList<Learning.Issue>();
-        for(String chapter:plan.compilation()==null?chapterIds():List.<String>of()) {
+        for(String chapter:plan.compilation()==null?(plan.version()==3?chapterIds():plan.quiz().quotas().stream().filter(q->q.allocated()>0).map(Quota::chapterId).toList()):List.<String>of()) {
             var children=descendants(chapter);var members=summaries.stream().filter(s->children.contains(s.chapterId())).toList();int part=0;
             for(var group:LearningPlanner.partition(members,r.policy().unitInputBytes()-1500,ContentJson::encode)) {
                 var allowed=group.stream().map(UnitSummary::id).collect(Collectors.toSet());var input=Map.of("chapterId",chapter,"descendantChapterIds",children,"units",group,"rule","核对完整章职责、衔接、考点及冲突；父章按唯一单元汇总，问题定位单元");r.bounded(input);

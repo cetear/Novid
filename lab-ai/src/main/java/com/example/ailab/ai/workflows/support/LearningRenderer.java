@@ -2,6 +2,8 @@ package com.example.ailab.ai.workflows.support;
 
 import com.example.ailab.contract.dto.Learning.*;
 import com.example.ailab.contract.dto.LearningHierarchy;
+import com.example.ailab.contract.dto.DocumentMarkdown;
+import com.example.ailab.contract.dto.LearningContent;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -9,13 +11,31 @@ import java.util.stream.Collectors;
 public final class LearningRenderer {
     private LearningRenderer() { }
     public static String render(Result result) {
+        return render(result,null);
+    }
+    public static String render(Result result,LearningContent.Plan contentPlan) {
         var out = new StringBuilder("# ").append(text(result.title())).append("\n\n");
         out.append("覆盖说明：已完整读取本次限定范围的原文。知识条目组织及模型质检已完成，内容质量仍需本人核对。\n\n");
         var citations = result.citations().stream().collect(Collectors.toMap(Citation::itemId, c -> c));
         if (result.quiz() != null) {
+            if(contentPlan!=null&&contentPlan.version()>=4) {
+                out.append("## 原文目录\n\n");
+                var parents=contentPlan.quiz().chapters().stream().collect(Collectors.toMap(LearningContent.Chapter::id,LearningContent.Chapter::parentId));
+                for(var c:contentPlan.quiz().chapters())out.append("  ".repeat(LearningHierarchy.depth(c.id(),parents)-1)).append("- ").append(text(c.title())).append("\n");
+                out.append("\n");
+            }
             out.append("## 自测题\n\n");
             for (var q : result.quiz().questions()) {
                 out.append("### ").append(q.id()).append(" · ").append(q.type()).append("\n\n").append(text(q.stem())).append("\n\n");
+                if(contentPlan!=null&&contentPlan.version()>=4) {
+                    var paths=new LinkedHashSet<String>();
+                    for(String id:q.itemIds()) {
+                        var citation=citations.get(id);
+                        contentPlan.quiz().chapters().stream().filter(c->c.ranges().stream().anyMatch(r->r.fragmentId().equals(citation.source().id())&&r.startOffset()<=citation.quoteStartOffset()&&citation.quoteEndOffset()<=r.endOffset()))
+                                .max(Comparator.comparingInt(LearningContent.Chapter::order)).ifPresent(c->paths.add(c.title()));
+                    }
+                    if(!paths.isEmpty())out.append("原文章节：").append(text(String.join("；",paths))).append("\n\n");
+                }
                 for (int i = 0; i < q.options().size(); i++) out.append((char)('A' + i)).append(". ").append(text(q.options().get(i))).append("\n");
                 out.append("\n");
             }
@@ -36,7 +56,7 @@ public final class LearningRenderer {
                     var section = chapter.sections().get(j); var group = plan.groups().get(j);
                     out.append("#".repeat(depth+2)).append(" ").append(text(group.heading())).append("\n\n");
                     if (group.relation().equals("CONFLICT")) out.append("**资料存在不同说法，需结合来源核对。**\n\n");
-                    out.append(text(section.body())).append("\n\n来源：").append(refs(section.itemIds(), citations)).append("\n\n");
+                    out.append(text(DocumentMarkdown.below(section.body(),depth+2))).append("\n\n来源：").append(refs(section.itemIds(), citations)).append("\n\n");
                 }
             }
         }

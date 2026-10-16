@@ -5,7 +5,7 @@ import java.util.*;
 /** 学习业务计划与执行计划分别冻结；调用拆分不改变目录、题位或主要覆盖职责。 */
 public final class LearningContent {
     private LearningContent() { }
-    public static final int VERSION=3;
+    public static final int VERSION=4;
     public record Knowledge(String id,String relation,String summary,List<String> sourceItemIds,List<String> conditions) {
         public Knowledge {sourceItemIds=List.copyOf(sourceItemIds);conditions=List.copyOf(conditions);}
     }

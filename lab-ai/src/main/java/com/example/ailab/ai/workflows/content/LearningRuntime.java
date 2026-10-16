@@ -15,6 +15,7 @@ interface LearningRuntime {
     ContentWorkflowStorePort store();
     <T>T call(String id,String stage,String role,Object input,RecordSchema<T> schema);
     <T>T correct(String id,String role,Object input,RecordSchema<T> schema,String originalId);
+    <T>T correct(String id,String phase,String role,Object input,RecordSchema<T> schema,String originalId);
     <T>T checkpoint(String id,String stage,Object input,RecordSchema<T> schema,Supplier<T> execute);
     boolean preflight(String role,Object input,RecordSchema<?> schema);
     <A,B>List<B> parallel(List<A> input,Function<A,B> execute);

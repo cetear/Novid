@@ -77,7 +77,8 @@ final class LearningPackages {
                 throw new LabException("WORKFLOW_UNIT_TOO_LARGE","接受计划前确认完整单元及依赖结果无法容纳合法模型窗口");
             }
         }
-        return new ExecutionPlan(parts,packs,LearningPlanRules.MAX_PACKAGES,LearningPlanRules.MAX_SPLIT_DEPTH);
+        if(packs.size()>r.executionLimits().turns())throw new LabException("WORKFLOW_PLAN_BUDGET_EXCEEDED","执行包所需调用超过任务剩余执行预算");
+        return new ExecutionPlan(parts,packs,r.executionLimits().turns(),LearningPlanRules.MAX_SPLIT_DEPTH);
     }
     private static boolean related(String a,String b,CompilationPlan c,Blueprint q){
         if(a.equals(b))return true;

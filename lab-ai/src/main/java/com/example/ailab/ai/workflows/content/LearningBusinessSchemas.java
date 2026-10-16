@@ -15,13 +15,14 @@ final class LearningBusinessSchemas {
     static RecordSchema<Directory> directory(int maximum) {
         return directory(maximum,false);
     }
-    static RecordSchema<Directory> learningDirectory(){return directory(LearningPlanRules.MAX_CHAPTERS,true);}
+    static RecordSchema<Directory> learningDirectory(){return directory(0,true);}
     private static RecordSchema<Directory> directory(int maximum,boolean learning) {
-        return new RecordSchema<>(Directory.class,(learning?"原文目录不可靠，基于全部主题建立推断学习分组。可以合并跨自然片段的同一学习主题；只组织原文内容，不声称是真实标题。":"基于全范围主题索引提出融合后的输出目录。")+"chapters id=c1起连续，parentId无父章为空。各章有不同内容职责、排除的邻章职责、统一术语；只有确实需要另一章实际写作结果才登记resultDependencies。relatedChapterIds用于相关小章合包。不要按来源文档或索引包划目录。",
-                List.of(utf8("title",300),utf8("audience",300),utf8("requirements",1000),utf8("reason",1000),items("chapters",maximum),utf8("chapters[].title",200),utf8("chapters[].purpose",600)),v->{
+        return new RecordSchema<>(Directory.class,(learning?"原文目录缺失或不适合学习，基于全范围事实及主题归纳学习分组，不声称是真实原文标题。":"面向独立阅读用途，基于全范围知识归纳主题并提出融合目录。先识别完整问题，再按有实义的共同上位范围组织父子层级；同级保持清楚分类口径，步骤、参数、例子在所属主题下展开。一级数随独立主题自适应，八个、十二个或十六个均不是上限，不为压数强并或增加空泛假根。不预设出题用途或考核单元。")+"先说明每章回答的问题和排除的邻章职责，再按职责归属知识。少量集中知识可以只有一章；孤立知识保留明确职责，不强塞无关主题或无职责的其他章。关键词仅是线索，不能补造教学、因果或前置关系。organizationIssues存在时只纠正组织问题，保留全部知识与条件。chapters id=c1起连续，parentId无父章为空。各章有不同内容职责、排除的邻章职责、统一术语；只有确实需要另一章实际写作结果才登记resultDependencies。relatedChapterIds用于相关小章合包。不要按来源文档、固定条数、文本相邻或索引包划目录。",
+                java.util.stream.Stream.concat(List.of(utf8("title",300),utf8("audience",300),utf8("requirements",1000),utf8("reason",1000),utf8("chapters[].title",200),utf8("chapters[].purpose",600)).stream(),maximum>0?java.util.stream.Stream.of(items("chapters",maximum)):java.util.stream.Stream.empty()).toList(),v->{
             require(!v.chapters().isEmpty(),CONTENT_CONSTRAINT);var ids=v.chapters().stream().map(DirectoryChapter::id).collect(Collectors.toSet());
             for(int i=0;i<v.chapters().size();i++) {
                 var c=v.chapters().get(i);String path="chapters["+i+"]";
+                require(!c.title().isBlank()&&!c.purpose().isBlank(),NON_EMPTY,path+".purpose","明确的章节标题与内容职责");
                 require(c.id().equals("c"+(i+1)),ID_ORDER_MISMATCH,path+".id","c"+(i+1));
                 require(c.parentId().isEmpty()||ids.contains(c.parentId()),UNKNOWN_REFERENCE,path+".parentId","空字符串或已有章节编号");
                 require(ids.containsAll(c.resultDependencies()),UNKNOWN_REFERENCE,path+".resultDependencies","已有章节编号");
@@ -109,11 +110,11 @@ final class LearningBusinessSchemas {
     }
     static RecordSchema<QuizIntent> quizIntent(Set<String> chapters) {
         return new RecordSchema<>(QuizIntent.class,"归纳单文档自测目标与备注。默认coveragePolicy=EVERY_CHAPTER；明确要求重点抽样时FOCUS，明确少量代表性抽样时REPRESENTATIVE。requestedQuestions仅在用户要求精确题数时返回十进制字符串，否则AUTO。focusChapterIds仅引用已提供学习章节。",
-                List.of(utf8("title",300),utf8("requirements",1000),utf8("reason",1000),choices("coveragePolicy",Set.of("EVERY_CHAPTER","FOCUS","REPRESENTATIVE"))),v->{require(v.requestedQuestions().equals("AUTO")||v.requestedQuestions().matches("[1-9][0-9]{0,2}"),CONTENT_CONSTRAINT);require(chapters.containsAll(v.focusChapterIds())&&(!v.coveragePolicy().equals("FOCUS")||!v.focusChapterIds().isEmpty()),CONTENT_CONSTRAINT);});
+                List.of(utf8("title",300),utf8("requirements",1000),utf8("reason",1000),choices("coveragePolicy",Set.of("EVERY_CHAPTER","FOCUS","REPRESENTATIVE"))),v->{boolean count=v.requestedQuestions().equals("AUTO");try{count|=Integer.parseInt(v.requestedQuestions())>0;}catch(NumberFormatException ignored){}require(count,CONTENT_CONSTRAINT);require(chapters.containsAll(v.focusChapterIds())&&(!v.coveragePolicy().equals("FOCUS")||!v.focusChapterIds().isEmpty()),CONTENT_CONSTRAINT);});
     }
     static RecordSchema<Objectives> objectives(List<Learning.Item> facts,Set<String> types,Set<String> chapters) {
         var ids=facts.stream().map(Learning.Item::id).collect(Collectors.toSet());
-        return new RecordSchema<>(Objectives.class,"提取不同可命题目标；认知目的为RECALL/UNDERSTAND/APPLY/COMPARE。每个目标有具体考点、连续原文事实依据、可用题型、1至3的重要性及理由。同一事实编号集合（忽略顺序）与同一cognition只需一个候选；程序会合并重复候选，不能只换题干增加容量。目录/引用/无效正文列入unexaminedItemIds并说明原因。相关章节只作为支持，主归属由程序固定。",
+        return new RecordSchema<>(Objectives.class,"提取不同可命题目标；认知目的为RECALL/UNDERSTAND/APPLY/COMPARE。每个目标有具体考点、连续原文事实依据、可用题型、1至3的重要性及理由。同一事实编号集合（忽略顺序）与同一cognition只需一个候选；程序会合并重复候选，不能只换题干增加容量。目录/引用/无效正文列入unexaminedItemIds并说明原因；有效知识不得仅因孤立、难分类或不属于常见教材主题而排除。相关章节只作为支持，主归属由程序固定。",
                 List.of(items("objectives",128),utf8("objectives[].title",200),utf8("objectives[].reason",500),choices("objectives[].cognition",Set.of("RECALL","UNDERSTAND","APPLY","COMPARE")),optionalUtf8("reason",600)),v->{
             var covered=new HashSet<String>();for(var o:v.objectives()) {require(!o.itemIds().isEmpty()&&ids.containsAll(o.itemIds())&&types.containsAll(o.questionTypes())&&!o.questionTypes().isEmpty()&&o.priority()>=1&&o.priority()<=3&&chapters.containsAll(o.relatedChapterIds()),CONTENT_CONSTRAINT);
                 // 候选重复由规划器确定性合并；此处仍核验事实、题型、章节与完整覆盖。
