@@ -81,7 +81,7 @@ public class ContentTaskRetryRepository implements ContentTaskRetryPort {
     }
     private ContentTaskRetry.Plan plan(SqlRow row,UserContext actor,long id) {
         var blockers=new ArrayList<String>();
-        if(!"KNOWLEDGE_COMPILATION".equals(row.string("task_type")))blockers.add("本轮仅支持资料整编任务");
+        if(!Set.of("KNOWLEDGE_COMPILATION","QUIZ_GENERATION").contains(row.string("task_type")))blockers.add("仅支持资料整编和学习自测任务");
         if(!"FAILED".equals(row.string("status")))blockers.add("当前状态不是失败");
         if(row.get("artifact_id")!=null)blockers.add("任务已有发布产物");
         String code=Objects.toString(row.string("error_code"),"");

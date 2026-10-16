@@ -357,7 +357,7 @@ final class LearningPlanner {
                     .map(f->new com.example.ailab.ai.model.RecordSchema.SummaryFact(f.id(),f.content(),f.quote())).toList());
             return List.of(r.call(id,"organize","index",Map.of("children",children),schema));
         } catch(LabException failure) {
-            if(children.size()<2||!Set.of("MODEL_TRUNCATED","MODEL_CONTEXT_INSUFFICIENT").contains(failure.code()))throw failure;
+            if(children.size()<2||!Set.of("MODEL_TRUNCATED","MODEL_CONTEXT_INSUFFICIENT","WORKFLOW_TEXT_UNREPRESENTABLE").contains(failure.code()))throw failure;
             LOG.info("event=content.index_split node={} children={} code={}",id,children.size(),failure.code());
             int mid=children.size()/2;
             var summaries=new ArrayList<ContentWorkflow.Summary>(indexSummaries(id+"_a",children.subList(0,mid)));
