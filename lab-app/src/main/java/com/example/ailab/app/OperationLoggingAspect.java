@@ -37,6 +37,8 @@ public class OperationLoggingAspect {
             + " || execution(public * com.example.ailab.app.GovernanceMaintenance.execute(..))")
     public Object record(ProceedingJoinPoint invocation) throws Throwable {
         var previous = MDC.getCopyOfContextMap();
+        boolean nested = MDC.get("operationId") != null;
+        boolean failureBoundary = !nested && MDC.get("requestId") == null && MDC.get("traceId") == null;
         if (MDC.get("operationId") == null) MDC.put("operationId", UUID.randomUUID().toString());
         for (Object argument : invocation.getArgs()) {
             if (argument instanceof UserContext actor) MDC.put("actorId", Long.toString(actor.userId()));
@@ -65,7 +67,7 @@ public class OperationLoggingAspect {
         }
         String operation = invocation.getSignature().toShortString();
         long started = System.nanoTime();
-        LOG.info("event=operation.start operation={}", operation);
+        LOG.debug("event=operation.start operation={}", operation);
         try {
             Object result = invocation.proceed();
             String outcome = "SUCCESS";
@@ -75,11 +77,14 @@ public class OperationLoggingAspect {
             if (result instanceof TaskSnapshot task) MDC.put("taskId", Long.toString(task.taskId()));
             if (result instanceof DocumentSnapshot document) MDC.put("documentId", Long.toString(document.id()));
             if (result instanceof LoginResult login) MDC.put("actorId", Long.toString(login.user().id()));
-            LOG.info("event=operation.complete operation={} outcome={} resourceId={} version={} durationMs={}",
+            (nested ? LOG.atDebug() : LOG.atInfo()).log("event=operation.complete operation={} outcome={} resourceId={} version={} durationMs={}",
                     operation, outcome, MDC.get("resource_id"), MDC.get("resource_version"), elapsed(started));
             return result;
         } catch (Throwable failure) {
-            if (failure instanceof LabException)
+            // HTTP、SSE 和 Worker 由各自边界记录失败；独立调用仍在这里保留详细诊断。
+            if (!failureBoundary)
+                LOG.debug("event=operation.failed operation={} code={} durationMs={}", operation, DiagnosticFailure.code(failure), elapsed(started));
+            else if (failure instanceof LabException)
                 LOG.warn("event=operation.failed operation={} code={} durationMs={}", operation, DiagnosticFailure.code(failure), elapsed(started));
             else
                 LOG.error("event=operation.failed operation={} code={} durationMs={}", operation, DiagnosticFailure.code(failure), elapsed(started), DiagnosticFailure.sanitized(failure));

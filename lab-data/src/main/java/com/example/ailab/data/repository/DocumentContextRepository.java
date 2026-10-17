@@ -34,21 +34,21 @@ public class DocumentContextRepository implements DocumentContextPort {
     /** 目录只返回当前激活代次，短锁与权限撤销／内容修订采用同一顺序。 */
     @Transactional
     public List<SectionSnapshot> sections(AuthorizedKnowledgeScope scope, long id, int offset, int limit) {
-        sql.actorShared(scope.actor()); var d = docs.read(scope, id).document();
+        var d = docs.readMetadata(scope, id);
         ready(d);
         return sql.project(mapper.sectionsDocumentSectionsSelect(new Object[]{id, d.documentVersion(), d.activeProcessingRevision(), limit, offset}), DocumentContextRepository::section);
     }
     /** 小片只返回当前版本，与原文位置一起交付；旧批次无映射仍保持 LEGACY。 */
     @Transactional
     public List<ChunkSnapshot> chunks(AuthorizedKnowledgeScope scope, long id, int offset, int limit) {
-        sql.actorShared(scope.actor()); var d = docs.read(scope, id).document(); ready(d);
+        var d = docs.readMetadata(scope, id); ready(d);
         return sql.project(mapper.chunksChunksSelect(new Object[]{id, d.documentVersion(), d.activeProcessingRevision(), limit, offset}), DocumentContextRepository::chunk);
     }
     /** 分页游标绑定显式版本／代次，父章节含全部子标题；每页硬限制不超过 4000 保守词元。 */
     @Transactional
     public SectionPage sectionPage(AuthorizedKnowledgeScope scope, long id, int version, long revision, String sectionId, Integer after, int maxTokens) {
         if (id <= 0 || version <= 0 || revision <= 0 || maxTokens < 4 || maxTokens > policy.maxEvidenceTokens()) throw LabException.invalid("章节分页参数超限");
-        sql.actorShared(scope.actor()); var content = docs.read(scope, id); var d = content.document(); ready(d);
+        var content = docs.read(scope, id); var d = content.document(); ready(d);
         if (d.documentVersion() != version || d.activeProcessingRevision() != revision) throw new LabException("CONTEXT_VERSION_CONFLICT", "文档版本或处理代次已变化，请重新加载目录");
 
 
@@ -64,7 +64,7 @@ public class DocumentContextRepository implements DocumentContextPort {
     /** 最新处理意图可失败或未激活，明确同时返回当前已激活代次。 */
     @Transactional
     public IngestionMetadata ingestion(AuthorizedKnowledgeScope scope, long id) {
-        sql.actorShared(scope.actor()); var d = docs.readMetadata(scope, id);
+        var d = docs.readMetadata(scope, id);
         // 累计执行事实属于本人管理状态，管理员跨库正文读取权不扩大到这些记录。
         if(d.ownerUserId()!=scope.actor().userId()) throw LabException.denied();
         return sql.project(mapper.ingestionDocumentIngestionsSelect(new Object[]{id, d.documentVersion()}), (r,n) ->

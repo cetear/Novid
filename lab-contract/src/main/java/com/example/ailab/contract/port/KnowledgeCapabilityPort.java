@@ -21,23 +21,13 @@ public interface KnowledgeCapabilityPort {
     DocumentContent document(UserContext actor, ScopeRequest request, long documentId);
 
     /** 每次核验当前文档及来源权限，仅返回元数据；生产适配器避免读取全文。 */
-    default DocumentSnapshot documentMetadata(UserContext actor, ScopeRequest request, long documentId) {
-        return document(actor, request, documentId).document();
-    }
+    DocumentSnapshot documentMetadata(UserContext actor, ScopeRequest request, long documentId);
 
     /** 只核验历史来源存在和当前权限，不读取祖先正文，也不受本次正文scope限制。 */
     void verifySources(UserContext actor, List<SourceDependency> sources);
 
     /** 核验当前正文版本、解析代次和可信摘要，不重新传输正文。 */
-    default void verifyReadingDocuments(UserContext actor, ScopeRequest request, List<ContentReading.Document> documents) {
-        // 兼容现有原生验收适配器；生产适配器覆盖为元数据查询。
-        for(var d:documents) {
-            var current=document(actor,request,d.documentId());var snapshot=current.document();
-            if(snapshot.knowledgeBaseId()!=d.knowledgeBaseId()||snapshot.documentVersion()!=d.documentVersion()
-                    ||!Objects.equals(snapshot.activeProcessingRevision(),d.processingRevision())||!Learning.digest(current.text()).equals(d.textHash()))
-                throw new com.example.ailab.contract.error.LabException("CONTEXT_VERSION_CONFLICT","创建时固定的正文版本或解析代次已变化");
-        }
-    }
+    void verifyReadingDocuments(UserContext actor, ScopeRequest request, List<ContentReading.Document> documents);
 
     /**
      * 读取真实 SQL 统计。

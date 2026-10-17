@@ -30,7 +30,7 @@ public class DocumentContextApplicationService {
      * 服务端先读取文档推导库，再按当前角色验证范围；数据端会在短事务再次复核。
      */
     private AuthorizedKnowledgeScope scope(UserContext actor, long id) {
-        var document = documents.read(actor, id).document();
+        var document = documents.readMetadata(actor, id);
         return policy.authorize(actor, new ScopeRequest(ScopeRequest.Mode.SELECTED, List.of(document.knowledgeBaseId()), null));
     }
 

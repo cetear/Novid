@@ -54,9 +54,7 @@ public class AssistantApplicationService {
      * SSE 响应开始前同步核验参数、本人归属与版本，使这些失败保留真实 HTTP 状态。
      */
     public void validateRequest(UserContext actor, AiRequest request) {
-        if (request == null || request.question() == null || request.question().isBlank() || request.question().length() > 2000
-                || (request.sessionId() == null) != (request.sessionVersion() == null)
-                || request.sessionId() != null && (request.sessionId() <= 0 || request.sessionVersion() <= 0))
+        if (request == null || !request.validQuestion() || !request.validSession())
             throw com.example.ailab.contract.error.LabException.invalid("问题或会话参数不合法");
         var scope = request.scope();
         if (request.sessionId() != null) {

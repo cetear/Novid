@@ -83,6 +83,9 @@ public final class S06NativeValidation {
     /** 固定合成知识事实，不使用现有资料、ES或原文文件。 */
     private static KnowledgeCapabilityPort knowledge() {
         return new KnowledgeCapabilityPort() {
+            public DocumentSnapshot documentMetadata(UserContext actor, ScopeRequest scope, long id) { throw new UnsupportedOperationException("合成端口不提供元数据核验"); }
+            public void verifyReadingDocuments(UserContext actor, ScopeRequest scope, List<ContentReading.Document> documents) { throw new UnsupportedOperationException("合成端口不提供冻结来源核验"); }
+
             /** 合成身份范围不声明SQL授权证据。 */
             public AuthorizedKnowledgeScope authorize(UserContext actor,ScopeRequest scope) {return null;}
             public void verifySources(UserContext actor,List<SourceDependency> sources) {throw new IllegalStateException("合成端口不提供SQL权限核验证据");}

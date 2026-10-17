@@ -73,11 +73,11 @@ public class DocumentSqlRepository implements DocumentStorePort {
     public List<DocumentSnapshot> list(AuthorizedKnowledgeScope scope, int offset, int limit) {
         sql.actorShared(scope.actor());
         var p = new SqlParameters().addValue("limit", limit).addValue("offset", offset);
-        sql.scope(scope, p);
+        sql.scopeParameters(scope, p);
         var rows = sql.project(mapper.listRowsSelect(p), SqlSupport::document);
         // 受限结果被过滤，因此页内可能少于 limit；不能为了补足无界循环查询。
         var result = rows.stream().filter(d -> allowedSources(scope, d.id(), d.documentVersion())).toList();
-        sql.audit(scope, "LIST_DOCUMENTS", null, result.size(), result.stream().map(DocumentSnapshot::id).toList());
+        sql.recordAudit(scope, "LIST_DOCUMENTS", null, result.size(), result.stream().map(DocumentSnapshot::id).toList());
         return result;
     }
 
@@ -90,7 +90,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
         var authorized = authorizeRead(scope, id);
         var doc = authorized.document();
         String text = sql.scalar(mapper.readDocumentVersionsSelect(new Object[]{id, doc.documentVersion()}), String.class);
-        sql.audit(scope, "READ_DOCUMENT", id, 1);
+        sql.recordAudit(scope, "READ_DOCUMENT", id, 1, List.of(id));
         return new DocumentContent(doc, text, authorized.sources());
     }
 
@@ -98,7 +98,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
     @Transactional(noRollbackFor = LabException.class)
     public DocumentSnapshot readMetadata(AuthorizedKnowledgeScope scope, long id) {
         var authorized = authorizeRead(scope, id);
-        sql.audit(scope, "READ_DOCUMENT", id, 1);
+        sql.recordAudit(scope, "READ_DOCUMENT", id, 1, List.of(id));
         return authorized.document();
     }
 
@@ -107,12 +107,12 @@ public class DocumentSqlRepository implements DocumentStorePort {
     private AuthorizedRead authorizeRead(AuthorizedKnowledgeScope scope, long id) {
         sql.actorShared(scope.actor());
         var p = new SqlParameters().addValue("id", id);
-        sql.scope(scope, p);
+        sql.scopeParameters(scope, p);
         var docs = sql.project(mapper.readRowsSelect(p), SqlSupport::document);
         if (docs.isEmpty()) throw LabException.denied();
         var doc = docs.get(0);
         var sources = dependencies(id, doc.documentVersion());
-        verifySources(scope, sources);
+        walk(scope.actor(), sources, new HashSet<>(), new HashSet<>(), 0);
         return new AuthorizedRead(doc, sources);
     }
 
@@ -158,11 +158,11 @@ public class DocumentSqlRepository implements DocumentStorePort {
     public KnowledgeStatistics statistics(AuthorizedKnowledgeScope scope) {
         sql.actorShared(scope.actor());
         var p = new SqlParameters();
-        sql.scope(scope, p);
+        sql.scopeParameters(scope, p);
         // 所有来源在保存时已扁平化，SQL 按当前用户角色／来源库状态复核。
 
         var result = sql.one(sql.project(mapper.statisticsRowsSelect(p), (r, n) -> new KnowledgeStatistics(r.longValue("total"), r.longValue("received"), r.longValue("ready"))));
-        sql.audit(scope, "STATISTICS", null, 1);
+        sql.recordAudit(scope, "STATISTICS", null, 1, List.of());
         return result;
     }
 
@@ -219,7 +219,7 @@ public class DocumentSqlRepository implements DocumentStorePort {
      */
     private boolean allowedSources(AuthorizedKnowledgeScope scope, long id, int version) {
         try {
-            verifySources(scope, dependencies(id, version));
+            walk(scope.actor(), dependencies(id, version), new HashSet<>(), new HashSet<>(), 0);
             return true;
         } catch (LabException e) {
             if (e.code().equals("ACCESS_DENIED")) return false;

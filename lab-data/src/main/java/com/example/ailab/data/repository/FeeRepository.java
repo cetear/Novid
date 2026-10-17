@@ -36,7 +36,11 @@ public class FeeRepository implements FeeStorePort {
             throw new LabException("FEE_PRICE_UNAVAILABLE","媒体需要明确单位和真实报价");
         if (!media && price!=null && !price.unit().equals("PER_MILLION_TOKENS")) throw conflict();
         if (price != null && !price.currency().equals(currency)) throw conflict();
-        sql.actor(scope.actor(), true);
+        String id = SqlSupport.hash(scope.actor().userId() + ":" + scope.kind() + ":" + scope.resourceId());
+        // 已有scope只需共享授权；首次创建保留用户排他锁，避免空scope并发插入时的锁升级。
+        if (sql.scalar(mapper.summaryFeeScopesSelect(new Object[]{id}), Integer.class) == 0)
+            sql.actor(scope.actor(), true);
+        else sql.actorShared(scope.actor());
         String taskType = "";
         SqlRow task = null;
         if (scope.kind().equals("TASK")) {
@@ -52,7 +56,6 @@ public class FeeRepository implements FeeStorePort {
                 BigDecimal requested=request.taskType().equals("NOTES_VIDEO")?request.videoOptions().maximumAmount():request.presentationOptions().maximumAmount();limit=limit.min(requested);
             }catch(Exception e){throw conflict();}
         }
-        String id = SqlSupport.hash(scope.actor().userId() + ":" + scope.kind() + ":" + scope.resourceId());
         var scopes = mapper.reserveFeeScopesSelect(new Object[]{id});
         if (scopes.isEmpty()) {
             if(task!=null&&!media) {

@@ -10,6 +10,14 @@ import com.example.ailab.contract.context.UserContext;
  */
 public record AiRequest(String question, ScopeRequest scope, Long sessionId, Long sessionVersion,
                         String modelProfile, String responseFormat, String toolMode) {
+    public boolean validQuestion() {
+        return question != null && !question.isBlank() && question.length() <= 2000;
+    }
+
+    public boolean validSession() {
+        return (sessionId == null && sessionVersion == null)
+                || sessionId != null && sessionVersion != null && sessionId > 0 && sessionVersion > 0;
+    }
     /**
      * S04六参调用保持固定流程，工具续轮由显式选项启用。
      */

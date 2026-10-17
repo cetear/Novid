@@ -251,7 +251,7 @@ lab:
     # 外部 MCP 工具连接与白名单配置。
     mcp:
       # 是否加载并连接配置中的 MCP 服务。
-      enabled: true
+      enabled: ${MCP_ENABLED:true}
       # 服务、远端工具名到本地别名及任务范围由服务端显式配置。
       # MCP 服务列表；工具别名与可用任务范围均由服务端配置。
       servers:

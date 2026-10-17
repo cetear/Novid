@@ -37,6 +37,9 @@ public final class S05ModelNativeValidation {
         var actor = new UserContext(1,UserContext.Role.USER,true,1,false);
         // 合成端口只用于证明模型读到了程序返回事实，不冒称真实数据库统计。
         KnowledgeCapabilityPort knowledge = new KnowledgeCapabilityPort() {
+            public DocumentSnapshot documentMetadata(UserContext actor, ScopeRequest scope, long id) { throw new UnsupportedOperationException("合成端口不提供元数据核验"); }
+            public void verifyReadingDocuments(UserContext actor, ScopeRequest scope, List<ContentReading.Document> documents) { throw new UnsupportedOperationException("合成端口不提供冻结来源核验"); }
+
             /** 本夹具只允许服务端固定SELF。 */
             public AuthorizedKnowledgeScope authorize(UserContext user, ScopeRequest scope) { return null; }
             /** 本样本不允许读取文档。 */

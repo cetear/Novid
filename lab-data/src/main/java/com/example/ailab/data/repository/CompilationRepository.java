@@ -57,7 +57,7 @@ public class CompilationRepository implements CompilationStorePort {
         if (mapper.approval(new Object[]{id, actor.userId()}).isEmpty()) throw LabException.denied();
         var approval = approvals.read(actor, id);
         DocumentSnapshot document = null;
-        if (approval.documentId() != null) document = documents.read(all(actor), approval.documentId()).document();
+        if (approval.documentId() != null) document = documents.readMetadata(all(actor), approval.documentId());
         return new Compilation.SaveStatus(approval, document);
     }
     public Compilation.Origin origin(AuthorizedKnowledgeScope scope, long id) {
@@ -94,12 +94,12 @@ public class CompilationRepository implements CompilationStorePort {
                 r.intValue("start_offset"),r.intValue("end_offset"),r.string("mapping_hash"));
     }
     public List<Compilation.Participation> participations(AuthorizedKnowledgeScope scope, long id, int offset, int limit) {
-        documents.read(scope, id);
+        documents.readMetadata(scope, id);
         var result = new ArrayList<Compilation.Participation>();
         for (var row : mapper.participations(new Object[]{id, offset, limit})) {
             long compiledId = row.longValue("compiled_document_id");
             try {
-                var document = documents.read(all(scope.actor()), compiledId).document();
+                var document = documents.readMetadata(all(scope.actor()), compiledId);
                 var versions = mapper.sourceVersions(new Object[]{id, compiledId}).stream().map(v -> v.intValue("source_document_version")).toList();
                 result.add(new Compilation.Participation(compiledId, document.knowledgeBaseId(), document.title(), document.documentVersion(), versions));
             } catch (LabException failure) { if (!"ACCESS_DENIED".equals(failure.code())) throw failure; }

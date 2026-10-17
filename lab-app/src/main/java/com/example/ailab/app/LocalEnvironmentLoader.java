@@ -14,25 +14,28 @@ import java.util.Set;
  * 本机 .env 仅作为 UTF-8 文本配置读取，不执行脚本或修改 JVM/操作系统环境变量。
  */
 final class LocalEnvironmentLoader {
-    // 与启动脚本相同的字段白名单，避免本机文件注入任意 Spring 配置。
-    private static final Set<String> ALLOWED_KEYS = Set.of(
-            "DB_URL", "DB_USERNAME", "DB_PASSWORD", "DB_POOL_MAX_SIZE", "DB_CONNECTION_TIMEOUT_MS", "DB_LEAK_DETECTION_MS",
-            "DB_POOL_DIAGNOSTICS_MS", "DB_CONTENT_CONCURRENCY", "DB_ADMISSION_WAIT_MS", "TRACE_PROGRESS_INTERVAL_MS",
-            "TASK_RENEWAL_ATTEMPTS", "TASK_RENEWAL_BACKOFF_MS", "TASK_RENEWAL_WINDOW_MS", "BOOTSTRAP_ENABLED", "BOOTSTRAP_USERNAME",
-            "BOOTSTRAP_PASSWORD", "SEARCH_ENABLED", "INGESTION_WORKER_ENABLED", "TASK_WORKER_ENABLED",
-            "ES_URL", "ES_USERNAME", "ES_PASSWORD", "ES_CA_CERTIFICATE", "ES_TRUST_ALL", "ES_INDEX",
-            "MODEL_MODE", "MODEL_EXTERNAL_DATA_ALLOWED", "MODEL_PRIMARY_NAME", "MODEL_BACKUP_NAME",
-            "MODEL_BACKUP_ENABLED", "MODEL_BASE_URL", "MODEL_BACKUP_BASE_URL", "MODEL_API_KEY",
-            "MODEL_BACKUP_API_KEY", "EMBEDDING_MODEL_NAME", "EMBEDDING_ENABLED", "EMBEDDING_BASE_URL",
-            "MODEL_PRIMARY_TIMEOUT_SECONDS", "MODEL_BACKUP_TIMEOUT_SECONDS", "TOOL_TIMEOUT_SECONDS",
-            "WORKFLOW_MODEL_NAME", "WORKFLOW_MODEL_BASE_URL", "WORKFLOW_MODEL_CREDENTIAL_REF", "WORKFLOW_MODEL_API_KEY",
-            "WORKFLOW_MODEL_CONTEXT_WINDOW", "WORKFLOW_MODEL_OUTPUT_LIMIT", "WORKFLOW_MODEL_TIMEOUT_SECONDS", "WORKFLOW_MODEL_QUOTA_GROUP",
-            "MEDIA_QUERY_FREE_VERIFIED", "MCP_ENABLED", "SKILLS_ENABLED", "SKILLS_ROOTS",
-            "EMBEDDING_CREDENTIAL_REF", "EMBEDDING_API_KEY", "EMBEDDING_DIMENSIONS", "PORT",
-            "MYSQL_ROOT_PASSWORD", "MYSQL_PASSWORD", "LOG_PATH", "LOG_LEVEL", "LAB_LOG_LEVEL",
-            "LOG_MAX_FILE_SIZE", "LOG_MAX_HISTORY_DAYS", "LOG_MAX_ARCHIVE_SIZE",
-            "SLOW_SQL_ENABLED", "SLOW_SQL_THRESHOLD_MS", "SLOW_SQL_MAX_SQL_LENGTH",
-            "SLOW_SQL_MAX_FILE_SIZE", "SLOW_SQL_MAX_HISTORY_DAYS", "SLOW_SQL_MAX_ARCHIVE_SIZE");
+    // Java 与验收脚本共用同一字段清单。
+    private static final Set<String> ALLOWED_KEYS = allowedKeys();
+
+    private static Set<String> allowedKeys() {
+        try (var input = LocalEnvironmentLoader.class.getResourceAsStream("/local-environment-keys.txt")) {
+            if (input == null) throw new IllegalStateException("缺少本机配置字段清单");
+            return new String(input.readAllBytes(), StandardCharsets.UTF_8).lines()
+                    .filter(line -> !line.isBlank()).collect(java.util.stream.Collectors.toUnmodifiableSet());
+        } catch (IOException error) {
+            throw new IllegalStateException("无法读取本机配置字段清单");
+        }
+    }
+
+    static Path file(String[] args) {
+        var values = new org.springframework.boot.DefaultApplicationArguments(args).getOptionValues("lab.env-file");
+        if (values != null) {
+            if (values.size() != 1 || values.get(0).isBlank())
+                throw new IllegalArgumentException("lab.env-file 必须指定一个配置文件路径");
+            return Path.of(values.get(0));
+        }
+        return Path.of(System.getProperty("lab.env-file", System.getenv().getOrDefault("LAB_ENV_FILE", ".env")));
+    }
 
     /**
      * 工具类只提供启动配置装配，不允许创建携带凭证的可打印实例。

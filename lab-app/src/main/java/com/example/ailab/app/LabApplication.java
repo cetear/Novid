@@ -12,7 +12,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
 import java.util.TimeZone;
-import java.nio.file.Path;
 
 /**
  * 唯一正式 Boot 装配入口，库模块保持普通 JAR。
@@ -27,13 +26,13 @@ import java.nio.file.Path;
 @EnableScheduling
 public class LabApplication {
     /**
-     * 在 Spring 装配前读取工作目录中的 .env；全部持久化时间采用 UTC。
+     * 在 Spring 装配前读取所选配置文件，默认工作目录中的 .env；全部持久化时间采用 UTC。
      */
     public static void main(String[] args) {
         TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
         var application = new SpringApplication(LabApplication.class);
         // IDEA 的工作目录设为项目根目录；缺少 .env 时继续使用显式环境配置。
-        LocalEnvironmentLoader.initialize(application, Path.of(".env"));
+        LocalEnvironmentLoader.initialize(application, LocalEnvironmentLoader.file(args));
         application.run(args);
     }
 }

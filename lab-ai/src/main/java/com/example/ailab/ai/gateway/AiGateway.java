@@ -79,10 +79,9 @@ public class AiGateway implements AiGatewayPort {
      */
     public AiResult answer(UserContext actor, AiRequest request, RequestCancellation cancellation) {
         cancellation.check();
-        if (request == null || request.question() == null || request.question().isBlank() || request.question().length() > 2000)
+        if (request == null || !request.validQuestion())
             throw LabException.invalid("问题须为 1～2000 字符");
-        if ((request.sessionId() == null) != (request.sessionVersion() == null)
-                || request.sessionId() != null && (request.sessionId() <= 0 || request.sessionVersion() <= 0))
+        if (!request.validSession())
             throw LabException.invalid("sessionId 与 sessionVersion 须成对为正数");
         // HTTP逻辑白名单在任何会话领取、向量或摘要前检查，非法选择零模型尝试。
         models.validateSelection(request.modelProfile());

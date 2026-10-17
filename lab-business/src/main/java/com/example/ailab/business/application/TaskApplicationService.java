@@ -57,8 +57,8 @@ public class TaskApplicationService {
         DocumentApplicationService.validateKey(r.idempotencyKey());
         policy.authorize(actor, r.scope());
         for (long id : r.documentIds()) {
-            var document = knowledge.document(actor, r.scope(), id);
-            if ("QUIZ_GENERATION".equals(r.taskType()) && document.document().activeProcessingRevision() == null)
+            var document = knowledge.documentMetadata(actor, r.scope(), id);
+            if ("QUIZ_GENERATION".equals(r.taskType()) && document.activeProcessingRevision() == null)
                 throw new LabException("INDEX_NOT_READY", "自测文档须先完成结构入库");
         }
         if (mediaType) {

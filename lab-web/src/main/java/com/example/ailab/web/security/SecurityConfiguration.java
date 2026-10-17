@@ -15,6 +15,9 @@ import jakarta.servlet.DispatcherType;
 @Configuration
 @org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication(type = org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication.Type.SERVLET)
 public class SecurityConfiguration {
+    static final java.util.List<String> PUBLIC_PATHS = java.util.List.of(
+            "/api/v1/auth/login", "/actuator/health", "/run-inspector.html", "/run-inspector.js",
+            "/run-inspector.css", "/learning.html", "/learning.js", "/learning.css");
     /**
      * CSRF 仅因不使用 Cookie 认证而关闭；不开放任意 CORS。
      */
@@ -25,7 +28,7 @@ public class SecurityConfiguration {
                 .authorizeHttpRequests(a -> a
                         // 容器内部的完成／错误派发不重新触发鉴权；首次 REQUEST 仍必须通过 Bearer。
                         .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
-                        .requestMatchers("/api/v1/auth/login", "/actuator/health", "/run-inspector.html", "/run-inspector.js", "/run-inspector.css", "/learning.html", "/learning.js", "/learning.css").permitAll().anyRequest().authenticated())
+                        .requestMatchers(PUBLIC_PATHS.toArray(String[]::new)).permitAll().anyRequest().authenticated())
                 .addFilterBefore(new BearerTokenFilter(accounts, json), UsernamePasswordAuthenticationFilter.class).build();
     }
 }

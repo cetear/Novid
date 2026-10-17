@@ -75,6 +75,11 @@ public class SqlSupport {
      */
     public void scope(AuthorizedKnowledgeScope scope, SqlParameters p) {
         actor(scope.actor(), false);
+        scopeParameters(scope, p);
+    }
+
+    /** 构造范围参数；调用者负责核验身份，文档读路径在共享锁内复用。 */
+    void scopeParameters(AuthorizedKnowledgeScope scope, SqlParameters p) {
         p.addValue("actor", scope.actor().userId());
         if (scope.actor().role() != UserContext.Role.ADMIN && scope.mode() == ScopeRequest.Mode.ALL)
             throw LabException.denied();
@@ -173,6 +178,12 @@ public class SqlSupport {
     public void audit(AuthorizedKnowledgeScope scope, String action, Long id, int count, List<Long> resourceIds) {
         if (scope.actor().role() != UserContext.Role.ADMIN) return;
         actor(scope.actor(), false);
+        recordAudit(scope, action, id, count, resourceIds);
+    }
+
+    /** 记录审计；调用者负责核验身份，文档读路径在共享锁内复用。 */
+    void recordAudit(AuthorizedKnowledgeScope scope, String action, Long id, int count, List<Long> resourceIds) {
+        if (scope.actor().role() != UserContext.Role.ADMIN) return;
         if (resourceIds.size() > 100 || resourceIds.stream().anyMatch(value -> value == null || value <= 0))
             throw LabException.invalid("审计对象集合超限");
         // 列表元素仅为服务器验证过的正整数，固定JSON字段不接受任意用户表达式。

@@ -1,27 +1,42 @@
-param([string]$EnvFile = '.env', [switch]$InitializeIndex, [switch]$LoadEnvironmentOnly, [switch]$CleanupIndex, [ValidateRange(1,100)][int]$CleanupMaxBatches=20)
+﻿param([string]$EnvFile = '.env', [switch]$InitializeIndex, [switch]$LoadEnvironmentOnly, [switch]$CleanupIndex, [ValidateRange(1,100)][int]$CleanupMaxBatches=20)
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
-$allowed = @('DB_URL','DB_USERNAME','DB_PASSWORD','BOOTSTRAP_ENABLED','BOOTSTRAP_USERNAME','BOOTSTRAP_PASSWORD','SEARCH_ENABLED','INGESTION_WORKER_ENABLED','TASK_WORKER_ENABLED','ES_URL','ES_USERNAME','ES_PASSWORD','ES_CA_CERTIFICATE','ES_TRUST_ALL','ES_INDEX','MODEL_MODE','MODEL_EXTERNAL_DATA_ALLOWED','MODEL_PRIMARY_NAME','MODEL_BACKUP_NAME','MODEL_BACKUP_ENABLED','MODEL_BASE_URL','MODEL_BACKUP_BASE_URL','MODEL_API_KEY','MODEL_BACKUP_API_KEY','MODEL_PRIMARY_TIMEOUT_SECONDS','MODEL_BACKUP_TIMEOUT_SECONDS','WORKFLOW_MODEL_NAME','WORKFLOW_MODEL_BASE_URL','WORKFLOW_MODEL_CREDENTIAL_REF','WORKFLOW_MODEL_API_KEY','WORKFLOW_MODEL_CONTEXT_WINDOW','WORKFLOW_MODEL_OUTPUT_LIMIT','WORKFLOW_MODEL_TIMEOUT_SECONDS','WORKFLOW_MODEL_QUOTA_GROUP','TOOL_TIMEOUT_SECONDS','MEDIA_QUERY_FREE_VERIFIED','MCP_ENABLED','SKILLS_ENABLED','SKILLS_ROOTS','PPT_SKILL','EMBEDDING_MODEL_NAME','EMBEDDING_ENABLED','EMBEDDING_BASE_URL','EMBEDDING_CREDENTIAL_REF','EMBEDDING_API_KEY','EMBEDDING_DIMENSIONS','PORT','MYSQL_ROOT_PASSWORD','MYSQL_PASSWORD','LOG_PATH','LOG_LEVEL','LAB_LOG_LEVEL','LOG_MAX_FILE_SIZE','LOG_MAX_HISTORY_DAYS','LOG_MAX_ARCHIVE_SIZE')
-# .env 只作为文本读取，不执行其中任何 PowerShell 语句。
-$allowed += @('DB_POOL_MAX_SIZE','DB_CONNECTION_TIMEOUT_MS','DB_LEAK_DETECTION_MS','DB_POOL_DIAGNOSTICS_MS','DB_CONTENT_CONCURRENCY','DB_ADMISSION_WAIT_MS','TRACE_PROGRESS_INTERVAL_MS','TASK_RENEWAL_ATTEMPTS','TASK_RENEWAL_BACKOFF_MS','TASK_RENEWAL_WINDOW_MS')
-$envPath = Join-Path $workspace $EnvFile
-$allowed += @('SLOW_SQL_ENABLED','SLOW_SQL_THRESHOLD_MS','SLOW_SQL_MAX_SQL_LENGTH','SLOW_SQL_MAX_FILE_SIZE','SLOW_SQL_MAX_HISTORY_DAYS','SLOW_SQL_MAX_ARCHIVE_SIZE')
-if (Test-Path -LiteralPath $envPath) {
-    foreach ($line in Get-Content -LiteralPath $envPath -Encoding utf8) {
-        if ($line.Trim() -eq '' -or $line.Trim().StartsWith('#')) { continue }
-        if ($line -notmatch '^([A-Z][A-Z0-9_]*)=(.*)$') { throw '.env 格式错误' }
-        $key = $Matches[1]
-        if ($key -notin $allowed) { throw '发现不允许的环境配置字段' }
-        [Environment]::SetEnvironmentVariable($key, $Matches[2], 'Process')
+$envPath = if ([IO.Path]::IsPathRooted($EnvFile)) { [IO.Path]::GetFullPath($EnvFile) } else { [IO.Path]::GetFullPath((Join-Path $workspace $EnvFile)) }
+if ($LoadEnvironmentOnly) {
+    # 仅验收脚本需要进程环境；正式应用由 Java 加载所选文件。
+    $allowed = Get-Content -LiteralPath (Join-Path $workspace 'lab-app/src/main/resources/local-environment-keys.txt') -Encoding utf8
+    $values = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+    if (Test-Path -LiteralPath $envPath) {
+        $lineNumber = 0
+        foreach ($line in Get-Content -LiteralPath $envPath -Encoding utf8) {
+            $lineNumber++
+            if ($line.Trim() -eq '' -or $line.TrimStart().StartsWith('#')) { continue }
+            $separator = $line.IndexOf('=')
+            if ($separator -lt 1) { throw ".env 第 $lineNumber 行格式错误" }
+            $key = $line.Substring(0, $separator)
+            if ($key -cnotin $allowed -or $values.ContainsKey($key)) { throw ".env 第 $lineNumber 行字段不受支持或重复" }
+            $values.Add($key, $line.Substring($separator + 1))
+        }
     }
+    foreach ($key in $values.Keys) {
+        if ($null -eq [Environment]::GetEnvironmentVariable($key, 'Process')) {
+            [Environment]::SetEnvironmentVariable($key, $values[$key], 'Process')
+        }
+    }
+    return
 }
-if ($LoadEnvironmentOnly) { return }
 if ($InitializeIndex -and $CleanupIndex) { throw '初始化与清理必须分别执行' }
 $jar = Join-Path $workspace 'lab-app/target/lab-app-0.1.0-SNAPSHOT.jar'
 if (-not (Test-Path -LiteralPath $jar)) { throw '请先在项目目录完成 Maven 构建' }
-# 仅明确初始化命令建索引；已有索引不会删除。
-# 明确 UTF-8，避免维护命令的中文结果被本机默认编码破坏。
-if ($InitializeIndex) { & java '-Dfile.encoding=UTF-8' -jar $jar --lab.command=init-index --lab.bootstrap.enabled=false --lab.search.enabled=true --lab.ingestion.worker-enabled=false --lab.task.worker-enabled=false --lab.media.worker-enabled=false --spring.main.web-application-type=none }
-elseif ($CleanupIndex) { & java '-Dfile.encoding=UTF-8' -jar $jar --lab.command=cleanup-index "--lab.cleanup.max-batches=$CleanupMaxBatches" --lab.bootstrap.enabled=false --lab.search.enabled=true --lab.ingestion.worker-enabled=false --lab.task.worker-enabled=false --lab.media.worker-enabled=false --spring.main.web-application-type=none }
-else { & java '-Dfile.encoding=UTF-8' -jar $jar }
-exit $LASTEXITCODE
+$arguments = @('-Dfile.encoding=UTF-8', '-jar', $jar, "--lab.env-file=$envPath")
+if ($InitializeIndex -or $CleanupIndex) {
+    $arguments += @('--lab.bootstrap.enabled=false', '--lab.search.enabled=true', '--lab.ingestion.worker-enabled=false', '--lab.task.worker-enabled=false', '--lab.media.worker-enabled=false', '--spring.main.web-application-type=none')
+    if ($InitializeIndex) { $arguments += '--lab.command=init-index' }
+    else { $arguments += @('--lab.command=cleanup-index', "--lab.cleanup.max-batches=$CleanupMaxBatches") }
+}
+Push-Location -LiteralPath $workspace
+try {
+    & java @arguments
+    $applicationExitCode = $LASTEXITCODE
+} finally { Pop-Location }
+exit $applicationExitCode

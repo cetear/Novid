@@ -96,8 +96,12 @@ public class AssistantController {
                         delivery.done(result);
                     }
                 } catch (LabException failure) {
+                    org.slf4j.LoggerFactory.getLogger(AssistantController.class).warn("event=stream.rejected code={}",
+                            com.example.ailab.contract.error.DiagnosticFailure.code(failure));
                     delivery.failure(failure.code(), failure.getMessage());
                 } catch (Exception failure) {
+                    org.slf4j.LoggerFactory.getLogger(AssistantController.class).error("event=stream.failed code=INTERNAL_ERROR",
+                            com.example.ailab.contract.error.DiagnosticFailure.sanitized(failure));
                     // 供应商与容器异常只输出稳定错误，不将凭证或内部栈交付客户端。
                     delivery.failure("INTERNAL_ERROR", "服务暂不可用");
                 } finally {

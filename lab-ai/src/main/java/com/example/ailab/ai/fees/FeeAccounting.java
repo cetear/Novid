@@ -15,6 +15,7 @@ import java.util.UUID;
  */
 @Component
 public class FeeAccounting {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(FeeAccounting.class);
     private final FeeStorePort store;
     private final FeeProperties properties;
 
@@ -56,10 +57,33 @@ public class FeeAccounting {
     }
 
     /**
-     * 发送许可写失败时绝不调用远程；已有预留保持可对账。
+     * 发送前已回滚的锁冲突可在新事务中补登记一次；不重新预留或消费模型执行权。
      */
     public void sending(FeeReservation reservation) {
-        guarded(() -> store.sending(reservation));
+        boolean independent = !org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive();
+        for (int retry = 0; retry < 2; retry++) {
+            try {
+                store.sending(reservation);
+                return;
+            } catch (LabException e) {
+                throw e;
+            } catch (RuntimeException e) {
+                // 无外层事务时，仓库代理已完成回滚；下一次调用才会获得全新的事务。
+                if (retry == 0 && independent && rolledBackLock(e))
+                    LOG.warn("event=fee.sending_lock_retry retry=1");
+                else throw unavailable();
+            }
+        }
+    }
+
+    private boolean rolledBackLock(RuntimeException failure) {
+        Throwable cause = failure;
+        for (int depth = 0; cause != null && depth < 16; depth++, cause = cause.getCause()) {
+            if (cause instanceof java.sql.SQLTransactionRollbackException sql
+                    && (sql.getErrorCode() == 1205 || sql.getErrorCode() == 1213)
+                    && ("40001".equals(sql.getSQLState()) || "HY000".equals(sql.getSQLState()))) return true;
+        }
+        return false;
     }
 
     /**

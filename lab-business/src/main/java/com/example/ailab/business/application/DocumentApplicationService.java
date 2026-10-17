@@ -70,6 +70,10 @@ public class DocumentApplicationService {
         return documents.read(policy.authorize(actor, new ScopeRequest(actor.role() == UserContext.Role.ADMIN ? ScopeRequest.Mode.ALL : ScopeRequest.Mode.SELF, List.of(), null)), id);
     }
 
+    public DocumentSnapshot readMetadata(UserContext actor, long id) {
+        return documents.readMetadata(policy.authorize(actor, new ScopeRequest(actor.role() == UserContext.Role.ADMIN ? ScopeRequest.Mode.ALL : ScopeRequest.Mode.SELF, List.of(), null)), id);
+    }
+
     /**
      * 保留服务端来源约束，不允许编辑清除来源。
      */
