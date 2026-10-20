@@ -22,8 +22,8 @@ public class FeeRepository implements FeeStorePort {
     /** 使用正式数据源和Spring事务代理，不复用可丢追踪存储。 */
     public FeeRepository(SqlSupport sql) { this.sql = sql; this.mapper = sql.mapper(FeeMapper.class); }
 
-    /** 同一范围并发预留串行核对累计金额及词元；既有scope上限不因配置变更重置。 */
-    @Override @Transactional
+    /** 同一范围由排他锁串行核对；锁等待后的汇总需看见已提交预留，不能沿用加锁前的旧快照。 */
+    @Override @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public FeeReservation reserve(FeeScope scope, String operationId, String modelId, String operationType,
             long input, long output, FeePrice price, String currency, BigDecimal limit, long tokenLimit, boolean simulated) {
         if (input < 0 || output < 0 || input > 10000000 || output > 10000000 || tokenLimit < 1

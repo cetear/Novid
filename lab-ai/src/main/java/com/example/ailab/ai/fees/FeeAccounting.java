@@ -52,7 +52,7 @@ public class FeeAccounting {
         } catch (LabException e) {
             throw e;
         } catch (RuntimeException e) {
-            throw unavailable();
+            throw unavailable("RESERVE", e);
         }
     }
 
@@ -71,7 +71,7 @@ public class FeeAccounting {
                 // 无外层事务时，仓库代理已完成回滚；下一次调用才会获得全新的事务。
                 if (retry == 0 && independent && rolledBackLock(e))
                     LOG.warn("event=fee.sending_lock_retry retry=1");
-                else throw unavailable();
+                else throw unavailable("SENDING", e);
             }
         }
     }
@@ -90,7 +90,7 @@ public class FeeAccounting {
      * 仅确定未发送释放；数据库失败保留未知窗口，不能吞错当退款。
      */
     public void release(FeeReservation reservation) {
-        guarded(() -> store.release(reservation));
+        guarded("RELEASE", () -> store.release(reservation));
     }
 
     /**
@@ -104,7 +104,7 @@ public class FeeAccounting {
             } catch (LabException e) {
                 throw e;
             } catch (RuntimeException e) {
-                if (retry == 1) throw unavailable();
+                if (retry == 1) throw unavailable("COMPLETE", e);
             }
         }
     }
@@ -112,20 +112,31 @@ public class FeeAccounting {
     /**
      * 稳定错误不带连接地址和供应商正文。
      */
-    private void guarded(Runnable action) {
+    private void guarded(String stage, Runnable action) {
         try {
             action.run();
         } catch (LabException e) {
             throw e;
         } catch (RuntimeException e) {
-            throw unavailable();
+            throw unavailable(stage, e);
         }
     }
 
     /**
      * 可靠账本失效必须停止新付费调用，与可丢追踪的降级不同。
      */
-    private LabException unavailable() {
+    private LabException unavailable(String stage, RuntimeException failure) {
+        String state = "UNKNOWN"; Integer errorCode = null;
+        Throwable cause = failure;
+        for (int depth = 0; cause != null && depth < 8; depth++, cause = cause.getCause()) {
+            if (cause instanceof java.sql.SQLException sql) {
+                if (sql.getSQLState() != null && sql.getSQLState().matches("[A-Z0-9]{5}")) state = sql.getSQLState();
+                errorCode = sql.getErrorCode();
+                break;
+            }
+        }
+        LOG.warn("event=fee.ledger_failed stage={} sqlState={} sqlErrorCode={}", stage, state, errorCode,
+                com.example.ailab.contract.error.DiagnosticFailure.sanitized(failure));
         return new LabException("FEE_LEDGER_UNAVAILABLE", "可靠费用记录暂不可用，请核对原操作");
     }
 }

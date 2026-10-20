@@ -47,19 +47,23 @@ final class LearningPlanner {
         return (int)Math.min(Integer.MAX_VALUE,estimate);
     }
     private CompilationPlan compilation() {
-        var value=compilation("",List.of());
+        var value=compilation("",List.of(),null);
         var issues=LearningOrganization.review(r,value.directory(),LearningOrganization.assignments(value),cards,"organization_review_v1");
         if(!issues.isEmpty()) {
-            value=compilation("_organization_repair_v1",issues);
-            if(!LearningOrganization.review(r,value.directory(),LearningOrganization.assignments(value),cards,"organization_review_repaired_v1").isEmpty())
+            value=LearningOrganization.exclusionsOnly(value,issues)
+                    ?LearningOrganization.repairExclusions(r,value,issues,jointCompilation?"compact_directory":"directory")
+                    :compilation("_organization_repair_v2",issues,value);
+            if(!LearningOrganization.review(r,value.directory(),LearningOrganization.assignments(value),cards,"organization_review_repaired_v2").isEmpty())
                 throw new LabException("WORKFLOW_REQUIREMENTS_UNSATISFIED","一次组织纠正后仍无法确定完整且合理的知识职责");
         }
         return value;
     }
-    private CompilationPlan compilation(String suffix,List<Learning.Issue> issues) {
-        if(r.compact()&&(suffix.isEmpty()||jointCompilation)){var joined=new CompactCompilationPlanner(r).plan(suffix,issues);if(joined.isPresent()){jointCompilation=true;var value=joined.get();r.checkpoint("directory"+suffix,"organize",Map.of("compact",ContentJson.hash(value)),LearningBusinessSchemas.directory(r.lease().request().compilationOptions().maximumChapters()),value::directory);return value;}}
+    private CompilationPlan compilation(String suffix,List<Learning.Issue> issues,CompilationPlan reviewedPlan) {
+        if(r.compact()&&(suffix.isEmpty()||jointCompilation)){var joined=new CompactCompilationPlanner(r).plan(suffix,issues,reviewedPlan);if(joined.isPresent()){jointCompilation=true;var value=joined.get();r.checkpoint("directory"+suffix,"organize",Map.of("compact",ContentJson.hash(value)),LearningBusinessSchemas.directory(r.lease().request().compilationOptions().maximumChapters()),value::directory);return value;}}
         int maximum=r.lease().request().compilationOptions().maximumChapters();
-        var directoryInput=Map.of("remarks",r.lease().request().instructions(),"options",r.lease().request().compilationOptions(),"allThemes",index(LearningOrganization.facts(r,cards),"directory_facts_v1"),"organizationIssues",issues);
+        var directoryInput=new LinkedHashMap<String,Object>(Map.of("remarks",r.lease().request().instructions(),"options",r.lease().request().compilationOptions(),"allThemes",index(LearningOrganization.facts(r,cards),"directory_facts_v1"),"organizationIssues",issues));
+        if(reviewedPlan!=null)directoryInput.putAll(LearningOrganization.correctionContext(reviewedPlan,issues));
+        r.bounded(directoryInput);
         var directory=suffix.isEmpty()?r.call("directory","organize","directory",directoryInput,LearningBusinessSchemas.directory(maximum))
                 :r.correct("directory"+suffix,"organize","directory",directoryInput,LearningBusinessSchemas.directory(maximum),jointCompilation?"compact_directory":"directory");
         var assignments=LearningOrganization.assign(r,directory,cards,"fact_assign_v1"+suffix);

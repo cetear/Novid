@@ -12,6 +12,9 @@ import static com.example.ailab.ai.model.RecordSchema.*;
 final class LearningOrganization {
     record FactAssignment(String itemId,String chapterId,List<String> relatedChapterIds,String reason) { }
     record FactAssignments(List<FactAssignment> assignments) { }
+    record ChapterExclusions(String chapterId,List<String> exclusions) { }
+    record ExclusionRepair(List<ChapterExclusions> patches) { }
+    static final String EXCLUSION_CONFLICT="DIRECTORY_EXCLUSION_CONFLICT";
     private LearningOrganization() { }
 
     static List<Map<String,Object>> facts(LearningRuntime r,List<ContentReading.TopicCard> cards) {
@@ -82,6 +85,47 @@ final class LearningOrganization {
         }
         return List.copyOf(result);
     }
+    static Map<String,Object> correctionContext(CompilationPlan plan,List<Learning.Issue> issues) {
+        var targets=new ArrayList<Map<String,Object>>();
+        for(int i=0;i<issues.size();i++) {
+            var issue=issues.get(i);String path="knowledge";
+            for(int j=0;j<plan.directory().chapters().size();j++)if(plan.directory().chapters().get(j).id().equals(issue.unitId()))
+                path="directory.chapters["+j+"]"+(issue.code().equals(EXCLUSION_CONFLICT)?".exclusions":"");
+            for(int j=0;j<plan.knowledge().size();j++)if(plan.knowledge().get(j).sourceItemIds().contains(issue.unitId()))path="knowledge["+j+"]";
+            targets.add(Map.of("issueIndex",i,"unitId",issue.unitId(),"path",path));
+        }
+        return Map.of("reviewedPlan",plan,"reviewedPlanHash",ContentJson.hash(plan),"organizationIssues",issues,"issueTargets",targets);
+    }
+    static boolean exclusionsOnly(CompilationPlan plan,List<Learning.Issue> issues) {
+        var chapters=plan.directory().chapters().stream().map(DirectoryChapter::id).collect(Collectors.toSet());
+        return !issues.isEmpty()&&issues.stream().allMatch(i->i.code().equals(EXCLUSION_CONFLICT)&&chapters.contains(i.unitId()));
+    }
+    static RecordSchema<ExclusionRepair> exclusionRepair(Set<String> targets) {
+        return new RecordSchema<>(ExclusionRepair.class,"针对reviewedPlanHash绑定的受审计划，逐项解决organizationIssues。issueTargets以受审计划中的字段路径定位。"
+                +"只返回目标章节chapterId及修正后的完整exclusions列表；删除或收窄否定本章purpose、已归属知识或小节职责的排除项。"
+                +LearningBusinessSchemas.EXCLUSION_RULES+"每个目标章节恰好一个patch，不能修改其他字段、章节或事实归属。",
+                List.of(FieldRule.items("patches",targets.size())),v->{
+            var seen=new HashSet<String>();
+            for(var patch:v.patches()) {
+                require(targets.contains(patch.chapterId()),Reason.UNKNOWN_REFERENCE,"patches.chapterId","仅问题定位的受审章节");
+                require(seen.add(patch.chapterId()),Reason.DUPLICATE_ID,"patches.chapterId","每个目标章节恰好一次");
+                require(patch.exclusions().stream().noneMatch(String::isBlank),Reason.NON_EMPTY,"patches.exclusions","空列表或具体的外部范围");
+            }
+            require(seen.equals(targets),Reason.MISSING_COVERAGE,"patches","覆盖全部目标章节");
+        });
+    }
+    static CompilationPlan repairExclusions(LearningRuntime r,CompilationPlan plan,List<Learning.Issue> issues,String originalId) {
+        var targets=issues.stream().map(Learning.Issue::unitId).collect(Collectors.toCollection(LinkedHashSet::new));
+        var input=new LinkedHashMap<String,Object>(correctionContext(plan,issues));
+        input.put("remarks",r.lease().request().instructions());input.put("estimatedOutputBytes",512+targets.size()*700);r.bounded(input);
+        var fixed=r.correct("directory_exclusion_repair_v1","organize","directory",input,exclusionRepair(targets),originalId);
+        var replacements=fixed.patches().stream().collect(Collectors.toMap(ChapterExclusions::chapterId,ChapterExclusions::exclusions));
+        var old=plan.directory();var chapters=old.chapters().stream().map(c->replacements.containsKey(c.id())
+                ?new DirectoryChapter(c.id(),c.parentId(),c.title(),c.purpose(),replacements.get(c.id()),c.resultDependencies(),c.relatedChapterIds(),c.terms()):c).toList();
+        var directory=new Directory(old.title(),old.audience(),old.requirements(),old.reason(),chapters,old.terms());
+        LearningBusinessSchemas.directory(r.lease().request().compilationOptions().maximumChapters()).relaxed().validate(ContentJson.encode(directory),Set.of());
+        return new CompilationPlan(directory,plan.knowledge(),plan.sections());
+    }
     static List<Learning.Issue> review(LearningRuntime r,Directory directory,List<FactAssignment> assignments,
                                      List<ContentReading.TopicCard> cards,String prefix) {
         var byFact=new LinkedHashMap<String,FactAssignment>();
@@ -97,6 +141,7 @@ final class LearningOrganization {
             var ids=batch.stream().map(row->((Learning.Item)row.get("item")).id()).collect(Collectors.toSet());
             var allowed=new HashSet<>(ids);directory.chapters().forEach(c->allowed.add(c.id()));
             var schema=new RecordSchema<>(GlobalReview.class,"冻结计划前复核全局目录职责及本批事实的归属、条件与依据，检查重叠、异质混杂和未解决归属。"
+                    +LearningBusinessSchemas.EXCLUSION_RULES+"仅当章节purpose及事实归属正确、问题可完全通过删除或收窄exclusions解决时，code="+EXCLUSION_CONFLICT+"，unitId使用受审目录章节编号。涉及职责、章节结构或事实归属调整的问题必须使用其他code；两类问题同时存在时分别列出。"
                     +"不因风格或章数偏好重组；孤立知识也须保留合理职责。ACCEPT无issues，REPAIR用事实或章节编号定位问题；必要上下文不足才INSPECT本批最多四条事实。",
                     List.of(FieldRule.choices("decision",Set.of("ACCEPT","REPAIR","INSPECT")),FieldRule.items("issues",16),FieldRule.items("inspectedUnitIds",4),
                             FieldRule.utf8("issues[].evidence",600),FieldRule.utf8("issues[].suggestion",600)),v->{

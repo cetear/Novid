@@ -11,13 +11,14 @@ import static com.example.ailab.ai.model.RecordSchema.FieldRule.*;
 import static com.example.ailab.ai.model.RecordSchema.Reason.*;
 
 final class LearningBusinessSchemas {
+    static final String EXCLUSION_RULES="exclusions只描述本章之外的具体范围，不得否定本章purpose、已归属知识或小节职责，也不得用包含本章职责的宽泛上位词作排除项。没有必要的排除范围时返回空列表。职责负责Skill持续维护时不能排除Skill维护；职责负责记忆读写治理时不能排除记忆治理。";
     private LearningBusinessSchemas() { }
     static RecordSchema<Directory> directory(int maximum) {
         return directory(maximum,false);
     }
     static RecordSchema<Directory> learningDirectory(){return directory(0,true);}
     private static RecordSchema<Directory> directory(int maximum,boolean learning) {
-        return new RecordSchema<>(Directory.class,(learning?"原文目录缺失或不适合学习，基于全范围事实及主题归纳学习分组，不声称是真实原文标题。":"面向独立阅读用途，基于全范围知识归纳主题并提出融合目录。先识别完整问题，再按有实义的共同上位范围组织父子层级；同级保持清楚分类口径，步骤、参数、例子在所属主题下展开。一级数随独立主题自适应，八个、十二个或十六个均不是上限，不为压数强并或增加空泛假根。不预设出题用途或考核单元。")+"先说明每章回答的问题和排除的邻章职责，再按职责归属知识。少量集中知识可以只有一章；孤立知识保留明确职责，不强塞无关主题或无职责的其他章。关键词仅是线索，不能补造教学、因果或前置关系。organizationIssues存在时只纠正组织问题，保留全部知识与条件。chapters id=c1起连续，parentId无父章为空。各章有不同内容职责、排除的邻章职责、统一术语；只有确实需要另一章实际写作结果才登记resultDependencies。relatedChapterIds用于相关小章合包。不要按来源文档、固定条数、文本相邻或索引包划目录。",
+        return new RecordSchema<>(Directory.class,(learning?"原文目录缺失或不适合学习，基于全范围事实及主题归纳学习分组，不声称是真实原文标题。":"面向独立阅读用途，基于全范围知识归纳主题并提出融合目录。先识别完整问题，再按有实义的共同上位范围组织父子层级；同级保持清楚分类口径，步骤、参数、例子在所属主题下展开。一级数随独立主题自适应，八个、十二个或十六个均不是上限，不为压数强并或增加空泛假根。不预设出题用途或考核单元。")+"先说明每章回答的问题和排除的邻章职责，再按职责归属知识。少量集中知识可以只有一章；孤立知识保留明确职责，不强塞无关主题或无职责的其他章。关键词仅是线索，不能补造教学、因果或前置关系。organizationIssues存在时只纠正组织问题，保留全部知识与条件。chapters id=c1起连续，parentId无父章为空。各章有不同内容职责、排除的邻章职责、统一术语；只有确实需要另一章实际写作结果才登记resultDependencies。relatedChapterIds用于相关小章合包。不要按来源文档、固定条数、文本相邻或索引包划目录。"+EXCLUSION_RULES+"reviewedPlan存在时，依据reviewedPlan与reviewedPlanHash绑定的受审版本，按issueTargets定位并逐项解决organizationIssues，保留无问题的职责、事实与条件。",
                 java.util.stream.Stream.concat(List.of(utf8("title",300),utf8("audience",300),utf8("requirements",1000),utf8("reason",1000),utf8("chapters[].title",200),utf8("chapters[].purpose",600)).stream(),maximum>0?java.util.stream.Stream.of(items("chapters",maximum)):java.util.stream.Stream.empty()).toList(),v->{
             require(!v.chapters().isEmpty(),CONTENT_CONSTRAINT);var ids=v.chapters().stream().map(DirectoryChapter::id).collect(Collectors.toSet());
             for(int i=0;i<v.chapters().size();i++) {

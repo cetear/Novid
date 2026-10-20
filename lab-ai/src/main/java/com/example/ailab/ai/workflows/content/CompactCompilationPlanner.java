@@ -16,11 +16,12 @@ final class CompactCompilationPlanner {
     record Fallback(String reason) { }
     private final LearningRuntime r;
     CompactCompilationPlanner(LearningRuntime runtime){r=runtime;}
-    Optional<CompilationPlan> plan() {return plan("",List.of());}
-    Optional<CompilationPlan> plan(String suffix,List<Learning.Issue> issues) {
+    Optional<CompilationPlan> plan() {return plan("",List.of(),null);}
+    Optional<CompilationPlan> plan(String suffix,List<Learning.Issue> issues,CompilationPlan reviewedPlan) {
         if(r.store().completedNode(r.lease(),"compact_plan_fallback").isPresent())return Optional.empty();
         var input=new LinkedHashMap<String,Object>();input.put("remarks",r.lease().request().instructions());input.put("options",r.lease().request().compilationOptions());input.putAll(knowledgeView(r));
         input.put("organizationIssues",issues);
+        if(reviewedPlan!=null)input.putAll(LearningOrganization.correctionContext(reviewedPlan,issues));
         int maximum=r.lease().request().compilationOptions().maximumChapters();
         var schema=schema(maximum);
         // 编号清单为主要返回量，独立知识正文由程序复用；预检包含实际Schema。
@@ -48,7 +49,8 @@ final class CompactCompilationPlanner {
                 +"sections列出所属chapterId、标题、职责、主要itemIds、可选contextItemIds和500至12000的outputBytes。每条输入事实恰好属于一个主要小节，互补内容独立保留。"
                 +"merges只返回至少两条知识相同且条件一致的SAME组，或同主题相互冲突的CONFLICT组；不能把职责不同的事实合并。"
                 +"未列入merges的事实由程序作为SINGLE保留，不要重写其摘要。合并组所有事实必须属于同一主要小节；summary精确概括共同职责，CONFLICT保留全部版本条件。"
-                +"只引用输入事实编号，条件字典由topicId查询。sections顺序即输出顺序，目录章节编号c1起连续；仅确实需要另一章实际写作结果才声明resultDependencies。",
+                +"只引用输入事实编号，条件字典由topicId查询。sections顺序即输出顺序，目录章节编号c1起连续；仅确实需要另一章实际写作结果才声明resultDependencies。"
+                +LearningBusinessSchemas.EXCLUSION_RULES+"纠正时以reviewedPlan及reviewedPlanHash为受审版本，issueTargets引用此版本的章节和字段，不使用裁剪前草稿编号；依据全部事实逐项解决organizationIssues，保留无问题的职责与条件。",
                 List.of(items("merges",r.facts().size()),utf8("sections[].title",200),utf8("sections[].purpose",600),utf8("merges[].summary",500)),v->{
             nested("directory",()->LearningBusinessSchemas.directory(maximum).relaxed().validate(ContentJson.encode(v.directory()),Set.of()));
             validate(v);
