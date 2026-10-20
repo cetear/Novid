@@ -24,7 +24,9 @@ public class VersionedDatabaseMigration implements FlywayMigrationStrategy {
                 throw new IllegalStateException("数据库版本不符合架构要求：需要 MySQL 8.4，未执行迁移");
             }
         } catch (SQLException error) {
-            throw new IllegalStateException("数据库连接检查失败，未执行迁移", null);
+            throw new IllegalStateException("数据库连接检查失败，未执行迁移（SQLState="
+                    + error.getSQLState() + "，errorCode=" + error.getErrorCode() + "）",
+                    com.example.ailab.contract.error.DiagnosticFailure.sanitized(error));
         }
         // 检查连接已关闭，Flyway 独立管理正式迁移事务与锁。
         flyway.migrate();

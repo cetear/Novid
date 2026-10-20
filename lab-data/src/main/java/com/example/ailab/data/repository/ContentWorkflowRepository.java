@@ -326,7 +326,7 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
         var previous=mapper.planProof(new Object[]{lease.task().taskId()});
         if(previous.size()==1&&previous.get(0).get("plan_hash")!=null) {
             String expected=hash(plan);
-            sql.write(() -> {
+            sql.writeContentPlan(() -> {
                 valid(lease);documents.verifySources(scope,p.sources());documents.verifyReadingDocuments(scope,p.documents());
                 var current=mapper.planProof(new Object[]{lease.task().taskId()});
                 if(current.size()!=1||!expected.equals(current.get(0).string("plan_hash")))throw conflict();
@@ -356,7 +356,7 @@ public class ContentWorkflowRepository implements ContentWorkflowStorePort {
             return new Object[]{lease.task().taskId(),pack.id(),pack.parentId(),hash(Map.of("package",pack,"parts",parts)),encode(pack),encode(parts)};
         }).toList();
         var proof=nodes.values().stream().collect(Collectors.toMap(n->n.string("node_id"),n->List.of(n.string("status"),Objects.toString(n.get("output_hash"),""))));
-        sql.write(() -> {
+        sql.writeContentPlan(() -> {
             valid(lease); // 共享权限／知识闸门，再锁当前任务；包括fencing及期限。
             documents.verifySources(scope,p.sources());
             documents.verifyReadingDocuments(scope,p.documents());

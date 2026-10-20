@@ -31,6 +31,10 @@ public class SqlSupport {
     @org.springframework.transaction.annotation.Transactional(timeout = 5)
     public void write(Runnable commit) { commit.run(); }
 
+    /** 学习计划需在同一事务内复核证明并保存计划、工作包；不包含正文读取或模型调用。 */
+    @org.springframework.transaction.annotation.Transactional(timeout = 30)
+    public void writeContentPlan(Runnable commit) { commit.run(); }
+
     /** 结构需原子保存多个有界 SQL 批次；整体期限独立于单条 SQL 的 10 秒期限。 */
     @org.springframework.transaction.annotation.Transactional(timeout = 30)
     public void writeIngestionStructure(Runnable commit) { commit.run(); }
