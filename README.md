@@ -4,6 +4,8 @@
 
 ## 长期文档
 
+Linux 后端发布：在 `lab-dist` 目录执行 `mvn clean install -Pdist`，生成 `target/dist.zip`，内含应用 JAR、外置配置和 Linux 启动脚本；自动构建最新依赖，发布 profile 默认跳过测试执行。首次启动与后续替换步骤见[部署配置与运行维护](docs/部署配置与运行维护.md#linux-部署与后续更新)。原 `lab-demo` 已改为 `lab-dist` 发布模块。
+
 | 文档 | 内容 |
 |---|---|
 | [文档目录](docs/README.md) | 长期文档、配置示例与临时资料分类 |

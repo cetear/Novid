@@ -68,6 +68,18 @@
     </dependencies>
     <build>
         <plugins>
+            <!-- dist 依赖普通库 JAR；保留现有可执行 app JAR 和本地启动方式。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>dist-library</id>
+                        <goals><goal>jar</goal></goals>
+                        <configuration><classifier>lib</classifier></configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>

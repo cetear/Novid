@@ -1,0 +1,19 @@
+[Unit]
+Description=Novid backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=novid
+Group=novid
+WorkingDirectory=/opt/novid
+ExecStart=/bin/sh /opt/novid/bin/start.sh
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

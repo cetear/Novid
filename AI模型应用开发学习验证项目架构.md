@@ -1,5 +1,7 @@
 # 多用户个人知识库与 AI 助手：学习验证项目架构与开发约束
 
+> 发布模块调整（2026-10-21）：原 `lab-demo` 已由 `lab-dist` 发布模块替代，旧 Mock CLI 和其命令不再提供。`lab-dist` 依赖 `lab-app` 的普通 `lib` 分类 JAR，并复用正式启动入口，将全部后端依赖打包为 `novid.jar`；`lab-app` 保留本地可执行 JAR。在 `lab-dist` 目录执行 `mvn clean install -Pdist`，自动构建最新依赖并生成包含 JAR、外置配置与 Linux 启动脚本的 `target/dist.zip`，发布 profile 默认跳过测试执行。本文后续 `lab-demo`／CLI 描述为早期设计记录，现行发布与 Linux 操作见[部署配置与运行维护](docs/部署配置与运行维护.md#linux-部署与后续更新)。
+
 > 当前范围（2026-10-09）：四种独立架构 Workflow、ReAct、Plan-and-Execute、Multi-Agent 并存，工作流声明式登记，创建时固化架构绑定。自测、整编、PPT 采用资料驱动固定 Workflow，视频采用独立 Plan-and-Execute；ReAct／Multi-Agent 已登记，暂无新的独立业务绑定。旧 FAQ／研究报告、旧学习及 PPT ReAct 执行路径已移除，V23 已清理三类资料任务及废弃结构。早期阶段方案与验收按当时记录理解，不作为现行代码恢复依据；现行使用与接口见 [项目介绍](docs/项目说明与使用介绍.md)、[接口说明](docs/前端接口与联调说明.md)。
 
 > 文档用途：作为后续模型实施开发、验证与交付的依据。参考《AI模型应用开发学习指南（零基础到实践）》。

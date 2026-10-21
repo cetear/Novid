@@ -24,7 +24,7 @@
         <module>lab-ai</module>
         <module>lab-web</module>
         <module>lab-app</module>
-        <module>lab-demo</module>
+        <module>lab-dist</module>
     </modules>
 
     <properties>
@@ -94,6 +94,16 @@
 
         </dependencies>
     </dependencyManagement>
+
+    <profiles>
+        <profile>
+            <id>dist</id>
+            <properties>
+                <!-- 发布构建编译测试，但不执行测试；常规 verify 仍执行测试。 -->
+                <skipTests>true</skipTests>
+            </properties>
+        </profile>
+    </profiles>
 
     <build>
         <pluginManagement>
